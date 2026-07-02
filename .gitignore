@@ -1,0 +1,21 @@
+# docs / notes — not pushed
+*.md
+
+# secrets
+.env
+
+# OS noise
+.DS_Store
+
+# generated media
+*.mp3
+*.wav
+*.mp4
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# per-job artifacts
+jobs/
