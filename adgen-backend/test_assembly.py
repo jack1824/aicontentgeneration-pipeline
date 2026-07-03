@@ -11,8 +11,8 @@ from pathlib import Path
 
 from app.assembly import ffmpeg
 
-CLIP = "clip_0.mp4"
-NARRATION = "narration_hi.mp3"
+CLIP = "outputs/video/honey-ad-clip.mp4"
+NARRATION = "outputs/audio/honey-ad-narration.mp3"
 
 
 def main() -> None:
@@ -20,10 +20,12 @@ def main() -> None:
         if not Path(f).exists():
             raise SystemExit(
                 f"missing {f} — "
-                + ("run test_generate.py first." if f == CLIP else "run test_tts.py first.")
+                + ("run test_generate.py first." if f.endswith(".mp4") else "run test_tts.py first.")
             )
 
-    out = ffmpeg.stitch_and_overlay([CLIP], narration=NARRATION, out="final_test.mp4")
+    out = ffmpeg.stitch_and_overlay(
+        [CLIP], narration=NARRATION, out="outputs/video/honey-ad-final.mp4"
+    )
     size = os.path.getsize(out)
     print(f"wrote: {out} ({size:,} bytes)")
     print("Play it back: the honey clip should now have the Hindi narration over it.")

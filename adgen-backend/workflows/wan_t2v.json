@@ -442,7 +442,7 @@
   },
   "128:119": {
     "inputs": {
-      "value": 3.5
+      "value": 1.0
     },
     "class_type": "PrimitiveFloat",
     "_meta": {
@@ -451,7 +451,7 @@
   },
   "128:118": {
     "inputs": {
-      "value": 10
+      "value": 2
     },
     "class_type": "PrimitiveInt",
     "_meta": {
@@ -460,7 +460,7 @@
   },
   "128:117": {
     "inputs": {
-      "value": 20
+      "value": 4
     },
     "class_type": "PrimitiveInt",
     "_meta": {

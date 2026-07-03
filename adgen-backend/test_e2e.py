@@ -106,7 +106,8 @@ def main() -> None:
     r.raise_for_status()
     print("server: healthy")
 
-    body = {"mode": "overlay", "shots": SHOTS, "script": SCRIPT, "language": LANGUAGE}
+    body = {"mode": "overlay", "shots": SHOTS, "script": SCRIPT, "language": LANGUAGE,
+            "name": "cafe-conversation"}
     r = httpx.post(f"{BASE}/generate", json=body, timeout=30)
     r.raise_for_status()
     job_id = r.json()["job_id"]

@@ -48,7 +48,8 @@ def main() -> None:
             print(f"  ... still generating ({elapsed}s elapsed)")
     elapsed = int(time.monotonic() - start)
 
-    out = comfy.download_output(pod, entry, out_path="clip_0.mp4")
+    os.makedirs("outputs/video", exist_ok=True)
+    out = comfy.download_output(pod, entry, out_path="outputs/video/test-clip.mp4")
     size = os.path.getsize(out)
     print(f"\nDONE in {elapsed}s: wrote {out} ({size:,} bytes)")
     print("Play it back to confirm a real clip came out of the pod.")

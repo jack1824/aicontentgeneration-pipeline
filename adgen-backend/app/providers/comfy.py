@@ -81,15 +81,30 @@ def poll_until_done(
     """Poll GET /history/{prompt_id} until the job finishes. Returns the history entry.
 
     Raises TimeoutError past `timeout`, or RuntimeError if ComfyUI reports the job errored.
+    Transient network failures (connect/read timeouts, proxy 502 HTML) are retried with
+    backoff — a blip must NOT kill a long render that is still running fine on the pod.
     """
     start = time.monotonic()
+    consecutive_failures = 0
     while True:
         if time.monotonic() - start > timeout:
             raise TimeoutError(
                 f"ComfyUI job {prompt_id} did not finish within {timeout:.0f}s "
                 f"(pod {pod_url})."
             )
-        h = httpx.get(f"{_base(pod_url)}/history/{prompt_id}", timeout=30).json()
+        try:
+            h = httpx.get(f"{_base(pod_url)}/history/{prompt_id}", timeout=30).json()
+            consecutive_failures = 0
+        except (httpx.TransportError, ValueError) as e:
+            consecutive_failures += 1
+            if consecutive_failures >= 20:  # ~sustained outage, not a blip
+                raise RuntimeError(
+                    f"Lost contact with pod {pod_url} while polling job {prompt_id} "
+                    f"({consecutive_failures} consecutive failures; last: {e}). "
+                    f"The job may still be running on the pod — check /history/{prompt_id}."
+                ) from None
+            time.sleep(min(30.0, interval * consecutive_failures))
+            continue
         entry = h.get(prompt_id)
         if entry is not None:
             status = entry.get("status") or {}
@@ -192,6 +207,31 @@ def comfy_generate(
     prompt_id = submit_prompt(pod_url, wf)
     entry = poll_until_done(pod_url, prompt_id, timeout=timeout, interval=poll_interval)
     return download_output(pod_url, entry, out_path=out_path)
+
+
+def upload_file(pod_url: str, file_path: str, overwrite: bool = True) -> str:
+    """Upload a local file (image OR audio) to the pod's input directory.
+
+    ComfyUI's POST /upload/image accepts any file type and drops it into input/ — LoadImage
+    and LoadAudio nodes then reference it by the returned name. Returns that pod-side name.
+    """
+    from pathlib import Path
+
+    p = Path(file_path)
+    if not p.exists():
+        raise FileNotFoundError(f"upload_file: {file_path} does not exist locally.")
+    with open(p, "rb") as fh:
+        try:
+            r = httpx.post(
+                f"{_base(pod_url)}/upload/image",
+                files={"image": (p.name, fh)},
+                data={"overwrite": "true" if overwrite else "false"},
+                timeout=300,
+            )
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise _surface_http_error(e, "ComfyUI /upload/image") from None
+    return r.json().get("name", p.name)
 
 
 def load_workflow(name: str) -> dict:

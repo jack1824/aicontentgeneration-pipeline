@@ -16,6 +16,9 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 # 🔴 NEEDS: ELEVENLABS_VOICE_ID (a Hindi-capable voice)
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 
+# --- Gemini (planning/routing LLM — free tier; swappable behind providers/llm.py) ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
 # --- ComfyUI on RunPod (video generation; pod transport for now; file 06/14) ---
 # 🔴 NEEDS: at least one pod proxy URL (https://<pod-id>-8188.proxy.runpod.net).
 # Comma-separated for multiple pods. Directly reachable over HTTP — no RUNPOD_API_KEY

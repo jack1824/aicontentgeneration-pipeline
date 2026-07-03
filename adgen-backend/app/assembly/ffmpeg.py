@@ -14,7 +14,9 @@ import tempfile
 from pathlib import Path
 
 # Narration starts 300ms in (proven value; `|300` covers a 2nd channel if the file is stereo).
-NARRATION_DELAY_FILTER = "[1:a]adelay=300|300[narr]"
+# `apad` extends the narration with silence so a SHORT narration never truncates the video
+# via -shortest (which caps everything at the video's length).
+NARRATION_DELAY_FILTER = "[1:a]adelay=300|300,apad[narr]"
 MUSIC_DUCK_VOLUME = 0.15
 
 
@@ -47,8 +49,9 @@ def stitch(clips: list[str], out: str = "stitched.mp4") -> str:
 
 
 def _stitched_path(out: str) -> str:
-    """Intermediate stitched file, kept next to the final output (avoids cwd collisions)."""
-    return str(Path(out).resolve().with_name("stitched.mp4"))
+    """Intermediate stitched file, named after the final output (no collisions between jobs)."""
+    p = Path(out).resolve()
+    return str(p.with_name(p.stem + ".stitched.mp4"))
 
 
 def stitch_and_overlay(
@@ -73,6 +76,7 @@ def stitch_and_overlay(
                "-map", "0:v", "-map", "[narr]", "-c:v", "copy", "-c:a", "aac",
                "-shortest", out]
     _run(cmd)
+    Path(stitched).unlink(missing_ok=True)  # drop the intermediate; keep output folders clean
     return out
 
 

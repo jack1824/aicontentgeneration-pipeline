@@ -11,5 +11,9 @@ __pycache__/
 *.wav
 *.mp4
 
-# per-job artifacts
+# generated outputs (2-folder structure) + legacy job dirs
+outputs/
 jobs/
+
+# avatar reference images (personal — keep local)
+assets/

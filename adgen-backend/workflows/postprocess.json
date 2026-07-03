@@ -1,0 +1,93 @@
+{
+  "1": {
+    "inputs": {
+      "video": "INPUT_VIDEO.mp4",
+      "force_rate": 0,
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": 0,
+      "skip_first_frames": 0,
+      "select_every_nth": 1
+    },
+    "class_type": "VHS_LoadVideo",
+    "_meta": { "title": "Load Video (input)" }
+  },
+  "2": {
+    "inputs": {
+      "model_name": "codeformer.pth"
+    },
+    "class_type": "FaceRestoreModelLoader",
+    "_meta": { "title": "Load CodeFormer" }
+  },
+  "3": {
+    "inputs": {
+      "facerestore_model": ["2", 0],
+      "image": ["1", 0],
+      "facedetection": "retinaface_resnet50",
+      "codeformer_fidelity": 0.6
+    },
+    "class_type": "FaceRestoreCFWithModel",
+    "_meta": { "title": "CodeFormer face restore" }
+  },
+  "4": {
+    "inputs": {
+      "model": "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
+      "device": "cuda:0"
+    },
+    "class_type": "SeedVR2LoadDiTModel",
+    "_meta": { "title": "SeedVR2 DiT (auto-downloads)" }
+  },
+  "5": {
+    "inputs": {
+      "model": "ema_vae_fp16.safetensors",
+      "device": "cuda:0"
+    },
+    "class_type": "SeedVR2LoadVAEModel",
+    "_meta": { "title": "SeedVR2 VAE (auto-downloads)" }
+  },
+  "6": {
+    "inputs": {
+      "image": ["3", 0],
+      "dit": ["4", 0],
+      "vae": ["5", 0],
+      "seed": 42,
+      "resolution": 864,
+      "max_resolution": 0,
+      "batch_size": 5,
+      "uniform_batch_size": false,
+      "color_correction": "lab"
+    },
+    "class_type": "SeedVR2VideoUpscaler",
+    "_meta": { "title": "SeedVR2 upscale" }
+  },
+  "7": {
+    "inputs": {
+      "ckpt_name": "rife49.pth",
+      "frames": ["6", 0],
+      "clear_cache_after_n_frames": 10,
+      "multiplier": 2,
+      "fast_mode": true,
+      "ensemble": true,
+      "scale_factor": 1.0,
+      "dtype": "float32",
+      "torch_compile": false,
+      "batch_size": 1
+    },
+    "class_type": "RIFE VFI",
+    "_meta": { "title": "RIFE 2x interpolation" }
+  },
+  "8": {
+    "inputs": {
+      "images": ["7", 0],
+      "frame_rate": 32.0,
+      "loop_count": 0,
+      "filename_prefix": "video/adgen_post",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true,
+      "audio": ["1", 2]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": { "title": "Save Video (with original audio)" }
+  }
+}

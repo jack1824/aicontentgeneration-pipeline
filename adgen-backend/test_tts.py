@@ -10,22 +10,23 @@ import os
 
 from app.providers.tts import synthesize_voice
 
-# (language, output filename, script)
+# (language, output filename, script) — all audio lives flat in outputs/audio/
 SAMPLES = [
     (
         "hi",
-        "narration_hi.mp3",
+        "outputs/audio/hindi-sample.mp3",
         "दिल्ली पब्लिक स्कूल सुशांत लोक में, एप्पल ब्लॉसम के सहयोग से एक नई शुरुआत।",
     ),
     (
         "en",
-        "narration_en.mp3",
+        "outputs/audio/english-sample.mp3",
         "Introducing the all-new Apple Blossom — crafted for the moments that matter.",
     ),
 ]
 
 
 def main() -> None:
+    os.makedirs("outputs/audio", exist_ok=True)
     for language, out, script in SAMPLES:
         path = synthesize_voice(script, language=language, output_path=out)
         size = os.path.getsize(path)
