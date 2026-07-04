@@ -97,7 +97,7 @@ Rules:
 
 Respond with STRICT JSON only (no markdown fences):
 {"approaches": [{
-  "title": str, "pipeline": "overlay|lipsync|product|cinematic|multitalk",
+  "title": str, "pipeline": "overlay|lipsync|product|cinematic|longcat|multitalk",
   "available": bool, "audio_strategy": str, "why": str,
   "narration_script": str,
   "shots": [{"prompt": str, "negative_prompt": str}],
