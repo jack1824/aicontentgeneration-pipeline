@@ -219,8 +219,10 @@ def generate_endpoint(req: GenerateRequest):
 class PostprocessRequest(BaseModel):
     video_path: str                      # local path of an existing generated video
     restore_face: bool = True            # False for product/no-face clips
-    resolution: int = Field(default=864, ge=480, le=2160)   # SeedVR2 target short-side
-    source_fps: float = 16.0
+    # None = derive from the video itself. A hardcoded 16fps default retimed
+    # 25fps LTX renders into 1.56x slow motion with drifting audio.
+    resolution: int | None = Field(default=None, ge=480, le=2160)  # SeedVR2 short-side
+    source_fps: float | None = None
     multiplier: int = Field(default=2, ge=2, le=4)          # RIFE factor
     fidelity: float = Field(default=0.6, ge=0.0, le=1.0)    # CodeFormer 0.5-0.7 per docs
 
@@ -232,6 +234,12 @@ def postprocess_endpoint(req: PostprocessRequest):
         raise HTTPException(404, f"video not found: {req.video_path}")
     if not _under_outputs(src):
         raise HTTPException(422, "only videos under outputs/ can be post-processed")
+    # Derive fps/target-size from the actual file — the Library can't know them.
+    info = ffmpeg.probe(str(src))
+    source_fps = req.source_fps or (info["fps"] if info["fps"] > 1 else 16.0)
+    resolution = req.resolution or max(
+        480, min(2160, 2 * min(info["width"] or 432, info["height"] or 432))
+    )
     job_id = _new_job("postprocess", src.stem)
 
     def run() -> None:
@@ -243,7 +251,7 @@ def postprocess_endpoint(req: PostprocessRequest):
                     detail="CodeFormer -> SeedVR2 -> RIFE")
             out = postprocess.postprocess_video(
                 req.video_path, restore_face=req.restore_face,
-                resolution=req.resolution, source_fps=req.source_fps,
+                resolution=resolution, source_fps=source_fps,
                 multiplier=req.multiplier, fidelity=req.fidelity,
                 on_submit=on_submit,
             )

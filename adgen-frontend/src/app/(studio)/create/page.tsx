@@ -16,6 +16,7 @@ import {
   api,
   ASPECTS,
   AspectKey,
+  LTX_ASPECTS,
   GenerateRequest,
   Job,
   PlanApproach,
@@ -33,6 +34,7 @@ import PhoneStage from "@/components/create/PhoneStage";
 import VoicePicker from "@/components/VoicePicker";
 
 type Mode = "product" | "lipsync" | "overlay" | "cinematic" | "longcat";
+type Engine = "ltx" | "wan"; // B-roll only: LTX-2 (fast, sharp, native sound) vs Wan (16fps documentary)
 const MODES: { key: Mode; label: string }[] = [
   { key: "product", label: "🧴 Product" },
   { key: "lipsync", label: "🗣 Avatar" },
@@ -43,11 +45,13 @@ const MODES: { key: Mode; label: string }[] = [
 
 const SURPRISE_TWIST =
   "\n\nSurprise me: propose ONE bold, unexpected creative direction for this — something I wouldn't think of myself.";
-const TIME_HINTS: Record<Mode, Record<PresetKey, string>> = {
+const TIME_HINTS: Record<string, Record<PresetKey, string>> = {
   product: { preview: "≈2 min/shot", moderate: "≈2 min/shot + ~10 min polish", master: "long render + polish" },
   lipsync: { preview: "≈6 min", moderate: "≈6 min + ~10 min polish", master: "≈35 min + polish" },
   overlay: { preview: "≈2 min/shot", moderate: "≈2 min/shot + ~10 min polish", master: "long render + polish" },
-  cinematic: { preview: "new — timing TBD", moderate: "new + ~10 min polish", master: "new + polish" },
+  // LTX engine (measured 2026-07-05): ~100s/shot incl. native sound; polish ~9 min;
+  // no separate slow mode — master = moderate.
+  cinematic: { preview: "≈2 min/shot · sound included", moderate: "≈2 min/shot + ~9 min polish", master: "same as moderate — LTX has one speed" },
   longcat: { preview: "new — timing TBD", moderate: "new + ~10 min polish", master: "new + polish" },
 };
 
@@ -257,7 +261,12 @@ function CreateStudio() {
       ? urlMode
       : uc?.mode ?? "product",
   );
+  // B-roll engine: LTX-2 by default — its "preview" already IS final quality and
+  // beats even Wan master on time. Wan stays for the documentary texture.
+  const [engine, setEngine] = useState<Engine>("ltx");
   const isAvatar = mode === "lipsync" || mode === "longcat";
+  // What actually goes in the request: B-roll+LTX rides the cinematic pipeline.
+  const reqMode = mode === "overlay" && engine === "ltx" ? "cinematic" : mode;
   const [shots, setShots] = useState<Shot[]>([emptyShot()]);
   // lipsync + longcat share the avatar UX: one scene, script + face required.
   const [script, setScript] = useState("");
@@ -268,6 +277,10 @@ function CreateStudio() {
   const [voiceId, setVoiceId] = useState("");
   const [previewingVoice, setPreviewingVoice] = useState(false);
   const [preset, setPreset] = useState<PresetKey>("preview");
+  // LTX has no master tier — master is TREATED as Polished for LTX-backed
+  // renders at request time, without clobbering the user's Wan-mode choice.
+  const effPreset: PresetKey =
+    reqMode === "cinematic" && preset === "master" ? "moderate" : preset;
   const [aspect, setAspect] = useState<AspectKey>("9:16");
   const [name, setName] = useState("");
   const [planned, setPlanned] = useState(false);
@@ -373,13 +386,19 @@ function CreateStudio() {
 
   const adopt = (a: PlanApproach) => {
     if (a.pipeline === "product" || a.pipeline === "lipsync" || a.pipeline === "overlay" || a.pipeline === "cinematic" || a.pipeline === "longcat") {
-      if (a.pipeline !== mode) {
+      const targetMode: Mode = a.pipeline;
+      // Honor the planner's engine: overlay plans carry Wan-tuned prompts (no
+      // soundscape line); cinematic plans are written FOR LTX. Silent engine
+      // mismatches produce unplanned audio in the final ad.
+      if (a.pipeline === "overlay") setEngine("wan");
+      if (a.pipeline === "cinematic") setEngine("ltx");
+      if (targetMode !== mode) {
         // Mirror the manual mode buttons: an image uploaded for ANOTHER pipeline
         // must not silently become this one's avatar face / product photo.
         setImage(null);
       }
-      if (a.pipeline === "lipsync") setMusic(null); // no music UI in avatar mode
-      setMode(a.pipeline);
+      if (targetMode === "lipsync") setMusic(null); // no music UI in lipsync mode
+      setMode(targetMode);
     }
     const planShots = (a.shots?.length ? a.shots : [emptyShot()]).map((s) => ({
       prompt: s.prompt ?? "",
@@ -402,9 +421,9 @@ function CreateStudio() {
     setError(null);
     setJob(null);
     setJobId(null);
-    const p = PRESETS[preset];
+    const p = PRESETS[effPreset];
     const req: GenerateRequest = {
-      mode,
+      mode: reqMode,
       shots: shots.map((s) => ({
         prompt: s.prompt.trim(),
         ...(s.negative_prompt?.trim() ? { negative_prompt: s.negative_prompt.trim() } : {}),
@@ -414,7 +433,7 @@ function CreateStudio() {
       quality: p.quality,
       ...("steps" in p ? { steps: p.steps } : {}),
       postprocess: p.postprocess,
-      ...ASPECTS[aspect],
+      ...(reqMode === "cinematic" ? LTX_ASPECTS[aspect] : ASPECTS[aspect]),
       ...(name ? { name } : {}),
       ...(isAvatar && image ? { avatar_image: image.path } : {}),
       ...(mode === "product" && image ? { product_image: image.path } : {}),
@@ -517,7 +536,7 @@ function CreateStudio() {
       {/* ---- Editor + render panel ---- */}
       <div ref={editorRef} className="grid items-start gap-6 lg:grid-cols-[1fr_360px]">
         <section className="card-raised flex flex-col gap-5 rounded-card p-4 sm:p-6">
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {MODES.map((m) => (
               <button
                 key={m.key}
@@ -537,6 +556,24 @@ function CreateStudio() {
                 {m.label}
               </button>
             ))}
+            {mode === "overlay" && (
+              <div className="ml-auto flex items-center gap-1.5">
+                <span className="label-cap">Engine</span>
+                {([
+                  { key: "ltx", label: "⚡ LTX-2", hint: "fast · sharp · native sound" },
+                  { key: "wan", label: "🎞 Wan", hint: "16fps documentary look" },
+                ] as { key: Engine; label: string; hint: string }[]).map((e) => (
+                  <button
+                    key={e.key}
+                    onClick={() => setEngine(e.key)}
+                    title={e.hint}
+                    className={`rounded-btn px-3 py-1.5 text-xs ${engine === e.key ? "seg-on" : "seg"}`}
+                  >
+                    {e.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Shots */}
@@ -641,7 +678,7 @@ function CreateStudio() {
             )}
           </div>
 
-          {/* Assets (cinematic + b-roll are pure text-to-video — no image) */}
+          {/* Assets (b-roll and cinematic are pure text-to-video — no image) */}
           {mode !== "overlay" && mode !== "cinematic" && (
             <Dropzone
               label={isAvatar ? "Avatar face image · required" : "Product photo · required"}
@@ -669,18 +706,20 @@ function CreateStudio() {
           <div className="flex flex-col gap-2">
             <span className="label-cap">Render preset</span>
             <div className="flex gap-1">
-              {(Object.keys(PRESETS) as PresetKey[]).map((k) => (
+              {/* LTX has ONE sampling speed — master would be a lie there, so
+                  LTX-backed renders offer Preview + Polished only. */}
+              {((reqMode === "cinematic" ? ["preview", "moderate"] : Object.keys(PRESETS)) as PresetKey[]).map((k) => (
                 <button
                   key={k}
                   onClick={() => setPreset(k)}
-                  className={`flex-1 rounded-btn px-2 py-2 text-xs ${preset === k ? "seg-on" : "seg"}`}
+                  className={`flex-1 rounded-btn px-2 py-2 text-xs ${effPreset === k ? "seg-on" : "seg"}`}
                 >
-                  {PRESETS[k].label}
+                  {reqMode === "cinematic" && k === "moderate" ? "✨ Polished" : PRESETS[k].label}
                 </button>
               ))}
             </div>
             <p className="text-[11px] text-text-muted">
-              {PRESET_HINTS[preset]} · {TIME_HINTS[mode][preset]}
+              {PRESET_HINTS[effPreset]} · {TIME_HINTS[reqMode][effPreset]}
             </p>
           </div>
 

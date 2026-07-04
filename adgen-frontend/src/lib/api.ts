@@ -136,12 +136,20 @@ export const ASPECTS = {
 } as const;
 export type AspectKey = keyof typeof ASPECTS;
 
+// LTX renders comfortably at ~2x Wan's sizes (two-stage upscale) — B-roll on the
+// LTX engine uses these so it keeps the 1280-class sharpness of the test renders.
+export const LTX_ASPECTS: Record<AspectKey, { width: number; height: number }> = {
+  "9:16": { width: 704, height: 1280 },
+  "1:1": { width: 960, height: 960 },
+  "16:9": { width: 1280, height: 704 },
+};
+
 // Backend pipeline folder -> what the user actually made.
 export const PIPELINE_LABELS: Record<string, string> = {
   wani2v: "Product",
   wans2v: "Avatar",
-  want2v: "B-roll",
-  ltx2: "Cinematic",
+  want2v: "B-roll (Wan)",
+  ltx2: "LTX (B-roll/Cinematic)",
   longcat: "Long Avatar",
   sequence: "Sequence ad",
   remix: "Remix cut",
