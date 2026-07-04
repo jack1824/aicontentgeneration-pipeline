@@ -37,12 +37,26 @@ Rules:
 - Prefer BUILT pipelines; include an unavailable one only if clearly the best fit, marked available=false.
 - Audio strategy follows the mouth rule: visible speaking mouth -> lipsync (audio drives video);
   nobody speaks on screen -> overlay (voice over the top).
+- The user message states the narration LANGUAGE. Write narration_script in exactly that
+  language. In Hindi scripts keep brand names and English product terms in Latin script
+  (natural Hinglish ad copy is good); the rest in Devanagari.
+- Honor the requested DURATION and FORMAT: each shot is ~5 seconds, so shot count = duration/5
+  (15s = 3 shots, 30s = 6). Compose for the aspect ratio: 9:16 vertical -> tight single-subject
+  framing and close-ups; 1:1 -> centered subjects; 16:9 -> wider establishing shots.
 - Shot prompts must be DETAILED documentary style: each subject described individually (age,
   hair, clothing, distinct faces), photographic wording ("shot on a DSLR, photojournalism,
-  true-to-life, realistic skin texture"), continuity anchors kept verbatim across shots,
-  anti-CGI negatives (cartoon, 3D render, CGI, identical faces, cloned faces).
-- Each shot is ~5 seconds. A 15s ad = 3 shots; 30s = 6 shots. lipsync needs no shot list
-  (one continuous take) — give ONE scene/action prompt plus a narration script instead.
+  true-to-life, realistic skin texture"), continuity anchors kept verbatim across shots.
+- Every shot's negative_prompt starts from this canonical block (keep it IDENTICAL across
+  shots for continuity), then append shot-specific negatives if needed:
+  "cartoon, anime, CGI, 3D render, plastic skin, waxy skin, doll face, deformed hands, bad
+  anatomy, extra fingers, extra limbs, cloned faces, identity drift, face morphing, robotic
+  movement, synchronized movement, frozen expressions, jerky motion, flickering, temporal
+  inconsistency, unstable camera, oversaturated colors, harsh shadows, watermark, logo,
+  subtitles, blurry, low quality"
+- product REQUIRES a product photo and lipsync REQUIRES a reference face image. Never assume
+  the user has provided one — always list the required asset in needs_from_user.
+- lipsync needs no shot list (one continuous take) — give ONE scene/action prompt plus a
+  narration script instead.
 - Narration scripts: conversational ad copy; ~3 words/second budget (e.g. ~13s of speech
   for a 14s lipsync video; ~5s of speech per pair of overlay shots).
 - The user supplies final creative control — your proposals are STARTING POINTS they will edit.
@@ -98,7 +112,11 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
         ) from None
 
     try:
-        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # Gemini sometimes wraps the JSON in ```json fences despite the instruction.
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else ""
+            text = text.rsplit("```", 1)[0]
         proposals = json.loads(text)
     except (KeyError, IndexError, json.JSONDecodeError) as e:
         raise PlanError(f"Gemini returned an unparseable plan: {e}") from None

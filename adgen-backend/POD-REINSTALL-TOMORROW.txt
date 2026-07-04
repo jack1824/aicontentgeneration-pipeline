@@ -1,0 +1,69 @@
+================================================================
+POD FULL REBUILD CHECKLIST — for tomorrow (written 2026-07-04 night)
+================================================================
+!! The stopped pod (spiritual_crimson_turkey / A40) had NO VOLUME —
+!! RunPod's dialog confirmed: ALL DATA LOST on stop. This is a FULL
+!! rebuild, not a reinstall. Budget ~1-1.5h (mostly unattended downloads).
+
+STEP 0 — DO IT RIGHT THIS TIME (the permanent fix)
+  Create a NETWORK VOLUME first: RunPod -> Storage -> Network Volumes
+    -> New: 250 GB, in a region that has A40/L40S/4090 availability.
+    (~$17.50/mo; survives every pod forever; serverless can mount it later.)
+  Then deploy the pod WITH that volume attached (mount at /workspace),
+  using a ComfyUI template. Prefer L40S/4090 if available (3-4x faster
+  than A40 for our fp8 models); A40 is fine as fallback.
+
+STEP 1 — POD UP + BACKEND POINTED AT IT
+  - Copy the port-8188 proxy URL (8188, NOT 8888/Jupyter!).
+  - adgen-backend/.env -> COMFY_POD_URLS=<url>
+  - Restart API server (or ask Claude).
+
+STEP 2 — COMFYUI ON THE VOLUME (if template didn't already)
+  Ask Claude to guide; goal: ComfyUI (or at least all models) under
+  /workspace so stop/start is finally safe.
+
+STEP 3 — MODEL DOWNLOADS (pod terminal / Jupyter; ~85-90 GB total)
+  cd <ComfyUI>/models     # use the volume-backed path!
+  BASE=https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files
+  wget -c -P diffusion_models $BASE/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
+  wget -c -P diffusion_models $BASE/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
+  wget -c -P diffusion_models $BASE/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+  wget -c -P diffusion_models $BASE/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+  wget -c -P diffusion_models $BASE/diffusion_models/wan2.2_s2v_14B_fp8_scaled.safetensors
+  wget -c -P text_encoders    $BASE/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+  wget -c -P vae              $BASE/vae/wan_2.1_vae.safetensors
+  wget -c -P audio_encoders   $BASE/audio_encoders/wav2vec2_large_english_fp16.safetensors
+  wget -c -P loras $BASE/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors
+  wget -c -P loras $BASE/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
+  wget -c -P loras $BASE/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
+  wget -c -P loras $BASE/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
+  mkdir -p facerestore_models && wget -c -P facerestore_models \
+    https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth
+  NOTE: run these in parallel (append & to each) — datacenter bandwidth
+  makes this 15-40 min. /resolve/ URLs, never /blob/.
+
+STEP 4 — CUSTOM NODE PACKS (ComfyUI Manager, ~5 min)
+  [ ] "SeedVR2 Video Upscaler" (numz)      [SeedVR2 weights auto-download on 1st run]
+  [ ] "Facerestore CF (Code Former)"
+  [ ] the switch/math pack if missing (nodes: ComfySwitchNode, ComfyMathExpression
+      — Claude's pre-flight will say; they came with the old pods' template)
+  [ ] Restart ComfyUI via Manager.
+  RIFE ckpt auto-downloads on first post-process run.
+
+STEP 5 — TELL CLAUDE: "pre-flight the pod"
+  He verifies every workflow's nodes+models against the pod and re-points
+  any filename mismatches in workflows/*.json (i2v JSON currently names
+  the OLD pod's fp16/lora files — he'll re-point to the fp8 set above).
+  Only then run jobs.
+
+STEP 6 — ELEVENLABS (paid plan active from today)
+  - .env -> ELEVENLABS_VOICE_ID=d0grukerEzs069eKIauC  (Hindi library voice,
+    parked in the comment above the line)
+  - Run the HINDI LIPSYNC TEST (S2V audio encoder is English-only — this
+    measures the Hindi lip gap; docs file 04).
+
+NEXT WORK QUEUED
+  - Frontend: F0 backend additions + F1 Next.js vertical slice (STARTED
+    tonight — doesn't need the pod).
+  - Sequence mode (60s mixed-pipeline ads) after the 5 core screens.
+================================================================

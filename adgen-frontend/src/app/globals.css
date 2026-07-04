@@ -1,0 +1,338 @@
+@import "tailwindcss";
+
+/* Design tokens — LOCKED identity from adgen-platform/mdfiles/15-frontend.md.
+   Dark studio aesthetic; the VIDEO is always the star; glows on hero moments only. */
+:root {
+  --base: #0a0a0b;
+  --surface-1: #141416;
+  --surface-2: #1c1c1f;
+  --well: #0e0e10; /* recessed input tier — darker than any surface */
+  --accent: #ff4d3d;
+  --accent-grad-from: #ff6b3d;
+  --accent-grad-to: #ff3d6e;
+  --text-primary: #f5f5f4;
+  --text-secondary: #a1a1a6;
+  --text-muted: #8a8a91; /* lightened from #6e6e73 — WCAG AA on base/surface-1 */
+}
+
+@theme inline {
+  --color-base: var(--base);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-accent: var(--accent);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --radius-card: 16px;
+  --radius-btn: 10px;
+  --font-display: var(--font-display);
+}
+
+body {
+  /* ONE faint coral radial bleeding from the top — the page's single ambient glow. */
+  background:
+    radial-gradient(1100px 520px at 65% -14%, rgba(255, 77, 61, 0.075), transparent 60%),
+    var(--base);
+  color: var(--text-primary);
+  font-family: var(--font-body), ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+/* Barely-perceptible film grain — desktop only: a fixed full-viewport blend layer
+   costs real overdraw on budget mobile GPUs, and at 3.5% nobody misses it there. */
+@media (min-width: 1024px) and (pointer: fine) {
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+}
+
+/* ---------- Depth system: three tiers ---------- */
+
+/* Tier 2 — raised card: lighter top-edge highlight + soft large shadow, no harsh borders. */
+.card-raised {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0) 48%),
+    var(--surface-1);
+  border: 1px solid rgba(255, 255, 255, 0.035);
+  border-top-color: rgba(255, 255, 255, 0.11);
+  box-shadow:
+    0 24px 60px -24px rgba(0, 0, 0, 0.75),
+    0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+/* Tier 3 — recessed well: inputs you type INTO. */
+.input-well {
+  background: var(--well);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.5),
+    inset 0 1px 1px rgba(0, 0, 0, 0.6);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.input-well:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.input-well:focus,
+.input-well:focus-within {
+  outline: none;
+  border-color: rgba(255, 77, 61, 0.5);
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.5),
+    inset 0 0 24px rgba(255, 77, 61, 0.04),
+    0 0 0 3px rgba(255, 77, 61, 0.13);
+}
+
+/* ---------- Coral as punctuation: segmented controls ---------- */
+.seg {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.seg:hover {
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.seg-on {
+  background: rgba(255, 77, 61, 0.1);
+  border: 1px solid rgba(255, 77, 61, 0.45);
+  color: var(--text-primary);
+}
+
+/* Section labels recede so content leads. */
+.label-cap {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+
+/* Hero-moment glow — CTA + render-in-progress ONLY (the rule: sparse boldness) */
+.hero-glow {
+  background: linear-gradient(135deg, var(--accent-grad-from), var(--accent-grad-to));
+  box-shadow: 0 0 32px rgba(255, 77, 61, 0.35);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+.hero-glow:hover:not(:disabled) {
+  box-shadow: 0 0 48px rgba(255, 77, 61, 0.5);
+  transform: translateY(-1px);
+}
+
+/* Faint gradient frame for the star of the page (the idea box) — wrap a 1px pad div. */
+.hero-frame {
+  padding: 1px;
+  border-radius: 13px;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 107, 61, 0.35),
+    rgba(255, 255, 255, 0.06) 38%,
+    rgba(255, 255, 255, 0.04) 62%,
+    rgba(255, 61, 110, 0.28)
+  );
+}
+
+/* Gradient headline text — dashboard hero + section accents */
+.text-grad {
+  background: linear-gradient(120deg, var(--accent-grad-from), var(--accent-grad-to));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+.render-breathe {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+/* Hero ambient glow pulse — pure CSS so no JS ticker stays alive for it. */
+@keyframes glow-breathe {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.07); }
+}
+.glow-breathe {
+  animation: glow-breathe 6.8s ease-in-out infinite;
+}
+
+/* Brand mark tile: coral gradient WITHOUT the CTA glow (glow is for hero + CTAs only). */
+.brand-tile {
+  background: linear-gradient(135deg, var(--accent-grad-from), var(--accent-grad-to));
+}
+
+/* Sidebar rail: raised off the canvas like a physical panel — top-edge light,
+   soft shadow into the page, no harsh divider. */
+.rail-raised {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 20%),
+    var(--surface-1);
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 12px 0 40px -20px rgba(0, 0, 0, 0.65);
+}
+
+/* Gemini-is-thinking shimmer: light sweeps across the text */
+@keyframes shimmer-sweep {
+  0% { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--text-muted) 40%,
+    var(--text-primary) 50%,
+    var(--text-muted) 60%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-sweep 1.6s linear infinite;
+}
+
+/* Living empty state: a slow-drifting coral gradient mesh, never flat grey. */
+@keyframes mesh-drift {
+  0%, 100% { background-position: 0% 0%, 100% 100%; }
+  50% { background-position: 70% 45%, 30% 55%; }
+}
+.placeholder-live {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background:
+    radial-gradient(130% 100% at 18% 8%, rgba(255, 107, 61, 0.08), transparent 52%),
+    radial-gradient(130% 100% at 85% 92%, rgba(255, 61, 110, 0.07), transparent 52%),
+    var(--well);
+  background-size: 220% 220%, 220% 220%, auto;
+  animation: mesh-drift 9s ease-in-out infinite;
+  border: 1px dashed rgba(255, 77, 61, 0.18);
+}
+
+/* Cards rise slightly on hover — the wall of work should feel alive */
+.lift {
+  transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+.lift:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* Landing: infinite category-chip marquee (track holds the list twice; -50% loops). */
+@keyframes marquee-x {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.marquee-track {
+  animation: marquee-x 36s linear infinite;
+}
+
+/* Landing hero backdrop: slides crossfade in a 24s cycle (delay set per slide). */
+@keyframes backdrop-cycle {
+  0% { opacity: 0; }
+  5%, 24% { opacity: 0.5; }
+  32%, 100% { opacity: 0; }
+}
+.backdrop-slide {
+  opacity: 0;
+  animation: backdrop-cycle 24s linear infinite;
+}
+
+/* ---------- Render theater (Create page: waiting becomes a show) ---------- */
+
+/* Film slate claps shut ONCE when rendering starts. */
+@keyframes slate-clap {
+  0% { transform: rotate(-22deg); }
+  55% { transform: rotate(0deg); }
+  72% { transform: rotate(-6deg); }
+  100% { transform: rotate(0deg); }
+}
+.slate-top {
+  transform-origin: left bottom;
+  animation: slate-clap 0.8s ease-out 1;
+}
+
+/* One-shot burst when the ad lands. */
+@keyframes glow-burst {
+  0% { box-shadow: 0 0 0 rgba(255, 77, 61, 0); }
+  30% { box-shadow: 0 0 90px rgba(255, 77, 61, 0.55); }
+  100% { box-shadow: 0 0 28px rgba(255, 77, 61, 0.16); }
+}
+.glow-burst {
+  animation: glow-burst 1.5s ease-out 1;
+}
+
+/* ● REC while the camera rolls. */
+@keyframes rec-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+.rec-dot {
+  animation: rec-blink 1.2s steps(1) infinite;
+}
+
+/* Pitch-deck card slides in as you flip approaches. */
+@keyframes deck-in {
+  from { opacity: 0; transform: translateX(26px) scale(0.98); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+.deck-in {
+  animation: deck-in 0.32s ease-out 1;
+}
+
+/* Chat bubbles pop in as the brief unfolds. */
+@keyframes bubble-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.bubble-in {
+  animation: bubble-in 0.28s ease-out 1;
+}
+
+/* Motion-sensitive users get stillness — kill every infinite loop and keep
+   shimmer text readable with a static color. */
+@media (prefers-reduced-motion: reduce) {
+  .render-breathe,
+  .glow-breathe,
+  .placeholder-live,
+  .marquee-track,
+  .backdrop-slide,
+  .slate-top,
+  .glow-burst,
+  .rec-dot,
+  .deck-in,
+  .bubble-in {
+    animation: none;
+  }
+  .shimmer {
+    animation: none;
+    background: none;
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    color: var(--text-secondary);
+  }
+}
+
+/* Thin dark scrollbars everywhere */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-2) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}

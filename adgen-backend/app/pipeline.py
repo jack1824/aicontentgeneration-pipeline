@@ -8,7 +8,10 @@ Output layout (user's rule: exactly TWO flat folders, matching names, no per-job
     outputs/video/<name>-clip1.mp4, <name>-clip2.mp4, ..., <name>-final.mp4
     outputs/audio/<name>-narration.mp3
 """
+import json
 from pathlib import Path
+
+import httpx
 
 OUTPUT_VIDEO_DIR = Path("outputs/video")
 OUTPUT_AUDIO_DIR = Path("outputs/audio")
@@ -31,6 +34,8 @@ S2V_VIDEO_DIR = Path("outputs/wans2v/video")
 S2V_AUDIO_DIR = Path("outputs/wans2v/audio")
 I2V_VIDEO_DIR = Path("outputs/wani2v/video")
 I2V_AUDIO_DIR = Path("outputs/wani2v/audio")
+SEQ_VIDEO_DIR = Path("outputs/sequence/video")
+SEQ_AUDIO_DIR = Path("outputs/sequence/audio")
 
 
 def generate(req: dict, name: str, on_progress=None) -> str:
@@ -57,6 +62,18 @@ def generate(req: dict, name: str, on_progress=None) -> str:
     mode = req["mode"]
     if not COMFY_POD_URLS:
         raise RuntimeError("COMFY_POD_URLS is not set in .env — no pod to generate on.")
+    # Cheap preflight BEFORE any TTS call — an unreachable pod must not burn
+    # ElevenLabs credits on narration that can never be rendered.
+    try:
+        httpx.get(f"{COMFY_POD_URLS[0].rstrip('/')}/system_stats",
+                  timeout=10).raise_for_status()
+    except httpx.HTTPError:
+        raise RuntimeError(
+            "pod unreachable — start/rebuild the ComfyUI pod (and update "
+            "COMFY_POD_URLS) before generating."
+        ) from None
+    if mode == "sequence":
+        return _generate_sequence(req, name, report)
     if mode == "lipsync":
         return _generate_lipsync(req, name, report)
     if mode == "product":
@@ -115,6 +132,135 @@ def generate(req: dict, name: str, on_progress=None) -> str:
         final = ffmpeg.stitch_and_overlay(clips, narration, music=req.get("music"), out=final)
     else:
         final = ffmpeg.stitch(clips, out=final)  # silent clips, no narration -> plain stitch
+
+    report("done", 100, "")
+    return final
+
+
+def _generate_sequence(req: dict, name: str, report) -> str:
+    """mode="sequence": the 60s-ad composer (file 15) — a TIMELINE of mixed-pipeline
+    segments (e.g. lipsync hook -> i2v product shots -> t2v b-roll -> lipsync CTA),
+    each with its own script slice, assembled into ONE video.
+
+    Per segment:
+      - overlay : one t2v clip (~5s); optional script slice -> per-segment voiceover
+      - product : one i2v clip from segment `image`; optional script slice -> voiceover
+      - lipsync : S2V take (~14.4s, audio embedded); script + image REQUIRED
+
+    All segments render at the job's width/height @16fps, then concat_reencode() joins
+    the mixed sources (silent parts get a real silent track). Optional music bed last.
+    """
+    segments = req.get("segments") or []
+    if not segments:
+        raise ValueError("sequence mode needs `segments` — a non-empty timeline.")
+    for i, seg in enumerate(segments):
+        p = seg.get("pipeline")
+        if p == "lipsync":
+            if not seg.get("script"):
+                raise ValueError(f"segment {i + 1} (lipsync) needs a `script` — audio drives the mouth.")
+            if not seg.get("image"):
+                raise ValueError(f"segment {i + 1} (lipsync) needs `image` — the reference face.")
+        if p == "product" and not seg.get("image"):
+            raise ValueError(f"segment {i + 1} (product) needs `image` — the product photo.")
+        if seg.get("image") and not Path(seg["image"]).exists():
+            raise FileNotFoundError(f"segment {i + 1} image not found: {seg['image']}")
+
+    SEQ_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    SEQ_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    pod = COMFY_POD_URLS[0]
+    base_seed = req.get("seed") or DEFAULT_BASE_SEED
+    fast = req.get("quality") == "fast"
+    uploaded: dict[str, str] = {}  # local path -> pod filename (upload each asset once)
+
+    def upload_once(path: str) -> str:
+        if path not in uploaded:
+            uploaded[path] = comfy.upload_file(pod, path)
+        return uploaded[path]
+
+    processed: list[str] = []
+    n = len(segments)
+    for i, seg in enumerate(segments):
+        pct = 5 + int(80 * i / n)
+        pipeline_kind = seg["pipeline"]
+        report("generating", pct, f"segment {i + 1}/{n} ({pipeline_kind})")
+        seg_stem = f"{name}-seg{i + 1}"
+
+        common: dict = {"seed": base_seed + i * 3}
+        if seg.get("negative_prompt"):
+            common["negative_prompt"] = seg["negative_prompt"]
+        if req.get("width"):
+            common["width"] = req["width"]
+        if req.get("height"):
+            common["height"] = req["height"]
+
+        if pipeline_kind == "lipsync":
+            narration = synthesize_voice(
+                seg["script"],
+                voice_id=req.get("voice_id"),
+                language=req.get("language", "hi"),
+                output_path=str(SEQ_AUDIO_DIR / f"{seg_stem}-narration.mp3"),
+            )
+            inputs = {
+                "prompt": seg["prompt"],
+                "ref_image": upload_once(seg["image"]),
+                "audio": comfy.upload_file(pod, narration),
+                "seed": base_seed + i * 3,
+                "seed_extend1": base_seed + i * 3 + 1,
+                "seed_extend2": base_seed + i * 3 + 2,
+                **{k: v for k, v in common.items() if k != "seed"},
+            }
+            if not fast:
+                inputs.update(WAN_S2V_QUALITY_INPUTS)
+            if req.get("steps"):
+                inputs["steps"] = req["steps"]
+            clip = comfy.comfy_generate(
+                pod, comfy.load_workflow("wan_s2v"), inputs, WAN_S2V_MAPPING,
+                out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
+            )
+        else:
+            inputs = {"prompt": seg["prompt"], **common}
+            if fast:
+                inputs["lightning_lora"] = True
+            if pipeline_kind == "product":
+                inputs["start_image"] = upload_once(seg["image"])
+                wf, mapping = comfy.load_workflow("wan_i2v"), WAN_I2V_MAPPING
+            else:  # overlay (t2v b-roll)
+                wf, mapping = comfy.load_workflow("wan_t2v"), WAN_T2V_MAPPING
+            clip = comfy.comfy_generate(
+                pod, wf, inputs, mapping,
+                out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
+            )
+            if seg.get("script"):
+                # Per-segment voiceover (AUDIO-AFTER) so the slice stays in its window.
+                narration = synthesize_voice(
+                    seg["script"],
+                    voice_id=req.get("voice_id"),
+                    language=req.get("language", "hi"),
+                    output_path=str(SEQ_AUDIO_DIR / f"{seg_stem}-narration.mp3"),
+                )
+                silent = clip
+                clip = ffmpeg.replace_audio(
+                    clip, narration, out=str(SEQ_VIDEO_DIR / f"{seg_stem}-voiced.mp4"),
+                )
+                Path(silent).unlink(missing_ok=True)  # one clip per segment in the Library
+        processed.append(clip)
+
+    report("assembling", 88, "joining mixed segments")
+    final = str(SEQ_VIDEO_DIR / f"{name}-final.mp4")
+    if req.get("music"):
+        joined = ffmpeg.concat_reencode(processed,
+                                        out=str(SEQ_VIDEO_DIR / f"{name}-joined.mp4"))
+        report("assembling", 95, "music bed")
+        final = ffmpeg.stitch_plus_music([joined], music=req["music"], out=final)
+        Path(joined).unlink(missing_ok=True)  # exactly ONE final per job
+    else:
+        final = ffmpeg.concat_reencode(processed, out=final)
+
+    if any(seg["pipeline"] == "lipsync" for seg in segments):
+        # Voice-lock sidecar: this final contains lip-synced speech — /revoice must
+        # refuse it (a new voice would desync the avatar segments). Phase-3 DB
+        # replaces these sidecars.
+        Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
 
     report("done", 100, "")
     return final
