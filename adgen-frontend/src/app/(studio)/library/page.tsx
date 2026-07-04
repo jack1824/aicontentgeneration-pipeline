@@ -174,11 +174,11 @@ function Lightbox({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm sm:p-6"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-full w-full max-w-lg flex-col gap-4 overflow-y-auto rounded-card border border-white/10 bg-surface-1 p-5"
+        className="flex max-h-full w-full max-w-lg flex-col gap-4 overflow-y-auto rounded-card border border-white/10 bg-surface-1 p-4 sm:p-5"
       >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -413,7 +413,7 @@ export default function LibraryPage() {
   );
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6 flex flex-col gap-5">
+    <div className="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6 lg:px-8 lg:py-6 flex flex-col gap-5">
       <header className="flex items-baseline gap-3">
         <h1 className="text-3xl font-semibold tracking-tight font-display">Library</h1>
         <p className="text-sm text-text-muted">
@@ -422,7 +422,7 @@ export default function LibraryPage() {
       </header>
 
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
           {PIPELINE_FILTERS.map((f) => (
             <button
               key={f.key}
@@ -437,8 +437,8 @@ export default function LibraryPage() {
             </button>
           ))}
         </div>
-        <span className="h-4 w-px bg-white/10" />
-        <div className="flex gap-1">
+        <span className="hidden h-4 w-px bg-white/10 sm:block" />
+        <div className="flex flex-wrap gap-1">
           {KIND_FILTERS.map((f) => (
             <button
               key={f.key}

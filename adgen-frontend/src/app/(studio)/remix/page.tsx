@@ -95,9 +95,9 @@ export default function RemixPage() {
   const narrationBlocked = !!script.trim() && lockedPicked;
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-8 py-6 flex flex-col gap-5 xl:px-12">
+    <div className="mx-auto w-full max-w-7xl px-4 py-5 sm:px-6 lg:px-8 lg:py-6 xl:px-12 flex flex-col gap-5">
       <header className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <h1 className="text-4xl font-semibold tracking-tight font-display">Remix</h1>
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight font-display">Remix</h1>
         <p className="text-sm text-text-muted">
           reorder scenes, swap the narration, tune the mix — re-export without re-rendering
         </p>
@@ -105,8 +105,8 @@ export default function RemixPage() {
 
       <div className="grid items-start gap-6 lg:grid-cols-[1fr_380px]">
         {/* ---- Clip pool ---- */}
-        <section className="card-raised flex flex-col gap-4 rounded-card p-6">
-          <div className="flex items-center justify-between">
+        <section className="card-raised flex flex-col gap-4 rounded-card p-4 sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="label-cap">Pick scenes (click to add)</span>
             <div className="flex gap-1">
               {[
@@ -125,7 +125,7 @@ export default function RemixPage() {
               ))}
             </div>
           </div>
-          <div className="grid max-h-130 grid-cols-3 gap-3 overflow-y-auto pr-1 sm:grid-cols-4">
+          <div className="grid max-h-130 grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-3 md:grid-cols-4">
             {pool.map((o) => {
               const added = pickedPaths.has(o.path);
               return (
@@ -162,8 +162,8 @@ export default function RemixPage() {
           </div>
         </section>
 
-        {/* ---- Timeline + mix rail ---- */}
-        <aside className="card-raised sticky top-6 flex flex-col gap-4 rounded-card p-5">
+        {/* ---- Timeline + mix rail (sticky only beside the pool) ---- */}
+        <aside className="card-raised flex flex-col gap-4 rounded-card p-4 sm:p-5 lg:sticky lg:top-6">
           <span className="label-cap">Timeline · {picked.length} scene{picked.length === 1 ? "" : "s"}</span>
           {picked.length === 0 ? (
             <p className="rounded-btn border border-dashed border-white/10 p-5 text-center text-xs text-text-muted">

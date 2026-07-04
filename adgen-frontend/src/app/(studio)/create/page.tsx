@@ -113,8 +113,8 @@ function GeminiPanel({
   }, [initialIdea, autoPlan, surprise, language, runPlan]);
 
   return (
-    <section className="card-raised rounded-card p-6 flex flex-col gap-4">
-      <div className="flex items-center gap-2.5">
+    <section className="card-raised rounded-card p-4 sm:p-6 flex flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <span className="hero-glow flex size-7 items-center justify-center rounded-lg text-xs text-white">✦</span>
         <h2 className="text-lg font-semibold font-display">The Brain</h2>
         <span className="text-xs text-text-muted">Gemini plans · you direct · Wan renders</span>
@@ -179,12 +179,12 @@ function GeminiPanel({
               ))}
             </div>
             {briefMode === "type" && (
-              <div className="ml-auto flex items-center gap-2">
+              <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
                 <button
                   onClick={() => runPlan(idea.trim() + SURPRISE_TWIST, duration, language)}
                   disabled={thinking || idea.trim().length < 3}
                   title="Surprise me — one bold, unexpected direction"
-                  className="seg rounded-btn px-3 py-2 text-sm disabled:opacity-40"
+                  className="seg shrink-0 rounded-btn px-3 py-2 text-sm disabled:opacity-40"
                   aria-label="Surprise me"
                 >
                   🎲
@@ -192,7 +192,7 @@ function GeminiPanel({
                 <button
                   onClick={() => runPlan(idea, duration, language)}
                   disabled={thinking || idea.trim().length < 3}
-                  className="hero-glow rounded-btn px-5 py-2 text-sm font-semibold text-white disabled:opacity-40 disabled:shadow-none"
+                  className="hero-glow flex-1 rounded-btn px-5 py-2 text-sm font-semibold text-white disabled:opacity-40 disabled:shadow-none sm:flex-none"
                 >
                   {thinking ? "Thinking…" : "✦ Generate ad plan"}
                 </button>
@@ -433,9 +433,9 @@ function CreateStudio() {
   const phoneId = viewTakeId ?? (running ? null : lastDoneId);
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-6 flex flex-col gap-5">
+    <div className="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6 lg:px-8 lg:py-6 flex flex-col gap-5">
       <header className="flex flex-wrap items-center gap-x-5 gap-y-2">
-        <h1 className="text-4xl font-semibold tracking-tight font-display">Create</h1>
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight font-display">Create</h1>
         {/* Journey indicator — progress renders in coral. */}
         <div className="flex items-center gap-2">
           {STEPS.map((s, i) => (
@@ -468,8 +468,8 @@ function CreateStudio() {
 
       {/* ---- Editor + render panel ---- */}
       <div ref={editorRef} className="grid items-start gap-6 lg:grid-cols-[1fr_360px]">
-        <section className="card-raised flex flex-col gap-5 rounded-card p-6">
-          <div className="flex gap-2">
+        <section className="card-raised flex flex-col gap-5 rounded-card p-4 sm:p-6">
+          <div className="flex flex-wrap gap-2">
             {MODES.map((m) => (
               <button
                 key={m.key}
@@ -610,8 +610,8 @@ function CreateStudio() {
           )}
         </section>
 
-        {/* ---- Render panel ---- */}
-        <aside className="card-raised sticky top-6 flex flex-col gap-4 rounded-card p-5">
+        {/* ---- Render panel (sticky only when it sits beside the editor) ---- */}
+        <aside className="card-raised flex flex-col gap-4 rounded-card p-4 sm:p-5 lg:sticky lg:top-6">
           <div className="flex flex-col gap-2">
             <span className="label-cap">Render preset</span>
             <div className="flex gap-1">

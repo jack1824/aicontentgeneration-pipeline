@@ -605,7 +605,7 @@ export default function Landing() {
           </div>
 
           <div className="relative mx-auto flex w-full max-w-5xl flex-col items-center gap-7 px-6 py-16 text-center md:py-24">
-            <h1 className="max-w-4xl text-[44px] font-semibold leading-[1.06] tracking-tight font-display md:text-6xl xl:text-7xl">
+            <h1 className="max-w-4xl text-4xl font-semibold leading-[1.06] tracking-tight font-display sm:text-[44px] md:text-6xl xl:text-7xl">
               {HEADLINE.split(" ").map((w, i) => (
                 <span key={i} className="inline-block overflow-hidden pb-1 align-bottom">
                   <span data-word className="inline-block">

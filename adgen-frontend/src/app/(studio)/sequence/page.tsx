@@ -168,9 +168,9 @@ export default function SequencePage() {
   const blocked = blocker();
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-8 py-6 flex flex-col gap-5 xl:px-12">
+    <div className="mx-auto w-full max-w-7xl px-4 py-5 sm:px-6 lg:px-8 lg:py-6 xl:px-12 flex flex-col gap-5">
       <header className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <h1 className="text-4xl font-semibold tracking-tight font-display">Sequence</h1>
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight font-display">Sequence</h1>
         <p className="text-sm text-text-muted">
           compose a long ad from mixed segments — hook, product, proof, CTA
         </p>
@@ -178,7 +178,7 @@ export default function SequencePage() {
 
       <div className="grid items-start gap-6 lg:grid-cols-[1fr_360px]">
         {/* ---- Timeline ---- */}
-        <section className="card-raised flex flex-col gap-4 rounded-card p-6">
+        <section className="card-raised flex flex-col gap-4 rounded-card p-4 sm:p-6">
           <div className="flex items-baseline justify-between">
             <span className="label-cap">Timeline</span>
             <span className="text-[11px] text-text-muted">
@@ -269,8 +269,8 @@ export default function SequencePage() {
           </div>
         </section>
 
-        {/* ---- Render rail ---- */}
-        <aside className="card-raised sticky top-6 flex flex-col gap-4 rounded-card p-5">
+        {/* ---- Render rail (sticky only beside the timeline) ---- */}
+        <aside className="card-raised flex flex-col gap-4 rounded-card p-4 sm:p-5 lg:sticky lg:top-6">
           <div className="flex flex-col gap-2">
             <span className="label-cap">Voice · avatar + voiceover</span>
             <div className="flex gap-1">

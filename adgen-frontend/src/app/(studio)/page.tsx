@@ -121,14 +121,14 @@ export default function Dashboard() {
   const heroVideo = finals[0];
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-8 py-8 flex flex-col gap-10 xl:px-12">
+    <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:px-12 flex flex-col gap-8 lg:gap-10">
       {/* ---- Hero: the idea goes straight to the Gemini brain ---- */}
-      <section className="grid items-center gap-10 pt-2 lg:grid-cols-[1.1fr_0.9fr] lg:gap-12">
+      <section className="grid items-center gap-8 pt-2 lg:grid-cols-[1.1fr_0.9fr] lg:gap-12">
         <div className="flex flex-col items-start gap-5">
           <span className="rounded-full border border-white/10 bg-surface-1 px-3 py-1 text-[11px] tracking-widest text-text-secondary uppercase">
             AI ad studio · English + हिन्दी
           </span>
-          <h1 className="max-w-2xl text-5xl font-semibold leading-[1.05] tracking-tight font-display">
+          <h1 className="max-w-2xl text-4xl sm:text-5xl font-semibold leading-[1.05] tracking-tight font-display">
             Make ads that <span className="text-grad">sell</span>, not slides that scroll.
           </h1>
           <p className="max-w-xl text-[15px] text-text-secondary">
@@ -136,7 +136,8 @@ export default function Dashboard() {
             it. You approve every frame.
           </p>
           <div className="hero-frame w-full max-w-2xl">
-            <div className="input-well flex items-center gap-2 rounded-xl p-2">
+            {/* Stacks on phones (input row, then buttons); one row from sm up. */}
+            <div className="input-well flex flex-col gap-2 rounded-xl p-2 sm:flex-row sm:items-center">
               <input
                 value={idea}
                 onChange={(e) => setIdea(e.target.value)}
@@ -144,21 +145,23 @@ export default function Dashboard() {
                 placeholder="e.g. 15s Instagram ad for my handmade jasmine soap, festive Diwali vibe…"
                 className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-[15px] outline-none placeholder:text-text-muted"
               />
-              <button
-                onClick={surprise}
-                disabled={!idea.trim()}
-                title="Surprise me — one bold, unexpected direction"
-                aria-label="Surprise me"
-                className="seg shrink-0 rounded-lg px-3 py-2.5 text-sm disabled:opacity-40"
-              >
-                🎲
-              </button>
-              <button
-                onClick={go}
-                className="hero-glow shrink-0 rounded-lg px-5 py-2.5 text-sm font-semibold text-white"
-              >
-                ✦ Plan my ad
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={surprise}
+                  disabled={!idea.trim()}
+                  title="Surprise me — one bold, unexpected direction"
+                  aria-label="Surprise me"
+                  className="seg shrink-0 rounded-lg px-3 py-2.5 text-sm disabled:opacity-40"
+                >
+                  🎲
+                </button>
+                <button
+                  onClick={go}
+                  className="hero-glow flex-1 shrink-0 rounded-lg px-5 py-2.5 text-sm font-semibold text-white sm:flex-none"
+                >
+                  ✦ Plan my ad
+                </button>
+              </div>
             </div>
           </div>
         </div>
