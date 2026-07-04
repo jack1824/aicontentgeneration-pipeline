@@ -12,7 +12,7 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
@@ -425,12 +425,46 @@ export default function Landing() {
       .catch(() => {});
   }, []);
 
-  const firstByPipeline = (pipeline: string) =>
-    finals.find((o) => o.pipeline === pipeline);
-  const videoForMode = (mode: string) => {
-    const hit = firstByPipeline(MODE_TO_PIPELINE[mode] ?? "");
-    return hit ? api.fileUrl(hit) : undefined;
-  };
+  // ONE global allocation: every slot on the page gets a DISTINCT video.
+  // (The old newest-per-pipeline lookup repeated the same clip across the
+  // director grid, the engine showcase and the proof wall.)
+  const allocation = useMemo(() => {
+    const used = new Set<string>();
+    const take = (pipelines?: string[]): OutputItem | undefined => {
+      const hit = finals.find(
+        (o) => !used.has(o.path) && (!pipelines || pipelines.includes(o.pipeline)),
+      );
+      if (hit) used.add(hit.path);
+      return hit;
+    };
+    const poolFor = (mode: string): string[] => {
+      const main = MODE_TO_PIPELINE[mode];
+      // B-roll-ish slots may draw from the LTX pool too — same kind of content.
+      return mode === "overlay" || mode === "cinematic"
+        ? [main, "ltx2"].filter(Boolean)
+        : [main].filter(Boolean);
+    };
+    // Page order: director cards first (highest on the page gets the newest),
+    // then the engine showcase, then the proof wall from whatever remains.
+    const directors: Record<string, string | undefined> = {};
+    for (const u of USECASE_LIST) {
+      const hit = take(poolFor(u.mode)) ?? take();
+      directors[u.slug] = hit ? api.fileUrl(hit) : undefined;
+    }
+    const showcase: Record<string, string | undefined> = {};
+    for (const p of PIPELINES) {
+      const mode = p.href.split("=")[1] ?? "";
+      const hit = take(poolFor(mode)) ?? take();
+      showcase[mode] = hit ? api.fileUrl(hit) : undefined;
+    }
+    const proof: { src: string; badge: string }[] = [];
+    for (let i = 0; i < 6; i++) {
+      const hit = take();
+      if (!hit) break;
+      proof.push({ src: api.fileUrl(hit), badge: PIPELINE_LABELS[hit.pipeline] ?? hit.pipeline });
+    }
+    return { directors, showcase, proof };
+  }, [finals]);
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -674,7 +708,7 @@ export default function Landing() {
           </div>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
             {USECASE_LIST.map((u) => (
-              <UseCaseCard key={u.slug} u={u} videoUrl={videoForMode(u.mode)} />
+              <UseCaseCard key={u.slug} u={u} videoUrl={allocation.directors[u.slug]} />
             ))}
           </div>
         </section>
@@ -735,8 +769,8 @@ export default function Landing() {
                 data-reveal
                 className="lift group relative flex min-h-64 flex-col justify-end overflow-hidden rounded-card border border-white/5 bg-surface-1 p-5 hover:border-accent/50 hover:ring-1 hover:ring-accent/40"
               >
-                {videoForMode(p.href.split("=")[1] ?? "") ? (
-                  <CardVideo src={videoForMode(p.href.split("=")[1] ?? "")!} />
+                {allocation.showcase[p.href.split("=")[1] ?? ""] ? (
+                  <CardVideo src={allocation.showcase[p.href.split("=")[1] ?? ""]!} />
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element -- decorative poster bg
                   <img
@@ -767,13 +801,7 @@ export default function Landing() {
             <p className="text-sm text-text-muted">Sample ads straight out of the studio.</p>
           </div>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-            {(finals.length > 0
-              ? finals.slice(0, 6).map((o) => ({
-                  src: api.fileUrl(o),
-                  badge: PIPELINE_LABELS[o.pipeline] ?? o.pipeline,
-                }))
-              : PROOF
-            ).map((item, i) => (
+            {(allocation.proof.length >= 3 ? allocation.proof : PROOF).map((item, i) => (
               <ProofTile key={i} item={item} />
             ))}
           </div>
