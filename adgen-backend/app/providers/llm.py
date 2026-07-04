@@ -8,6 +8,7 @@ The LLM plans and routes — it NEVER generates video or audio. It proposes 1-3 
 approaches (pipeline + audio strategy + shot outline) for the user to choose from.
 """
 import json
+import re
 import time
 
 import httpx
@@ -15,6 +16,8 @@ import httpx
 from app.config import GEMINI_API_KEY
 
 GEMINI_MODEL = "gemini-2.5-flash"
+# Separate free-tier quota pool — the planner's lifeboat when flash is exhausted.
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
@@ -143,13 +146,19 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
             "response_mime_type": "application/json",
         },
     }
-    # Gemini intermittently answers 503 (model overloaded) / 429 — transient by
-    # definition, so retry before surfacing anything to the user.
+    # Transient Gemini failures heal themselves if handled right:
+    #   503/500 (overloaded)  -> short backoff, retry same model
+    #   429 (free-tier quota) -> WAIT the delay Google names (fast retries burn
+    #                            MORE quota in the same window), retry; if still
+    #                            exhausted, fall back to flash-lite — free-tier
+    #                            quotas are per model, so its pool is separate.
+    attempts = [GEMINI_MODEL, GEMINI_MODEL, GEMINI_FALLBACK_MODEL]
     last_err: str = ""
-    for attempt in range(3):
+    r = None
+    for i, model in enumerate(attempts):
         try:
             r = httpx.post(
-                GEMINI_URL.format(model=GEMINI_MODEL),
+                GEMINI_URL.format(model=model),
                 headers={"x-goog-api-key": GEMINI_API_KEY},
                 json=body,
                 timeout=120,
@@ -157,12 +166,16 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
             r.raise_for_status()
             break
         except httpx.HTTPStatusError as e:
-            last_err = f"Gemini plan failed ({e.response.status_code}): {e.response.text[:800]}"
-            if e.response.status_code in (429, 500, 503) and attempt < 2:
-                time.sleep(2 * (attempt + 1))
-                continue
-            raise PlanError(last_err) from None
-    else:  # pragma: no cover — loop always breaks or raises
+            code = e.response.status_code
+            last_err = f"Gemini plan failed ({code}): {e.response.text[:800]}"
+            if i == len(attempts) - 1 or code not in (429, 500, 503):
+                raise PlanError(last_err) from None
+            if code == 429:
+                m = re.search(r"retry in ([0-9.]+)s", e.response.text)
+                time.sleep(min(float(m.group(1)) + 1.0 if m else 30.0, 45.0))
+            else:
+                time.sleep(2 * (i + 1))
+    if r is None:  # pragma: no cover — loop always breaks or raises
         raise PlanError(last_err)
 
     try:
