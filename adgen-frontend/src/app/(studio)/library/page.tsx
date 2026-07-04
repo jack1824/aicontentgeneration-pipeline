@@ -15,6 +15,7 @@ const PIPELINE_FILTERS = [
   { key: "wans2v", label: "🗣 Avatar" },
   { key: "want2v", label: "🎬 B-roll" },
   { key: "ltx2", label: "🎥 Cinematic" },
+  { key: "longcat", label: "🧑‍🎤 Long Avatar" },
   { key: "sequence", label: "🎞 Sequence" },
   { key: "remix", label: "✂ Remix" },
 ];

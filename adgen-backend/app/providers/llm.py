@@ -37,7 +37,12 @@ For each approach pick ONE pipeline:
               cinematic shots, END each prompt with one sentence describing the
               SOUNDSCAPE ("sizzling tawa, distant street chatter, soft rain") —
               the audio is prompt-driven. Best for atmosphere-first story ads.
-- multitalk : 2+ people conversation. NOT BUILT YET.
+- longcat   : LongCat-Avatar — like lipsync (single talking avatar, audio-first,
+              reference face image) but a LONGER continuous take (~15-16s vs ~14s)
+              with stronger identity stability. Script should fill ~14-15 seconds
+              (~45 words). Prefer it over lipsync when the script needs the extra
+              room or the take must stay rock-steady. BUILT.
+- multitalk : 2+ people conversation. NOT BUILT YET (longcat covers multi-speaker later).
 
 Rules:
 - Prefer BUILT pipelines; include an unavailable one only if clearly the best fit, marked available=false.

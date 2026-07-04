@@ -13,7 +13,7 @@ export type SequenceSegment = {
 };
 
 export type GenerateRequest = {
-  mode: "overlay" | "lipsync" | "product" | "cinematic" | "sequence";
+  mode: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "sequence";
   shots?: Shot[];
   segments?: SequenceSegment[];
   script?: string | null;
@@ -99,7 +99,7 @@ export type PlanRequest = {
 
 export type PlanApproach = {
   title: string;
-  pipeline: "overlay" | "lipsync" | "product" | "cinematic" | "multitalk";
+  pipeline: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "multitalk";
   available: boolean;
   audio_strategy: string;
   why: string;
@@ -142,6 +142,7 @@ export const PIPELINE_LABELS: Record<string, string> = {
   wans2v: "Avatar",
   want2v: "B-roll",
   ltx2: "Cinematic",
+  longcat: "Long Avatar",
   sequence: "Sequence ad",
   remix: "Remix cut",
 };

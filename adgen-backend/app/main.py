@@ -201,6 +201,9 @@ def generate_endpoint(req: GenerateRequest):
                     final,
                     restore_face=restore,
                     resolution=2 * min(req.width or 640, req.height or 640),
+                    # LTX renders 25fps (RIFE 2x -> 50); Wan-era clips are 16 -> 32.
+                    # Getting this wrong retimes the output into slow motion.
+                    source_fps=25.0 if req.mode == "cinematic" else 16.0,
                     on_submit=on_submit,
                 )
             _update(job_id, status="done", progress=100, detail="", video_path=final)

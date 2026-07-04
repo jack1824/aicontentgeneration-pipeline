@@ -21,6 +21,7 @@ from app.config import COMFY_POD_URLS
 from app.providers import comfy
 from app.providers.tts import synthesize_voice
 from app.workflow_mappings import (
+    LONGCAT_MAPPING,
     LTX2_MAPPING,
     WAN_I2V_MAPPING,
     WAN_S2V_MAPPING,
@@ -39,6 +40,8 @@ SEQ_VIDEO_DIR = Path("outputs/sequence/video")
 SEQ_AUDIO_DIR = Path("outputs/sequence/audio")
 LTX_VIDEO_DIR = Path("outputs/ltx2/video")
 LTX_AUDIO_DIR = Path("outputs/ltx2/audio")
+LONGCAT_VIDEO_DIR = Path("outputs/longcat/video")
+LONGCAT_AUDIO_DIR = Path("outputs/longcat/audio")
 
 # LTX-2.3 constants (workflows/ltx2_av.json): 25fps clips, ~5s each; the audio
 # latent runs at ~19.2 frames/s (97 frames = 5s in the official template).
@@ -92,10 +95,12 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
         return _generate_product(req, name, report, on_submit)
     if mode == "cinematic":
         return _generate_cinematic(req, name, report, on_submit)
+    if mode == "longcat":
+        return _generate_longcat(req, name, report, on_submit)
     if mode != "overlay":
         raise NotImplementedError(
-            f"mode='{mode}' is not built yet — only 'overlay', 'lipsync', 'product' "
-            f"and 'cinematic'. multitalk is parked (LongCat covers it)."
+            f"mode='{mode}' is not built yet — 'overlay', 'lipsync', 'product', "
+            f"'cinematic' and 'longcat' are. multitalk is parked (LongCat covers it)."
         )
 
     OUTPUT_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
@@ -448,6 +453,82 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
     else:
         # Stream-copy concat KEEPS each clip's native audio — nothing else needed.
         final = ffmpeg.stitch(clips, out=final)
+
+    report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
+    return final
+
+
+def _generate_longcat(req: dict, name: str, report, on_submit=None) -> str:
+    """mode="longcat": LongCat-Video-Avatar 1.5 — AUDIO-FIRST talking avatar like
+    lipsync, but the LongCat windowed extender (3x 93-frame windows, 13-frame
+    overlap @16fps) gives a ~15.8s continuous take with stronger identity
+    stability. The narration is muxed into the output by the workflow itself.
+    """
+    if not req.get("script"):
+        raise ValueError("longcat needs a narration `script` — the audio drives the mouth.")
+    avatar_image = req.get("avatar_image")
+    if not avatar_image:
+        raise ValueError("longcat needs `avatar_image` — path to the reference face image.")
+    if not Path(avatar_image).exists():
+        raise FileNotFoundError(f"avatar_image not found: {avatar_image}")
+
+    LONGCAT_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    LONGCAT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    pod = COMFY_POD_URLS[0]
+
+    # 1. TTS — audio first; the take is ~15.8s, so the script should fill ~14-15s.
+    report("tts", 5, "synthesizing narration")
+    narration = synthesize_voice(
+        req["script"],
+        voice_id=req.get("voice_id"),
+        language=req.get("language", "hi"),
+        output_path=str(LONGCAT_AUDIO_DIR / f"{name}-narration.mp3"),
+    )
+
+    # 2. UPLOAD narration + reference face
+    report("uploading", 8, "narration + reference image -> pod")
+    audio_name = comfy.upload_file(pod, narration)
+    image_name = comfy.upload_file(pod, avatar_image)
+
+    # 3. GENERATE — one continuous 3-window take (shots[0] is the scene prompt)
+    shot = req["shots"][0]
+    base_seed = req.get("seed") or DEFAULT_BASE_SEED
+    inputs = {
+        "prompt": shot["prompt"],
+        "ref_image": image_name,
+        "audio": audio_name,
+        "seed": base_seed,
+        "seed_extend1": base_seed + 1,
+        "seed_extend2": base_seed + 2,
+        "filename_prefix": f"adgen_longcat_{name}",
+    }
+    if shot.get("negative_prompt"):
+        inputs["negative_prompt"] = shot["negative_prompt"]
+    if req.get("width"):
+        inputs["width"] = req["width"]
+    if req.get("height"):
+        inputs["height"] = req["height"]
+    if req.get("steps"):
+        inputs["steps"] = req["steps"]
+
+    report("generating", 15, "LongCat avatar (~16s take, 3 windows — takes a while)")
+    clip = comfy.comfy_generate(
+        pod, comfy.load_workflow("longcat_avatar"), inputs, LONGCAT_MAPPING,
+        out_path=str(LONGCAT_VIDEO_DIR / f"{name}-clip1.mp4"),
+        timeout=3600.0, on_submit=on_submit,
+    )
+
+    # 4. ASSEMBLE — narration already muxed in; optional music bed on top.
+    report("assembling", 92, "finalizing")
+    final = str(LONGCAT_VIDEO_DIR / f"{name}-final.mp4")
+    if req.get("music"):
+        final = ffmpeg.stitch_plus_music([clip], music=req["music"], out=final)
+    else:
+        final = ffmpeg.stitch([clip], out=final)
+
+    # Lips are baked to this voice — /revoice must refuse it.
+    Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
+    Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
 
     report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final

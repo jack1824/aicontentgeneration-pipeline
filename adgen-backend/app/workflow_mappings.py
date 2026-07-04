@@ -91,3 +91,24 @@ LTX2_MAPPING = {
     "lora_strength": ("232", "strength_model"),
     "filename_prefix": ("75", "filename_prefix"),
 }
+
+# workflows/longcat_avatar.json — LongCat-Video-Avatar 1.5 talking avatar (converted
+# 2026-07-05 from the Kijai WanVideoWrapper template LongCatAvatar_audio_image_to_video,
+# SetNode/GetNode registers resolved, per-window preview muxes dropped, MelBandRoFormer
+# vocal separation BYPASSED — our narration is clean TTS). Windowed extender: 93-frame
+# base + two 93-frame extensions with 13-frame overlap @16fps ≈ 15.8s single take,
+# lips driven by the uploaded narration (audio muxed into the output by VHS node 453).
+LONGCAT_MAPPING = {
+    "prompt": ("241", "positive_prompt"),    # WanVideoTextEncodeCached (scene/action)
+    "negative_prompt": ("241", "negative_prompt"),
+    "ref_image": ("284", "image"),           # LoadImage — UPLOADED face filename
+    "audio": ("125", "audio"),               # LoadAudio — UPLOADED narration filename
+    "width": ("245", "value"),               # INTConstant pair (default 832x480 landscape;
+    "height": ("246", "value"),              # pass e.g. 480x832 for 9:16 reels)
+    "seed": ("324", "seed"),                 # window-1 sampler
+    "seed_extend1": ("327", "seed"),         # window-2 sampler
+    "seed_extend2": ("456", "seed"),         # window-3 sampler
+    "steps": ("325", "steps"),               # WanVideoSchedulerv2 (longcat_distill_euler, 12)
+    "cfg": ("427", "value"),                 # shared cfg FloatConstant (1.0)
+    "filename_prefix": ("453", "filename_prefix"),
+}

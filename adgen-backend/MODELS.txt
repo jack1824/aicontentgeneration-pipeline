@@ -63,8 +63,49 @@ BASE = https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/
 ----------------------------------------------------------------
 TOTALS: ~85-90 GB on disk -> the 250 GB network volume fits
 everything with room for outputs and future pipelines (LTX etc.)
+================================================================
 
-FUTURE (documented, not installed): LTX (cinematic, native audio),
-MultiTalk (2+ speakers), LongCat-Video-Avatar 1.5 (99-language
-lipsync — the candidate fix if the Hindi lip test disappoints).
+7) NEXT PIPELINES (updated 2026-07-05 after web verification)
+   ----------------------------------------------------------------
+
+   A. CINEMATIC (LTX-2.3) .... INSTALLED + WIRED ("cinematic" mode)
+      Native ComfyUI support (no custom nodes). Generates video AND
+      its own synchronized audio (ambience/SFX) in one pass — prompts
+      end with a SOUNDSCAPE sentence (planner does this automatically).
+      workflow: workflows/ltx2_av.json (authored from the official
+      template video_ltx2_3_t2v.json, prompt-enhancer branch removed).
+      models/checkpoints/           ltx-2.3-22b-dev-fp8.safetensors      ~22 GB
+      models/text_encoders/         gemma_3_12B_it_fp4_mixed.safetensors ~8 GB
+      models/latent_upscale_models/ ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+      models/loras/                 ltx_2.3_22b_distilled_1.1_lora_dynamic_
+                                    fro09_avg_rank_111_bf16.safetensors  (@0.5)
+      ~5s @ 25fps per shot; two-stage render (half-res base -> 2x latent
+      upscale -> refine). Narration script ducks the native audio under
+      the ElevenLabs voice; no script = pure native soundtrack.
+
+   B. LONG AVATAR (LongCat-Video-Avatar 1.5) .... WIRED, awaiting models
+      Route: the Kijai WanVideoWrapper template (ALREADY on the pod — no
+      node installs). workflow: workflows/longcat_avatar.json (converted
+      from the pod's own template; MelBandRoFormer vocal separation
+      BYPASSED — our TTS narration is already clean voice).
+      ~15.8s continuous take (3x 93-frame windows, 13-frame overlap @16fps),
+      lips driven by the uploaded narration; identity-stable. "longcat" mode.
+      DOWNLOADS (pod terminal, 3 files ~19.6 GB):
+      models/diffusion_models/LongCat/
+        LongCat-Avatar-single_fp8_e4m3fn_scaled_mixed_KJ.safetensors  16.9 GB
+        (Kijai/LongCat-Video_comfy -> Avatar/)
+      models/loras/
+        LongCat_distill_lora_alpha64_bf16.safetensors                  1.3 GB
+      models/vae/
+        Wan2_1_VAE_bf16.safetensors (Kijai/WanVideo_comfy)             1.4 GB
+      (wav2vec2-chinese speech encoder auto-downloads on first run;
+       umt5 text encode reuses the installed Comfy-Org file.)
+
+   PARKED: MultiTalk (Kijai WanVideoWrapper route) — revisit only if
+   LongCat's multi-speaker quality disappoints.
+   DROPPED: multilingual wav2vec2 swap for Wan-S2V — Hindi lip test
+   passed to the user's satisfaction.
+
+   Disk: ~90 GB (Wan era) + ~32 GB LTX set + ~22 GB LongCat ≈ 145 GB
+   on the 250 GB network volume — fits.
 ================================================================

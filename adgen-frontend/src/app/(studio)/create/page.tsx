@@ -32,12 +32,13 @@ import PitchDeck from "@/components/create/PitchDeck";
 import PhoneStage from "@/components/create/PhoneStage";
 import VoicePicker from "@/components/VoicePicker";
 
-type Mode = "product" | "lipsync" | "overlay" | "cinematic";
+type Mode = "product" | "lipsync" | "overlay" | "cinematic" | "longcat";
 const MODES: { key: Mode; label: string }[] = [
   { key: "product", label: "🧴 Product" },
   { key: "lipsync", label: "🗣 Avatar" },
   { key: "overlay", label: "🎬 B-roll" },
   { key: "cinematic", label: "🎥 Cinematic" },
+  { key: "longcat", label: "🧑‍🎤 Long Avatar" },
 ];
 
 const SURPRISE_TWIST =
@@ -47,6 +48,7 @@ const TIME_HINTS: Record<Mode, Record<PresetKey, string>> = {
   lipsync: { preview: "≈6 min", moderate: "≈6 min + ~10 min polish", master: "≈35 min + polish" },
   overlay: { preview: "≈2 min/shot", moderate: "≈2 min/shot + ~10 min polish", master: "long render + polish" },
   cinematic: { preview: "new — timing TBD", moderate: "new + ~10 min polish", master: "new + polish" },
+  longcat: { preview: "new — timing TBD", moderate: "new + ~10 min polish", master: "new + polish" },
 };
 
 const emptyShot = (): Shot => ({ prompt: "", negative_prompt: "" });
@@ -251,11 +253,13 @@ function CreateStudio() {
 
   // ---- Editor state ----
   const [mode, setMode] = useState<Mode>(
-    urlMode === "lipsync" || urlMode === "overlay" || urlMode === "product" || urlMode === "cinematic"
+    urlMode === "lipsync" || urlMode === "overlay" || urlMode === "product" || urlMode === "cinematic" || urlMode === "longcat"
       ? urlMode
       : uc?.mode ?? "product",
   );
+  const isAvatar = mode === "lipsync" || mode === "longcat";
   const [shots, setShots] = useState<Shot[]>([emptyShot()]);
+  // lipsync + longcat share the avatar UX: one scene, script + face required.
   const [script, setScript] = useState("");
   const [language, setLanguage] = useState("en");
   const [image, setImage] = useState<Uploaded | null>(null);
@@ -368,7 +372,7 @@ function CreateStudio() {
   }, [jobId]);
 
   const adopt = (a: PlanApproach) => {
-    if (a.pipeline === "product" || a.pipeline === "lipsync" || a.pipeline === "overlay" || a.pipeline === "cinematic") {
+    if (a.pipeline === "product" || a.pipeline === "lipsync" || a.pipeline === "overlay" || a.pipeline === "cinematic" || a.pipeline === "longcat") {
       if (a.pipeline !== mode) {
         // Mirror the manual mode buttons: an image uploaded for ANOTHER pipeline
         // must not silently become this one's avatar face / product photo.
@@ -381,15 +385,15 @@ function CreateStudio() {
       prompt: s.prompt ?? "",
       negative_prompt: s.negative_prompt ?? "",
     }));
-    setShots(a.pipeline === "lipsync" ? planShots.slice(0, 1) : planShots);
+    setShots(a.pipeline === "lipsync" || a.pipeline === "longcat" ? planShots.slice(0, 1) : planShots);
     setScript(a.narration_script ?? "");
     editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const blocker = (): string | null => {
     if (!shots[0]?.prompt.trim()) return "write the first shot's prompt";
-    if (mode === "lipsync" && !script.trim()) return "avatar mode needs a narration script";
-    if (mode === "lipsync" && !image) return "upload the avatar's face image";
+    if (isAvatar && !script.trim()) return "avatar mode needs a narration script";
+    if (isAvatar && !image) return "upload the avatar's face image";
     if (mode === "product" && !image) return "upload the product photo";
     return null;
   };
@@ -412,7 +416,7 @@ function CreateStudio() {
       postprocess: p.postprocess,
       ...ASPECTS[aspect],
       ...(name ? { name } : {}),
-      ...(mode === "lipsync" && image ? { avatar_image: image.path } : {}),
+      ...(isAvatar && image ? { avatar_image: image.path } : {}),
       ...(mode === "product" && image ? { product_image: image.path } : {}),
       ...(mode !== "lipsync" && music ? { music: music.path } : {}),
       ...(voiceId ? { voice_id: voiceId } : {}),
@@ -461,7 +465,7 @@ function CreateStudio() {
   const stagesFor = (req: GenerateRequest): { key: string[]; label: string }[] => [
     ...(req.script ? [{ key: ["tts"], label: "Voice" }] : []),
     // Only image-fed pipelines upload an asset to the pod first.
-    ...(["lipsync", "product"].includes(req.mode) ? [{ key: ["uploading"], label: "Upload" }] : []),
+    ...(["lipsync", "longcat", "product"].includes(req.mode) ? [{ key: ["uploading"], label: "Upload" }] : []),
     { key: ["generating"], label: "Render" },
     { key: ["assembling"], label: "Assemble" },
     ...(req.postprocess ? [{ key: ["post", "postprocess"], label: "Enhance" }] : []),
@@ -521,9 +525,11 @@ function CreateStudio() {
                   if (m.key === mode) return; // re-click must not wipe the upload
                   setMode(m.key);
                   setImage(null);
+                  if (m.key === "lipsync" || m.key === "longcat") {
+                    setShots((s) => s.slice(0, 1)); // one continuous take
+                  }
                   if (m.key === "lipsync") {
-                    setShots((s) => s.slice(0, 1));
-                    setMusic(null); // its dropzone is hidden in avatar mode — don't send it invisibly
+                    setMusic(null); // its dropzone is hidden in lipsync mode — don't send it invisibly
                   }
                 }}
                 className={`rounded-full px-4 py-2 text-sm ${mode === m.key ? "seg-on" : "seg"}`}
@@ -537,19 +543,19 @@ function CreateStudio() {
           <div className="flex flex-col gap-3">
             <div className="flex items-baseline justify-between">
               <span className="label-cap">
-                {mode === "lipsync" ? "Scene · one continuous take" : "Shots"}
+                {isAvatar ? "Scene · one continuous take" : "Shots"}
               </span>
               <span className="text-[11px] text-text-muted">
-                {mode === "lipsync" ? "~14s fixed take" : `≈${shots.length * 5}s total`}
+                {mode === "lipsync" ? "~14s fixed take" : mode === "longcat" ? "~16s single take" : `≈${shots.length * 5}s total`}
               </span>
             </div>
             {shots.map((s, i) => (
               <div key={i} className="flex flex-col gap-2 rounded-btn bg-black/25 p-3">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-medium text-text-muted">
-                    {mode === "lipsync" ? "scene + action" : `shot ${i + 1} · ~5s`}
+                    {isAvatar ? "scene + action" : `shot ${i + 1} · ~5s`}
                   </span>
-                  {mode !== "lipsync" && shots.length > 1 && (
+                  {!isAvatar && shots.length > 1 && (
                     <button
                       onClick={() => setShots(shots.filter((_, j) => j !== i))}
                       className="text-xs text-text-muted hover:text-accent"
@@ -579,7 +585,7 @@ function CreateStudio() {
                 />
               </div>
             ))}
-            {mode !== "lipsync" && (
+            {!isAvatar && (
               <button
                 onClick={() => setShots([...shots, emptyShot()])}
                 className="self-start rounded-btn border border-dashed border-white/15 px-4 py-2 text-xs text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary"
@@ -594,7 +600,7 @@ function CreateStudio() {
             <span className="label-cap">
               Narration script{" "}
               <span className="normal-case tracking-normal">
-                {mode === "lipsync" ? "· drives the avatar's mouth" : "· empty = silent"}
+                {isAvatar ? "· drives the avatar's mouth" : "· empty = silent"}
               </span>
             </span>
             <textarea
@@ -624,7 +630,7 @@ function CreateStudio() {
                 </button>
               ))}
             </div>
-            {(script.trim() || mode === "lipsync") && (
+            {(script.trim() || isAvatar) && (
               <VoicePicker
                 voices={voices}
                 value={voiceId}
@@ -638,7 +644,7 @@ function CreateStudio() {
           {/* Assets (cinematic + b-roll are pure text-to-video — no image) */}
           {mode !== "overlay" && mode !== "cinematic" && (
             <Dropzone
-              label={mode === "lipsync" ? "Avatar face image · required" : "Product photo · required"}
+              label={isAvatar ? "Avatar face image · required" : "Product photo · required"}
               hint="png / jpg / webp"
               accept="image/png,image/jpeg,image/webp"
               kind="image"
