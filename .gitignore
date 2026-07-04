@@ -19,3 +19,4 @@ __pycache__/
 
 # per-job artifacts
 jobs/
+adgen-backend/uvicorn.log
