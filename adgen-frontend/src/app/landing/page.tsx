@@ -17,6 +17,7 @@ import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
 import { USECASE_LIST, UseCase } from "@/lib/usecases";
+import { api, OutputItem, PIPELINE_LABELS } from "@/lib/api";
 import BrandMark from "@/components/BrandMark";
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
@@ -91,7 +92,9 @@ const STEPS: { icon: ReactNode; title: string; body: ReactNode }[] = [
   },
 ];
 
-const PROOF = [
+// Placeholder tiles — used only until real Library finals load (test phase shows
+// live renders; final marketing videos replace these later).
+const PROOF: { poster?: string; src: string; badge: string }[] = [
   { poster: "/demo/poster-avatar.svg", src: "/demo/sample-avatar-1.mp4", badge: "Talking avatar" },
   { poster: "/demo/poster-product.svg", src: "/demo/sample-product-1.mp4", badge: "Product showcase" },
   { poster: "/demo/poster-broll.svg", src: "/demo/sample-broll-1.mp4", badge: "B-roll reel" },
@@ -99,6 +102,13 @@ const PROOF = [
   { poster: "/demo/poster-avatar.svg", src: "/demo/sample-avatar-2.mp4", badge: "Talking avatar" },
   { poster: "/demo/poster-broll.svg", src: "/demo/sample-broll-2.mp4", badge: "B-roll reel" },
 ];
+
+// Landing card mode -> backend pipeline folder (for matching real videos).
+const MODE_TO_PIPELINE: Record<string, string> = {
+  product: "wani2v",
+  lipsync: "wans2v",
+  overlay: "want2v",
+};
 
 const BENEFITS: { icon: ReactNode; title: string; body: ReactNode }[] = [
   {
@@ -190,19 +200,23 @@ function CtaButton({ big = false, children = "Create your first ad" }: { big?: b
   );
 }
 
-function UseCaseCard({ u }: { u: UseCase }) {
+function UseCaseCard({ u, videoUrl }: { u: UseCase; videoUrl?: string }) {
   return (
     <Link
       href={`/create?usecase=${u.slug}`}
       data-dir
       className="lift group relative flex min-h-56 flex-col justify-end overflow-hidden rounded-card border border-white/5 bg-surface-1 p-5 hover:border-accent/50 hover:ring-1 hover:ring-accent/40"
     >
-      {/* eslint-disable-next-line @next/next/no-img-element -- decorative poster bg */}
-      <img
-        src={u.poster}
-        alt=""
-        className="absolute inset-0 size-full object-cover opacity-30 transition-opacity duration-300 group-hover:opacity-45"
-      />
+      {videoUrl ? (
+        <CardVideo src={videoUrl} />
+      ) : (
+        // eslint-disable-next-line @next/next/no-img-element -- decorative poster bg
+        <img
+          src={u.poster}
+          alt=""
+          className="absolute inset-0 size-full object-cover opacity-30 transition-opacity duration-300 group-hover:opacity-45"
+        />
+      )}
       <div className="absolute inset-0 bg-linear-to-t from-base via-base/50 to-transparent" />
       <div className="relative flex flex-col gap-1.5">
         <h3 className="text-lg font-semibold font-display">{u.title}</h3>
@@ -212,6 +226,30 @@ function UseCaseCard({ u }: { u: UseCase }) {
         </p>
       </div>
     </Link>
+  );
+}
+
+// Hover-play video inside a card link (use-case + pipeline showcases).
+function CardVideo({ src }: { src: string }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  return (
+    <video
+      ref={ref}
+      src={src}
+      muted
+      loop
+      playsInline
+      preload="metadata"
+      onMouseEnter={() => ref.current?.play().catch(() => {})}
+      onMouseLeave={() => {
+        const v = ref.current;
+        if (v) {
+          v.pause();
+          v.currentTime = 0;
+        }
+      }}
+      className="absolute inset-0 size-full object-cover opacity-30 transition-opacity duration-300 group-hover:opacity-45"
+    />
   );
 }
 
@@ -267,11 +305,11 @@ function ProofTile({ item }: { item: (typeof PROOF)[number] }) {
         <video
           ref={ref}
           src={item.src}
-          poster={item.poster}
+          {...(item.poster ? { poster: item.poster } : {})}
           muted
           loop
           playsInline
-          preload="none"
+          preload={item.poster ? "none" : "metadata"}
           className="absolute inset-0 size-full object-cover"
         />
       </div>
@@ -376,6 +414,23 @@ export default function Landing() {
   const heroRef = useRef<HTMLElement>(null);
   const [blobOn, setBlobOn] = useState(false);
   const [heroVisible, setHeroVisible] = useState(true);
+  // Test phase: the landing shows REAL Library renders (via the backend proxy);
+  // placeholder posters remain the fallback when the backend is unreachable.
+  const [finals, setFinals] = useState<OutputItem[]>([]);
+
+  useEffect(() => {
+    api
+      .outputs()
+      .then((d) => setFinals(d.outputs.filter((o) => o.kind !== "clip")))
+      .catch(() => {});
+  }, []);
+
+  const firstByPipeline = (pipeline: string) =>
+    finals.find((o) => o.pipeline === pipeline);
+  const videoForMode = (mode: string) => {
+    const hit = firstByPipeline(MODE_TO_PIPELINE[mode] ?? "");
+    return hit ? api.fileUrl(hit) : undefined;
+  };
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -533,7 +588,7 @@ export default function Landing() {
           <div
             data-parallax
             aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-0 mx-auto h-[520px] max-w-3xl"
+            className="pointer-events-none absolute inset-x-0 top-0 mx-auto h-130 max-w-3xl"
           >
             <div
               className="glow-breathe absolute inset-0"
@@ -549,7 +604,7 @@ export default function Landing() {
             )}
           </div>
 
-          <div className="relative mx-auto flex w-full max-w-5xl flex-col items-center gap-7 px-6 py-28 text-center md:py-36">
+          <div className="relative mx-auto flex w-full max-w-5xl flex-col items-center gap-7 px-6 py-16 text-center md:py-24">
             <h1 className="max-w-4xl text-[44px] font-semibold leading-[1.06] tracking-tight font-display md:text-6xl xl:text-7xl">
               {HEADLINE.split(" ").map((w, i) => (
                 <span key={i} className="inline-block overflow-hidden pb-1 align-bottom">
@@ -593,7 +648,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 3 · PROBLEM ---- */}
-        <section className="mx-auto w-full max-w-7xl px-6 py-20 md:px-12">
+        <section className="mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
           <div data-reveal className="flex max-w-2xl flex-col gap-5">
             <h2 className="label-cap">Why your ads aren&apos;t getting made</h2>
             {PROBLEMS.map((p) => (
@@ -608,7 +663,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 4 · DIRECTOR GRID (quickStart) ---- */}
-        <section id="use-cases" data-dir-grid className="mx-auto w-full max-w-7xl px-6 py-20 md:px-12">
+        <section id="use-cases" data-dir-grid className="mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
           <div data-reveal className="mb-10 flex flex-col gap-2">
             <h2 className="text-3xl font-semibold tracking-tight font-display">
               What ad are we making today?
@@ -619,13 +674,13 @@ export default function Landing() {
           </div>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
             {USECASE_LIST.map((u) => (
-              <UseCaseCard key={u.slug} u={u} />
+              <UseCaseCard key={u.slug} u={u} videoUrl={videoForMode(u.mode)} />
             ))}
           </div>
         </section>
 
         {/* ---- 5 · HOW IT WORKS ---- */}
-        <section id="how" data-steps className="mx-auto w-full max-w-7xl px-6 py-20 md:px-12">
+        <section id="how" data-steps className="mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
           <h2 data-reveal className="mb-10 text-3xl font-semibold tracking-tight font-display">
             Three steps. That&apos;s the whole job.
           </h2>
@@ -646,7 +701,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 6 · FEATURE SPOTLIGHTS (alternating) ---- */}
-        <section className="mx-auto flex w-full max-w-7xl flex-col gap-16 px-6 py-20 md:px-12">
+        <section className="mx-auto flex w-full max-w-7xl flex-col gap-12 px-6 py-12 md:px-12">
           {SPOTLIGHTS.map((s, i) => (
             <div
               key={s.title}
@@ -668,7 +723,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 7 · PIPELINE SHOWCASE ---- */}
-        <section id="tools" className="mx-auto w-full max-w-7xl px-6 py-20 md:px-12">
+        <section id="tools" className="mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
           <h2 data-reveal className="mb-10 text-3xl font-semibold tracking-tight font-display">
             Three engines. One studio.
           </h2>
@@ -680,12 +735,16 @@ export default function Landing() {
                 data-reveal
                 className="lift group relative flex min-h-64 flex-col justify-end overflow-hidden rounded-card border border-white/5 bg-surface-1 p-5 hover:border-accent/50 hover:ring-1 hover:ring-accent/40"
               >
-                {/* eslint-disable-next-line @next/next/no-img-element -- decorative poster bg */}
-                <img
-                  src={p.poster}
-                  alt=""
-                  className="absolute inset-0 size-full object-cover opacity-25 transition-opacity duration-300 group-hover:opacity-40"
-                />
+                {videoForMode(p.href.split("=")[1] ?? "") ? (
+                  <CardVideo src={videoForMode(p.href.split("=")[1] ?? "")!} />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element -- decorative poster bg
+                  <img
+                    src={p.poster}
+                    alt=""
+                    className="absolute inset-0 size-full object-cover opacity-25 transition-opacity duration-300 group-hover:opacity-40"
+                  />
+                )}
                 <div className="absolute inset-0 bg-linear-to-t from-base via-base/55 to-transparent" />
                 <div className="relative flex flex-col gap-1.5">
                   <h3 className="text-lg font-semibold font-display">{p.title}</h3>
@@ -700,7 +759,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 8 · PROOF GRID ---- */}
-        <section data-proof-grid className="mx-auto w-full max-w-7xl px-6 py-20 md:px-12">
+        <section data-proof-grid className="mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
           <div data-reveal className="mb-10 flex flex-col gap-2">
             <h2 className="text-3xl font-semibold tracking-tight font-display">
               Made here, not promised here.
@@ -708,14 +767,20 @@ export default function Landing() {
             <p className="text-sm text-text-muted">Sample ads straight out of the studio.</p>
           </div>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-            {PROOF.map((item, i) => (
+            {(finals.length > 0
+              ? finals.slice(0, 6).map((o) => ({
+                  src: api.fileUrl(o),
+                  badge: PIPELINE_LABELS[o.pipeline] ?? o.pipeline,
+                }))
+              : PROOF
+            ).map((item, i) => (
               <ProofTile key={i} item={item} />
             ))}
           </div>
         </section>
 
         {/* ---- 9 · BENEFITS ---- */}
-        <section className="mx-auto w-full max-w-7xl px-6 py-20 md:px-12">
+        <section className="mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
           <div className="grid gap-4 md:grid-cols-2">
             {BENEFITS.map((b) => (
               <div key={b.title} data-reveal className="card-raised rounded-card p-6">
@@ -751,7 +816,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 11 · FAQ ---- */}
-        <section id="faq" className="mx-auto w-full max-w-4xl px-6 py-20 md:px-12">
+        <section id="faq" className="mx-auto w-full max-w-4xl px-6 py-12 md:px-12">
           <h2 data-reveal className="mb-8 text-3xl font-semibold tracking-tight font-display">
             Questions, answered.
           </h2>
@@ -774,7 +839,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 12 · FINAL CTA ---- */}
-        <section className="mx-auto flex w-full max-w-7xl flex-col items-center gap-6 px-6 py-24 text-center md:px-12">
+        <section className="mx-auto flex w-full max-w-7xl flex-col items-center gap-5 px-6 py-16 text-center md:px-12">
           <h2 data-reveal className="text-4xl font-semibold tracking-tight font-display">
             Ready to make your <span className="text-grad">first ad</span>?
           </h2>
@@ -786,7 +851,7 @@ export default function Landing() {
 
       {/* ---- Big footer ---- */}
       <footer className="border-t border-white/5">
-        <div className="mx-auto grid w-full max-w-7xl gap-10 px-6 py-14 sm:grid-cols-2 md:px-12 lg:grid-cols-4">
+        <div className="mx-auto grid w-full max-w-7xl gap-8 px-6 py-10 sm:grid-cols-2 md:px-12 lg:grid-cols-4">
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2.5">
               <BrandMark className="size-8 shrink-0" />

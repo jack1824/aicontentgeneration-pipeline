@@ -315,7 +315,68 @@ def revoice_endpoint(req: RevoiceRequest):
             while out.exists():
                 out = src.with_name(f"{src.stem}-revoiced{k}.mp4")
                 k += 1
-            final = ffmpeg.replace_audio(str(src), narration, music=req.music, out=str(out))
+            final = ffmpeg.replace_audio(str(src), narration, music=req.music, out=str(out),
+                                         on_warning=lambda w: _update(job_id, detail=w))
+            _update(job_id, status="done", progress=100, video_path=final)
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+class FitRequest(BaseModel):
+    """User-facing timing fix: trim a video so it ends right after its audio does
+    (auto) or at an exact second (manual). Fixes the dead-silent-tail slop on
+    existing videos; new renders auto-fit at assembly time."""
+    video_path: str
+    mode: Literal["auto", "manual"] = "auto"
+    tail_s: float = Field(default=0.45, ge=0.0, le=2.0)   # beat kept after the voice ends
+    end_s: float | None = Field(default=None, gt=0.5)     # manual cut point
+
+
+@app.post("/fit")
+def fit_endpoint(req: FitRequest):
+    src = Path(req.video_path)
+    if not src.exists():
+        raise HTTPException(404, f"video not found: {req.video_path}")
+    if "outputs" not in src.parts:
+        raise HTTPException(422, "only videos under outputs/ can be trimmed")
+    duration = ffmpeg.probe(str(src))["duration"]
+    if req.mode == "manual":
+        if req.end_s is None:
+            raise HTTPException(422, "manual mode needs `end_s`")
+        if req.end_s >= duration:
+            raise HTTPException(422, f"end_s must be under the video's {duration:.2f}s")
+    job_id = _new_job("fit", src.stem)
+
+    def run() -> None:
+        try:
+            _update(job_id, status="assembling", progress=30, detail="finding the cut point")
+            if req.mode == "manual":
+                end = float(req.end_s or duration)
+            else:
+                end = min(duration, ffmpeg.detect_audio_end(str(src)) + req.tail_s)
+            if end < 1.0:  # fully-silent track: refuse to produce a sub-second stub
+                _update(job_id, status="done", progress=100,
+                        detail="audio looks silent throughout — nothing sensible to trim to",
+                        video_path=str(src))
+                return
+            if end >= duration - 0.05:
+                _update(job_id, status="done", progress=100,
+                        detail="no dead tail found — video already ends with its audio",
+                        video_path=str(src))
+                return
+            out = src.with_name(f"{src.stem}-fit.mp4")
+            k = 2
+            while out.exists():
+                out = src.with_name(f"{src.stem}-fit{k}.mp4")
+                k += 1
+            _update(job_id, status="assembling", progress=70, detail=f"trimming to {end:.2f}s")
+            final = ffmpeg.trim_end(str(src), end, str(out))
+            sidecar = src.with_suffix(".meta.json")
+            if sidecar.exists():  # a trimmed avatar/sequence stays voice-locked
+                Path(final).with_suffix(".meta.json").write_text(sidecar.read_text())
             _update(job_id, status="done", progress=100, detail="", video_path=final)
         except Exception as e:
             _update(job_id, status="error", error=f"{type(e).__name__}: {e}")

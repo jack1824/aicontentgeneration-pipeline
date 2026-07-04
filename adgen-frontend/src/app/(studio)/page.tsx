@@ -121,9 +121,9 @@ export default function Dashboard() {
   const heroVideo = finals[0];
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-8 py-12 flex flex-col gap-16 xl:px-12">
+    <div className="mx-auto w-full max-w-7xl px-8 py-8 flex flex-col gap-10 xl:px-12">
       {/* ---- Hero: the idea goes straight to the Gemini brain ---- */}
-      <section className="grid items-center gap-12 pt-6 lg:grid-cols-[1.1fr_0.9fr] lg:gap-16">
+      <section className="grid items-center gap-10 pt-2 lg:grid-cols-[1.1fr_0.9fr] lg:gap-12">
         <div className="flex flex-col items-start gap-5">
           <span className="rounded-full border border-white/10 bg-surface-1 px-3 py-1 text-[11px] tracking-widest text-text-secondary uppercase">
             AI ad studio · English + हिन्दी
@@ -194,7 +194,7 @@ export default function Dashboard() {
       </section>
 
       {/* ---- Three ways to make an ad (living previews from real renders) ---- */}
-      <section className="flex flex-col gap-5 border-t border-white/5 pt-12">
+      <section className="flex flex-col gap-5 border-t border-white/5 pt-8">
         <h2 className="text-sm font-medium tracking-widest text-text-muted uppercase">
           Three ways in
         </h2>
@@ -206,7 +206,7 @@ export default function Dashboard() {
       </section>
 
       {/* ---- Recent wall ---- */}
-      <section className="flex flex-col gap-6 border-t border-white/5 pt-12 pb-6">
+      <section className="flex flex-col gap-6 border-t border-white/5 pt-8 pb-6">
         <div className="flex items-baseline justify-between">
           <h2 className="text-sm font-medium tracking-widest text-text-muted uppercase">
             Recent creations

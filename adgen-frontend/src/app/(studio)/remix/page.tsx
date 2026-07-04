@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, Job, OutputItem, PIPELINE_LABELS, Voice } from "@/lib/api";
 import Dropzone, { Uploaded } from "@/components/Dropzone";
+import VoicePicker from "@/components/VoicePicker";
 
 export default function RemixPage() {
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
@@ -94,7 +95,7 @@ export default function RemixPage() {
   const narrationBlocked = !!script.trim() && lockedPicked;
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-8 py-10 flex flex-col gap-6 xl:px-12">
+    <div className="mx-auto w-full max-w-7xl px-8 py-6 flex flex-col gap-5 xl:px-12">
       <header className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
         <h1 className="text-4xl font-semibold tracking-tight font-display">Remix</h1>
         <p className="text-sm text-text-muted">
@@ -197,7 +198,7 @@ export default function RemixPage() {
               className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
             />
             {script.trim() && (
-              <div className="flex items-center gap-2">
+              <>
                 <div className="flex gap-1">
                   {[
                     { v: "en", l: "EN" },
@@ -212,22 +213,8 @@ export default function RemixPage() {
                     </button>
                   ))}
                 </div>
-                {voices.length > 0 && (
-                  <select
-                    value={voiceId}
-                    onChange={(e) => setVoiceId(e.target.value)}
-                    className="input-well min-w-0 flex-1 rounded-btn p-2 text-[11px]"
-                  >
-                    <option value="">Default voice</option>
-                    {voices.map((v) => (
-                      <option key={v.voice_id} value={v.voice_id}>
-                        {v.name}
-                        {v.labels?.language ? ` · ${v.labels.language}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
+                <VoicePicker voices={voices} value={voiceId} onChange={setVoiceId} language={language} />
+              </>
             )}
           </div>
 

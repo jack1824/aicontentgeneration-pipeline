@@ -58,7 +58,10 @@ Rules:
 - lipsync needs no shot list (one continuous take) — give ONE scene/action prompt plus a
   narration script instead.
 - Narration scripts: conversational ad copy; ~3 words/second budget (e.g. ~13s of speech
-  for a 14s lipsync video; ~5s of speech per pair of overlay shots).
+  for a 14s lipsync video; ~5s of speech per pair of overlay shots). Scripts must read
+  aloud NATURALLY: flowing spoken sentences a person would actually say — never choppy
+  fragment lists or colon constructions ("X: luxury and tradition."), which sound robotic
+  when synthesized.
 - The user supplies final creative control — your proposals are STARTING POINTS they will edit.
 
 Respond with STRICT JSON only (no markdown fences):

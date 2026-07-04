@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, Job, OutputItem, PIPELINE_LABELS, Voice } from "@/lib/api";
 import VideoCard from "@/components/VideoCard";
+import VoicePicker from "@/components/VoicePicker";
 
 const PIPELINE_FILTERS = [
   { key: "all", label: "All" },
@@ -90,6 +91,51 @@ function Lightbox({
   };
 
   const revoicing = rvJob && !["done", "error"].includes(rvJob.status);
+
+  // ---- Fix timing (trim dead tail / manual end cut) ----
+  const [tailS, setTailS] = useState(0.45);
+  const [endS, setEndS] = useState("");
+  const [ftJobId, setFtJobId] = useState<string | null>(null);
+  const [ftJob, setFtJob] = useState<Job | null>(null);
+  const ftPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!ftJobId) return;
+    ftPollRef.current = setInterval(async () => {
+      try {
+        const j = await api.job(ftJobId);
+        setFtJob(j);
+        if (["done", "error"].includes(j.status)) {
+          if (ftPollRef.current) clearInterval(ftPollRef.current);
+          if (j.status === "done") onEnhanced();
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 3000);
+    return () => {
+      if (ftPollRef.current) clearInterval(ftPollRef.current);
+    };
+  }, [ftJobId, onEnhanced]);
+
+  const fixTiming = async (mode: "auto" | "manual") => {
+    setError(null);
+    try {
+      const { job_id } = await api.fit({
+        video_path: item.path,
+        mode,
+        tail_s: tailS,
+        ...(mode === "manual" && endS ? { end_s: Number(endS) } : {}),
+      });
+      setFtJobId(job_id);
+      onJobStart(item.path, job_id);
+      setFtJob({ status: "queued", progress: 0, detail: "", video_path: null, error: null });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const fitting = ftJob && !["done", "error"].includes(ftJob.status);
 
   useEffect(() => {
     if (!enhanceJobId) return;
@@ -183,6 +229,58 @@ function Lightbox({
           </div>
         )}
 
+        {/* ---- Fix timing: end the video with its audio, not after it ---- */}
+        <div className="flex flex-col gap-2 rounded-btn bg-surface-2/50 p-3">
+          <span className="label-cap">✂ Fix timing</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={() => fixTiming("auto")}
+              disabled={!!fitting}
+              className="hero-glow rounded-btn px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-40 disabled:shadow-none"
+            >
+              {fitting ? "Trimming…" : "Auto-trim dead tail"}
+            </button>
+            <span className="text-[10px] text-text-muted">keep</span>
+            {[0.2, 0.45, 0.8].map((t) => (
+              <button
+                key={t}
+                onClick={() => setTailS(t)}
+                className={`rounded-btn px-2 py-1 text-[10px] ${tailS === t ? "seg-on" : "seg"}`}
+              >
+                {t}s
+              </button>
+            ))}
+            <span className="text-[10px] text-text-muted">after the voice</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-text-muted">or cut at</span>
+            <input
+              value={endS}
+              onChange={(e) => setEndS(e.target.value.replace(/[^0-9.]/g, ""))}
+              placeholder="s"
+              inputMode="decimal"
+              className="input-well w-14 rounded-btn p-1.5 text-center text-[11px]"
+            />
+            <button
+              onClick={() => fixTiming("manual")}
+              disabled={!endS || !!fitting}
+              className="seg rounded-btn px-3 py-1.5 text-[11px] disabled:opacity-40"
+            >
+              Cut
+            </button>
+          </div>
+          {ftJob && (
+            <p className={`text-xs text-text-secondary ${fitting ? "render-breathe" : ""}`}>
+              {ftJob.status === "error"
+                ? ""
+                : ftJob.status === "done"
+                  ? ftJob.detail || "✂ trimmed version saved to the library"
+                  : `trimming — ${ftJob.detail || ftJob.status}`}
+            </p>
+          )}
+          {ftJob?.status === "error" && <p className="text-xs text-accent">{ftJob.error}</p>}
+        </div>
+
         {/* ---- Edit voice ---- */}
         {isAvatar ? (
           <p className="rounded-btn bg-surface-2/50 p-3 text-xs leading-relaxed text-text-muted">
@@ -211,37 +309,21 @@ function Lightbox({
                   rows={2}
                   className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
                 />
-                <div className="flex items-center gap-2">
-                  <div className="flex gap-1">
-                    {[
-                      { v: "en", l: "EN" },
-                      { v: "hi", l: "हिन्दी" },
-                    ].map((o) => (
-                      <button
-                        key={o.v}
-                        onClick={() => setRvLang(o.v)}
-                        className={`rounded-btn px-2.5 py-1.5 text-[11px] ${rvLang === o.v ? "seg-on" : "seg"}`}
-                      >
-                        {o.l}
-                      </button>
-                    ))}
-                  </div>
-                  {voices.length > 0 && (
-                    <select
-                      value={rvVoice}
-                      onChange={(e) => setRvVoice(e.target.value)}
-                      className="input-well min-w-0 flex-1 rounded-btn p-2 text-[11px]"
+                <div className="flex gap-1">
+                  {[
+                    { v: "en", l: "EN" },
+                    { v: "hi", l: "हिन्दी" },
+                  ].map((o) => (
+                    <button
+                      key={o.v}
+                      onClick={() => setRvLang(o.v)}
+                      className={`rounded-btn px-2.5 py-1.5 text-[11px] ${rvLang === o.v ? "seg-on" : "seg"}`}
                     >
-                      <option value="">Default voice</option>
-                      {voices.map((v) => (
-                        <option key={v.voice_id} value={v.voice_id}>
-                          {v.name}
-                          {v.labels?.language ? ` · ${v.labels.language}` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                      {o.l}
+                    </button>
+                  ))}
                 </div>
+                <VoicePicker voices={voices} value={rvVoice} onChange={setRvVoice} language={rvLang} />
                 <button
                   onClick={revoice}
                   disabled={rvScript.trim().length < 3 || !!revoicing}
@@ -331,7 +413,7 @@ export default function LibraryPage() {
   );
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-10 flex flex-col gap-6">
+    <div className="mx-auto w-full max-w-6xl px-8 py-6 flex flex-col gap-5">
       <header className="flex items-baseline gap-3">
         <h1 className="text-3xl font-semibold tracking-tight font-display">Library</h1>
         <p className="text-sm text-text-muted">

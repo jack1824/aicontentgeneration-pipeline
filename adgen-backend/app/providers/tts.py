@@ -17,6 +17,16 @@ ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 DEFAULT_MODEL_ID = "eleven_multilingual_v2"   # Hindi-capable
 DEFAULT_OUTPUT_FORMAT = "mp3_44100_128"        # returns MP3
 
+# Ad-read delivery. Without explicit settings ElevenLabs uses the voice's stock
+# defaults, which land flat/robotic on ad copy. Lower stability = livelier
+# intonation; style adds performance energy. (0.0-1.0 each.)
+DEFAULT_VOICE_SETTINGS = {
+    "stability": 0.4,
+    "similarity_boost": 0.75,
+    "style": 0.35,
+    "use_speaker_boost": True,
+}
+
 
 def _extension_for_format(output_format: str) -> str:
     """Pick a file extension that matches the requested ElevenLabs output format."""
@@ -36,6 +46,7 @@ def synthesize_voice(
     output_path: str | None = None,
     output_format: str = DEFAULT_OUTPUT_FORMAT,
     model_id: str = DEFAULT_MODEL_ID,
+    voice_settings: dict | None = None,
 ) -> str:
     """Generate narration with ElevenLabs and return the path to the saved audio file.
 
@@ -69,7 +80,8 @@ def synthesize_voice(
 
     url = ELEVENLABS_TTS_URL.format(voice_id=voice)
     headers = {"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"}
-    body = {"text": text, "model_id": model_id}
+    body = {"text": text, "model_id": model_id,
+            "voice_settings": voice_settings or DEFAULT_VOICE_SETTINGS}
     params = {"output_format": output_format}
 
     try:

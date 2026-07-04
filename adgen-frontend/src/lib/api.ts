@@ -59,6 +59,13 @@ export type RevoiceRequest = {
   music?: string;
 };
 
+export type FitRequest = {
+  video_path: string;
+  mode?: "auto" | "manual";
+  tail_s?: number;
+  end_s?: number;
+};
+
 export type ReassembleRequest = {
   clips: string[];
   script?: string;
@@ -110,14 +117,14 @@ export type Voice = {
 // Render presets are a UI concept — this is the locked preset -> knobs mapping (file 15).
 export const PRESETS = {
   preview: { label: "⚡ Preview", quality: "fast", steps: 6, postprocess: false },
-  enhanced: { label: "✨ Enhanced", quality: "fast", steps: 6, postprocess: true },
+  moderate: { label: "🎚 Moderate", quality: "fast", steps: 6, postprocess: true },
   master: { label: "👑 Master", quality: "quality", postprocess: true },
 } as const;
 export type PresetKey = keyof typeof PRESETS;
 
 export const PRESET_HINTS: Record<PresetKey, string> = {
   preview: "fast draft — iterate here",
-  enhanced: "fast draft + face restore, 2× upscale, smooth motion",
+  moderate: "fast draft + face restore, 2× upscale, smooth motion",
   master: "full 20-step render + enhancement — final delivery",
 };
 
@@ -162,6 +169,12 @@ export const api = {
     fetch(`${BASE}/queue`).then(jsonOrThrow),
   revoice: (req: RevoiceRequest): Promise<{ job_id: string }> =>
     fetch(`${BASE}/revoice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }).then(jsonOrThrow),
+  fit: (req: FitRequest): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/fit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),

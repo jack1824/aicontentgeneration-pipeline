@@ -129,7 +129,8 @@ def generate(req: dict, name: str, on_progress=None) -> str:
     report("assembling", 90, "stitch + overlay")
     final = str(OUTPUT_VIDEO_DIR / f"{name}-final.mp4")
     if narration:
-        final = ffmpeg.stitch_and_overlay(clips, narration, music=req.get("music"), out=final)
+        final = ffmpeg.stitch_and_overlay(clips, narration, music=req.get("music"), out=final,
+                                          on_warning=lambda w: report("assembling", 92, w))
     else:
         final = ffmpeg.stitch(clips, out=final)  # silent clips, no narration -> plain stitch
 
@@ -241,6 +242,7 @@ def _generate_sequence(req: dict, name: str, report) -> str:
                 silent = clip
                 clip = ffmpeg.replace_audio(
                     clip, narration, out=str(SEQ_VIDEO_DIR / f"{seg_stem}-voiced.mp4"),
+                    on_warning=lambda w, i=i: report("generating", pct, f"segment {i + 1}: {w}"),
                 )
                 Path(silent).unlink(missing_ok=True)  # one clip per segment in the Library
         processed.append(clip)
@@ -329,7 +331,8 @@ def _generate_product(req: dict, name: str, report) -> str:
     report("assembling", 90, "stitch + overlay")
     final = str(I2V_VIDEO_DIR / f"{name}-final.mp4")
     if narration:
-        final = ffmpeg.stitch_and_overlay(clips, narration, music=req.get("music"), out=final)
+        final = ffmpeg.stitch_and_overlay(clips, narration, music=req.get("music"), out=final,
+                                          on_warning=lambda w: report("assembling", 92, w))
     else:
         final = ffmpeg.stitch(clips, out=final)
 

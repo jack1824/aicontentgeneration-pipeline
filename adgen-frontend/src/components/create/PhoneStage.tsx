@@ -22,6 +22,15 @@ function useReducedMotion() {
   return reduced;
 }
 
+// Theater plays on desktop only — phones get a plain status line (perf + battery).
+function useDesktop() {
+  const [desktop, setDesktop] = useState(false);
+  useEffect(() => {
+    setDesktop(window.matchMedia("(min-width: 1024px) and (pointer: fine)").matches);
+  }, []);
+  return desktop;
+}
+
 function splitLines(script: string): string[] {
   return script
     .split(/(?<=[.!?।])\s+/)
@@ -31,16 +40,16 @@ function splitLines(script: string): string[] {
 }
 
 // Cycles a highlight through the script lines (voice-booth + idle captions).
-function CaptionCycle({ script, label }: { script: string; label?: string }) {
+function CaptionCycle({ script, label, animate = true }: { script: string; label?: string; animate?: boolean }) {
   const lines = splitLines(script);
   const [active, setActive] = useState(0);
   const reduced = useReducedMotion();
 
   useEffect(() => {
-    if (reduced || lines.length < 2) return;
+    if (!animate || reduced || lines.length < 2) return;
     const t = setInterval(() => setActive((a) => (a + 1) % lines.length), 1400);
     return () => clearInterval(t);
-  }, [reduced, lines.length]);
+  }, [animate, reduced, lines.length]);
 
   return (
     <div className="flex w-full flex-col items-center gap-2 px-4">
@@ -84,17 +93,19 @@ function Slate({ take }: { take: number }) {
   );
 }
 
-function Theater({ job, script, take }: { job: Job; script: string; take: number }) {
+function Theater({ job, script, take, animated }: { job: Job; script: string; take: number; animated: boolean }) {
   const s = job.status;
   if (s === "tts") {
-    return script ? (
+    return script && animated ? (
       <CaptionCycle script={script} label="🎙 recording the voice" />
     ) : (
       <p className="label-cap">🎙 recording the voice</p>
     );
   }
   if (s === "uploading") return <p className="label-cap">📦 sending to the studio…</p>;
-  if (s === "generating") return <Slate take={take} />;
+  if (s === "generating") {
+    return animated ? <Slate take={take} /> : <p className="label-cap">🎥 rendering take {take}…</p>;
+  }
   if (s === "assembling") return <p className="label-cap">✂ cutting the film…</p>;
   if (s === "post" || s === "postprocess") return <p className="label-cap">✨ polishing every frame…</p>;
   return <p className="label-cap">🎬 taking your brief…</p>;
@@ -117,6 +128,7 @@ export default function PhoneStage({
   take: number;
   voicePreviewing: boolean;
 }) {
+  const desktop = useDesktop();
   // One-shot burst the first time a video lands.
   const [burst, setBurst] = useState(false);
   const hadVideo = useRef(false);
@@ -150,11 +162,11 @@ export default function PhoneStage({
               src={videoUrl}
             />
           ) : job && (running || job.status === "queued") ? (
-            <Theater job={job} script={script} take={take} />
+            <Theater job={job} script={script} take={take} animated={desktop} />
           ) : (
             <div className="placeholder-live size-full flex-col gap-2 border-0">
               {script.trim() ? (
-                <CaptionCycle script={script} label="your captions" />
+                <CaptionCycle script={script} label="your captions" animate={desktop} />
               ) : (
                 <span className="label-cap">your ad plays here</span>
               )}

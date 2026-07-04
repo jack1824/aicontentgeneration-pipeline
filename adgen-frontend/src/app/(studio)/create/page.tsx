@@ -30,6 +30,7 @@ import { USECASES } from "@/lib/usecases";
 import BriefChat from "@/components/create/BriefChat";
 import PitchDeck from "@/components/create/PitchDeck";
 import PhoneStage from "@/components/create/PhoneStage";
+import VoicePicker from "@/components/VoicePicker";
 
 type Mode = "product" | "lipsync" | "overlay";
 const MODES: { key: Mode; label: string }[] = [
@@ -41,9 +42,9 @@ const MODES: { key: Mode; label: string }[] = [
 const SURPRISE_TWIST =
   "\n\nSurprise me: propose ONE bold, unexpected creative direction for this — something I wouldn't think of myself.";
 const TIME_HINTS: Record<Mode, Record<PresetKey, string>> = {
-  product: { preview: "≈2 min/shot", enhanced: "≈2 min/shot + ~10 min polish", master: "long render + polish" },
-  lipsync: { preview: "≈6 min", enhanced: "≈6 min + ~10 min polish", master: "≈35 min + polish" },
-  overlay: { preview: "≈2 min/shot", enhanced: "≈2 min/shot + ~10 min polish", master: "long render + polish" },
+  product: { preview: "≈2 min/shot", moderate: "≈2 min/shot + ~10 min polish", master: "long render + polish" },
+  lipsync: { preview: "≈6 min", moderate: "≈6 min + ~10 min polish", master: "≈35 min + polish" },
+  overlay: { preview: "≈2 min/shot", moderate: "≈2 min/shot + ~10 min polish", master: "long render + polish" },
 };
 
 const emptyShot = (): Shot => ({ prompt: "", negative_prompt: "" });
@@ -307,19 +308,6 @@ function CreateStudio() {
     editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const previewVoice = async () => {
-    if (!voiceId) return;
-    setPreviewingVoice(true);
-    try {
-      const blob = await api.voicePreviewBlob(voiceId, language);
-      const audio = new Audio(URL.createObjectURL(blob));
-      audio.onended = () => setPreviewingVoice(false);
-      await audio.play();
-    } catch {
-      setPreviewingVoice(false);
-    }
-  };
-
   const blocker = (): string | null => {
     if (!shots[0]?.prompt.trim()) return "write the first shot's prompt";
     if (mode === "lipsync" && !script.trim()) return "avatar mode needs a narration script";
@@ -410,7 +398,7 @@ function CreateStudio() {
   const phoneId = viewTakeId ?? (running ? null : lastDoneId);
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-8 py-10 flex flex-col gap-6">
+    <div className="mx-auto w-full max-w-6xl px-8 py-6 flex flex-col gap-5">
       <header className="flex flex-wrap items-center gap-x-5 gap-y-2">
         <h1 className="text-4xl font-semibold tracking-tight font-display">Create</h1>
         {/* Journey indicator — progress renders in coral. */}
@@ -553,30 +541,14 @@ function CreateStudio() {
                 </button>
               ))}
             </div>
-            {(script.trim() || mode === "lipsync") && voices.length > 0 && (
-              <div className="flex items-center gap-2">
-                <select
-                  value={voiceId}
-                  onChange={(e) => setVoiceId(e.target.value)}
-                  className="input-well min-w-0 flex-1 rounded-btn p-2.5 text-xs"
-                >
-                  <option value="">Default voice</option>
-                  {voices.map((v) => (
-                    <option key={v.voice_id} value={v.voice_id}>
-                      {v.name}
-                      {v.labels?.language ? ` · ${v.labels.language}` : ""}
-                      {v.labels?.gender ? ` · ${v.labels.gender}` : ""}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  onClick={previewVoice}
-                  disabled={!voiceId || previewingVoice}
-                  className="seg rounded-btn px-3 py-2.5 text-xs disabled:opacity-40"
-                >
-                  {previewingVoice ? "🔊 …" : "▶ hear it"}
-                </button>
-              </div>
+            {(script.trim() || mode === "lipsync") && (
+              <VoicePicker
+                voices={voices}
+                value={voiceId}
+                onChange={setVoiceId}
+                language={language}
+                onPreviewingChange={setPreviewingVoice}
+              />
             )}
           </div>
 

@@ -1,0 +1,70 @@
+================================================================
+MODELS.txt — every model the platform uses, in one place
+(companion to POD-REINSTALL-TOMORROW.txt; all open-source)
+================================================================
+
+Download base (HuggingFace, use /resolve/ never /blob/):
+BASE = https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files
+
+
+1) VIDEO GENERATION — Wan 2.2 family (Apache-2.0)
+   ComfyUI folder: models/diffusion_models/
+   ----------------------------------------------------------------
+   wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors   ~14 GB   B-roll (text-to-video), 1st half
+   wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors    ~14 GB   B-roll (text-to-video), 2nd half
+   wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors   ~14 GB   Product (image-to-video), 1st half
+   wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors    ~14 GB   Product (image-to-video), 2nd half
+   wan2.2_s2v_14B_fp8_scaled.safetensors              ~14 GB   Avatar (sound-to-video lipsync)
+
+   Remember it like this: t2v = B-roll ads, i2v = Product ads,
+   s2v = Avatar ads. t2v/i2v come in PAIRS (high+low noise);
+   s2v is a single file.
+
+2) SHARED SUPPORT MODELS (all Wan pipelines need these)
+   ----------------------------------------------------------------
+   models/text_encoders/  umt5_xxl_fp8_e4m3fn_scaled.safetensors   ~6.5 GB  reads your prompts
+   models/vae/            wan_2.1_vae.safetensors                  ~1.4 GB  turns latents into pixels
+   models/audio_encoders/ wav2vec2_large_english_fp16.safetensors  ~0.6 GB  s2v ONLY — hears the voice,
+                                                                            drives the mouth (ENGLISH-only:
+                                                                            this is the Hindi lipsync gap)
+
+3) SPEED LoRAs — the FAST/Preview preset (4-step Lightning)
+   ComfyUI folder: models/loras/     (~0.6 GB each)
+   ----------------------------------------------------------------
+   wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors    B-roll fast mode
+   wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
+   wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors      Product fast mode
+   wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
+
+   Rule of thumb: LoRA ON = Preview drafts (minutes).
+   LoRA OFF + 20 steps = Master quality (Avatar quality REQUIRES
+   LoRA off — it visibly degrades s2v).
+
+4) POST-PROCESSING — the ✨ Enhance chain (CodeFormer → SeedVR2 → RIFE)
+   ----------------------------------------------------------------
+   models/facerestore_models/ codeformer.pth                ~0.4 GB  face restore (manual wget:
+     https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth)
+   SeedVR2: seedvr2_ema_3b_fp8_e4m3fn.safetensors + ema_vae_fp16    upscaler — AUTO-downloads on
+                                                                    first run (via the node pack)
+   RIFE: rife49.pth                                                 2x smooth motion — AUTO-downloads
+                                                                    on first run (lives inside the node)
+
+5) CUSTOM NODE PACKS (ComfyUI Manager, not model files)
+   ----------------------------------------------------------------
+   [ ] SeedVR2 Video Upscaler (numz)
+   [ ] Facerestore CF (Code Former)
+   [ ] switch/math pack (pre-flight will confirm if missing)
+
+6) OUTSIDE THE POD (APIs, no downloads)
+   ----------------------------------------------------------------
+   ElevenLabs eleven_multilingual_v2 ... every voice (EN + Hindi TTS)
+   Gemini gemini-2.5-flash ............ the planning brain (proposals only)
+
+----------------------------------------------------------------
+TOTALS: ~85-90 GB on disk -> the 250 GB network volume fits
+everything with room for outputs and future pipelines (LTX etc.)
+
+FUTURE (documented, not installed): LTX (cinematic, native audio),
+MultiTalk (2+ speakers), LongCat-Video-Avatar 1.5 (99-language
+lipsync — the candidate fix if the Hindi lip test disappoints).
+================================================================

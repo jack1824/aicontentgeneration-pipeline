@@ -16,6 +16,7 @@ import {
   Voice,
 } from "@/lib/api";
 import Dropzone, { Uploaded } from "@/components/Dropzone";
+import VoicePicker from "@/components/VoicePicker";
 
 type SegmentDraft = {
   pipeline: SequenceSegment["pipeline"];
@@ -139,7 +140,7 @@ export default function SequencePage() {
   const blocked = blocker();
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-8 py-10 flex flex-col gap-6 xl:px-12">
+    <div className="mx-auto w-full max-w-7xl px-8 py-6 flex flex-col gap-5 xl:px-12">
       <header className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
         <h1 className="text-4xl font-semibold tracking-tight font-display">Sequence</h1>
         <p className="text-sm text-text-muted">
@@ -244,37 +245,21 @@ export default function SequencePage() {
         <aside className="card-raised sticky top-6 flex flex-col gap-4 rounded-card p-5">
           <div className="flex flex-col gap-2">
             <span className="label-cap">Voice · avatar + voiceover</span>
-            <div className="flex items-center gap-2">
-              <div className="flex gap-1">
-                {[
-                  { v: "en", l: "EN" },
-                  { v: "hi", l: "हिन्दी" },
-                ].map((o) => (
-                  <button
-                    key={o.v}
-                    onClick={() => setLanguage(o.v)}
-                    className={`rounded-btn px-2.5 py-1.5 text-xs ${language === o.v ? "seg-on" : "seg"}`}
-                  >
-                    {o.l}
-                  </button>
-                ))}
-              </div>
-              {voices.length > 0 && (
-                <select
-                  value={voiceId}
-                  onChange={(e) => setVoiceId(e.target.value)}
-                  className="input-well min-w-0 flex-1 rounded-btn p-2 text-xs"
+            <div className="flex gap-1">
+              {[
+                { v: "en", l: "EN" },
+                { v: "hi", l: "हिन्दी" },
+              ].map((o) => (
+                <button
+                  key={o.v}
+                  onClick={() => setLanguage(o.v)}
+                  className={`rounded-btn px-2.5 py-1.5 text-xs ${language === o.v ? "seg-on" : "seg"}`}
                 >
-                  <option value="">Default voice</option>
-                  {voices.map((v) => (
-                    <option key={v.voice_id} value={v.voice_id}>
-                      {v.name}
-                      {v.labels?.language ? ` · ${v.labels.language}` : ""}
-                    </option>
-                  ))}
-                </select>
-              )}
+                  {o.l}
+                </button>
+              ))}
             </div>
+            <VoicePicker voices={voices} value={voiceId} onChange={setVoiceId} language={language} />
           </div>
 
           <Dropzone

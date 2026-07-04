@@ -13,6 +13,7 @@ Gotcha (file 11): `-c copy` concat only works if all clips share codec/res/fps �
 same-workflow clips; mixed sources go through concat_reencode() instead.
 """
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -22,6 +23,74 @@ from pathlib import Path
 # via -shortest (which caps everything at the video's length).
 NARRATION_DELAY_FILTER = "[1:a]adelay=300|300,apad[narr]"
 MUSIC_DUCK_VOLUME = 0.15
+
+# Audio-video fit: fixed-length video + variable-length narration never match by luck.
+# Short narration -> trim the video to end a beat after the voice (kills the dead tail).
+# Long narration -> speed it up imperceptibly (<=12%) so it fits instead of being cut.
+FIT_TAIL_S = 0.45
+FIT_MAX_TEMPO = 1.12
+
+
+def _fit_narration(
+    video_dur: float, narr_dur: float, delay_ms: int,
+) -> tuple[float | None, float, str | None]:
+    """Return (atempo_or_None, output_duration_s, warning_or_None) for a narration join."""
+    delay = delay_ms / 1000.0
+    tempo: float | None = None
+    warning: str | None = None
+    window = video_dur - delay
+    audio_end = delay + narr_dur
+    if window > 0.1 and narr_dur > window:
+        t = narr_dur / window
+        if t <= FIT_MAX_TEMPO:
+            tempo = t
+            audio_end = video_dur
+        else:
+            tempo = FIT_MAX_TEMPO
+            audio_end = delay + narr_dur / FIT_MAX_TEMPO
+            overrun = audio_end - video_dur
+            warning = (f"narration runs ~{overrun:.1f}s past the video even at "
+                       f"{FIT_MAX_TEMPO}x — shorten the script")
+    out_t = min(video_dur, audio_end + FIT_TAIL_S)
+    return tempo, out_t, warning
+
+
+def _narr_filter(delay_ms: int, gain: float = 1.0, tempo: float | None = None) -> str:
+    """Narration filter chain: tempo BEFORE delay (the delay must not be sped up)."""
+    parts = []
+    if tempo and tempo > 1.001:
+        parts.append(f"atempo={min(tempo, 2.0):.4f}")
+    parts.append(f"adelay={delay_ms}|{delay_ms}")
+    if abs(gain - 1.0) > 1e-6:
+        parts.append(f"volume={gain}")
+    parts.append("apad")
+    return "[1:a]" + ",".join(parts) + "[narr]"
+
+
+def detect_audio_end(path: str) -> float:
+    """Last audible moment in a file: trailing-silence start via silencedetect,
+    falling back to the full duration when there is no trailing silence."""
+    proc = subprocess.run(
+        ["ffmpeg", "-i", path, "-af", "silencedetect=noise=-45dB:d=0.3", "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    dur = probe(path)["duration"]
+    starts = [float(x) for x in re.findall(r"silence_start: ([0-9.]+)", proc.stderr)]
+    ends = [float(x) for x in re.findall(r"silence_end: ([0-9.]+)", proc.stderr)]
+    if starts:
+        last_start = starts[-1]
+        # Trailing silence = the last interval is unclosed OR its end sits at EOF
+        # (silencedetect closes a run-to-end interval AT the file's end).
+        matching_end = next((e for e in reversed(ends) if e > last_start), None)
+        if matching_end is None or matching_end >= dur - 0.25:
+            return last_start
+    return dur
+
+
+def trim_end(video: str, end_s: float, out: str) -> str:
+    """Cut a video (and its audio) at end_s. Stream copy — frame-granular, no re-encode."""
+    _run(["ffmpeg", "-y", "-i", video, "-t", f"{end_s:.3f}", "-c", "copy", out])
+    return out
 
 
 def _run(cmd: list[str]) -> None:
@@ -63,22 +132,33 @@ def stitch_and_overlay(
     narration: str,
     music: str | None = None,
     out: str = "final.mp4",
+    on_warning=None,
 ) -> str:
-    """Stitch silent clips and lay narration on top (+ optional ducked music). [AUDIO-AFTER]"""
+    """Stitch silent clips and lay narration on top (+ optional ducked music). [AUDIO-AFTER]
+
+    Auto-fits audio to video: short narration trims the output to voice-end + tail;
+    long narration is atempo'd (capped) into the window.
+    """
     stitched = stitch(clips, out=_stitched_path(out))
+    vdur = probe(stitched)["duration"]
+    ndur = probe(narration)["duration"]
+    tempo, out_t, warning = _fit_narration(vdur, ndur, 300)
+    if warning and on_warning:
+        on_warning(warning)
+    narr = _narr_filter(300, tempo=tempo)
     if music:
-        fc = (f"{NARRATION_DELAY_FILTER};"
+        fc = (f"{narr};"
               f"[2:a]volume={MUSIC_DUCK_VOLUME}[bg];"
               f"[narr][bg]amix=inputs=2:duration=first[mix]")
         cmd = ["ffmpeg", "-y", "-i", stitched, "-i", narration, "-i", music,
                "-filter_complex", fc,
                "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
-               "-shortest", out]
+               "-t", f"{out_t:.3f}", out]
     else:
         cmd = ["ffmpeg", "-y", "-i", stitched, "-i", narration,
-               "-filter_complex", NARRATION_DELAY_FILTER,
+               "-filter_complex", narr,
                "-map", "0:v", "-map", "[narr]", "-c:v", "copy", "-c:a", "aac",
-               "-shortest", out]
+               "-t", f"{out_t:.3f}", out]
     _run(cmd)
     Path(stitched).unlink(missing_ok=True)  # drop the intermediate; keep output folders clean
     return out
@@ -125,26 +205,36 @@ def replace_audio(
     narration_delay_ms: int = 300,
     narration_gain: float = 1.0,
     music_gain: float = MUSIC_DUCK_VOLUME,
+    fit: bool = True,
+    on_warning=None,
 ) -> str:
     """Replace a video's ENTIRE soundtrack with narration (+ optional ducked music).
 
-    Used by /revoice (edit the voice of an existing final) and /reassemble (lay a new
-    narration over a re-stitched timeline). Video stream is copied untouched.
+    Used by /revoice, /reassemble and sequence segment voiceovers. Video stream is
+    copied untouched. With fit=True (default) the output is trimmed to voice-end +
+    tail when the narration is short, and the narration atempo'd (capped) when long.
     """
-    d = narration_delay_ms
-    narr = f"[1:a]adelay={d}|{d},volume={narration_gain},apad[narr]"
+    vdur = probe(video)["duration"]
+    ndur = probe(narration)["duration"]
+    if fit:
+        tempo, out_t, warning = _fit_narration(vdur, ndur, narration_delay_ms)
+        if warning and on_warning:
+            on_warning(warning)
+    else:
+        tempo, out_t = None, vdur
+    narr = _narr_filter(narration_delay_ms, gain=narration_gain, tempo=tempo)
     if music:
         fc = (f"{narr};[2:a]volume={music_gain}[bg];"
               f"[narr][bg]amix=inputs=2:duration=first[mix]")
         cmd = ["ffmpeg", "-y", "-i", video, "-i", narration, "-i", music,
                "-filter_complex", fc,
                "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
-               "-shortest", out]
+               "-t", f"{out_t:.3f}", out]
     else:
         cmd = ["ffmpeg", "-y", "-i", video, "-i", narration,
                "-filter_complex", narr,
                "-map", "0:v", "-map", "[narr]", "-c:v", "copy", "-c:a", "aac",
-               "-shortest", out]
+               "-t", f"{out_t:.3f}", out]
     _run(cmd)
     return out
 
