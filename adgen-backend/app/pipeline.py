@@ -228,7 +228,7 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
         if pipeline_kind == "lipsync":
             narration = synthesize_voice(
                 seg["script"],
-                voice_id=req.get("voice_id"),
+                voice_id=seg.get("voice_id") or req.get("voice_id"),
                 language=req.get("language", "hi"),
                 output_path=str(SEQ_AUDIO_DIR / f"{seg_stem}-narration.mp3"),
             )
@@ -271,7 +271,7 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                 # Per-segment voiceover (AUDIO-AFTER) so the slice stays in its window.
                 narration = synthesize_voice(
                     seg["script"],
-                    voice_id=req.get("voice_id"),
+                    voice_id=seg.get("voice_id") or req.get("voice_id"),
                     language=req.get("language", "hi"),
                     output_path=str(SEQ_AUDIO_DIR / f"{seg_stem}-narration.mp3"),
                 )

@@ -107,6 +107,8 @@ class Segment(BaseModel):
     negative_prompt: str | None = None
     script: str | None = None            # this segment's script slice (lipsync: required)
     image: str | None = None             # product photo / reference face for this segment
+    voice_id: str | None = None          # per-segment voice (dialogue ads: A vs B);
+                                         # falls back to the job-level voice_id
 
 
 class GenerateRequest(BaseModel):

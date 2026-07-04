@@ -10,6 +10,7 @@ export type SequenceSegment = {
   negative_prompt?: string;
   script?: string;
   image?: string;
+  voice_id?: string; // per-segment voice (dialogue: speaker A vs B)
 };
 
 export type GenerateRequest = {

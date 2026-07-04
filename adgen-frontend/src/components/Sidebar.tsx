@@ -43,6 +43,16 @@ const NAV = [
     ),
   },
   {
+    href: "/dialogue",
+    label: "Dialogue",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+        <path d="M4 5h11v8H8l-4 3V5z" strokeLinejoin="round" />
+        <path d="M13 10h7v6h-3l-2.5 2V16H13" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
     href: "/remix",
     label: "Remix",
     icon: (
