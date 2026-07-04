@@ -32,7 +32,11 @@ For each approach pick ONE pipeline:
               The photo locks the product's exact look; prompts describe camera moves and
               lighting (push-in, orbit, rim light, dust particles, reflections). Fastest
               pipeline (~2 min/clip) — favor it for product showcases and beauty shots.
-- cinematic : LTX story ad with native audio. NOT BUILT YET.
+- cinematic : LTX-2.3 story ad — text-to-video WITH the model generating its own
+              synchronized AUDIO (ambience, SFX). BUILT. ~5s per shot @25fps. For
+              cinematic shots, END each prompt with one sentence describing the
+              SOUNDSCAPE ("sizzling tawa, distant street chatter, soft rain") —
+              the audio is prompt-driven. Best for atmosphere-first story ads.
 - multitalk : 2+ people conversation. NOT BUILT YET.
 
 Rules:

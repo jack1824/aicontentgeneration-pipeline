@@ -71,3 +71,23 @@ WAN_S2V_QUALITY_INPUTS = {
     "cfg": 6.0,
     "model_source": ["37", 0],               # bypass LoRA node "107" -> UNET "37" directly
 }
+
+# workflows/ltx2_av.json — LTX-2.3 22B text-to-video WITH native synchronized audio
+# (authored 2026-07-05 from the official ComfyUI template video_ltx2_3_t2v.json, flattened:
+# prompt-enhancer branch removed, math/primitive scaffolding replaced by direct injection).
+# Two-stage render: base pass at HALF resolution (node 228) -> latent 2x upsample (253)
+# -> refine pass -> tiled decode + audio decode -> CreateVideo -> SaveVideo.
+# Defaults: 5s @ 25fps (126 video frames / 97 audio latent frames), distilled LoRA @0.5,
+# cfg 1, manual distilled sigmas. IMPORTANT: inject the HALF dimensions (final = 2x).
+LTX2_MAPPING = {
+    "prompt": ("240", "text"),               # positive CLIPTextEncode (Gemma encoder)
+    "negative_prompt": ("247", "text"),      # negative CLIPTextEncode
+    "seed": ("237", "noise_seed"),           # stage-1 (base) noise
+    "seed_refine": ("216", "noise_seed"),    # stage-2 (refine) noise — template fixed it at 42
+    "width": ("228", "width"),               # BASE-pass latent size — pass final//2
+    "height": ("228", "height"),
+    "length": ("228", "length"),             # video frames = fps*seconds + 1 (126 = 5s@25)
+    "audio_frames": ("214", "frames_number"),  # audio latent frames ≈ 19.2*seconds + 1 (97 = 5s)
+    "lora_strength": ("232", "strength_model"),
+    "filename_prefix": ("75", "filename_prefix"),
+}

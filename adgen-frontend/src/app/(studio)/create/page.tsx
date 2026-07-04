@@ -32,11 +32,12 @@ import PitchDeck from "@/components/create/PitchDeck";
 import PhoneStage from "@/components/create/PhoneStage";
 import VoicePicker from "@/components/VoicePicker";
 
-type Mode = "product" | "lipsync" | "overlay";
+type Mode = "product" | "lipsync" | "overlay" | "cinematic";
 const MODES: { key: Mode; label: string }[] = [
   { key: "product", label: "🧴 Product" },
   { key: "lipsync", label: "🗣 Avatar" },
   { key: "overlay", label: "🎬 B-roll" },
+  { key: "cinematic", label: "🎥 Cinematic" },
 ];
 
 const SURPRISE_TWIST =
@@ -45,6 +46,7 @@ const TIME_HINTS: Record<Mode, Record<PresetKey, string>> = {
   product: { preview: "≈2 min/shot", moderate: "≈2 min/shot + ~10 min polish", master: "long render + polish" },
   lipsync: { preview: "≈6 min", moderate: "≈6 min + ~10 min polish", master: "≈35 min + polish" },
   overlay: { preview: "≈2 min/shot", moderate: "≈2 min/shot + ~10 min polish", master: "long render + polish" },
+  cinematic: { preview: "new — timing TBD", moderate: "new + ~10 min polish", master: "new + polish" },
 };
 
 const emptyShot = (): Shot => ({ prompt: "", negative_prompt: "" });
@@ -249,7 +251,7 @@ function CreateStudio() {
 
   // ---- Editor state ----
   const [mode, setMode] = useState<Mode>(
-    urlMode === "lipsync" || urlMode === "overlay" || urlMode === "product"
+    urlMode === "lipsync" || urlMode === "overlay" || urlMode === "product" || urlMode === "cinematic"
       ? urlMode
       : uc?.mode ?? "product",
   );
@@ -366,7 +368,7 @@ function CreateStudio() {
   }, [jobId]);
 
   const adopt = (a: PlanApproach) => {
-    if (a.pipeline === "product" || a.pipeline === "lipsync" || a.pipeline === "overlay") {
+    if (a.pipeline === "product" || a.pipeline === "lipsync" || a.pipeline === "overlay" || a.pipeline === "cinematic") {
       if (a.pipeline !== mode) {
         // Mirror the manual mode buttons: an image uploaded for ANOTHER pipeline
         // must not silently become this one's avatar face / product photo.
@@ -458,7 +460,8 @@ function CreateStudio() {
   // Stage chips this REQUEST will actually hit (frozen at fire time).
   const stagesFor = (req: GenerateRequest): { key: string[]; label: string }[] => [
     ...(req.script ? [{ key: ["tts"], label: "Voice" }] : []),
-    ...(req.mode !== "overlay" ? [{ key: ["uploading"], label: "Upload" }] : []),
+    // Only image-fed pipelines upload an asset to the pod first.
+    ...(["lipsync", "product"].includes(req.mode) ? [{ key: ["uploading"], label: "Upload" }] : []),
     { key: ["generating"], label: "Render" },
     { key: ["assembling"], label: "Assemble" },
     ...(req.postprocess ? [{ key: ["post", "postprocess"], label: "Enhance" }] : []),
@@ -632,8 +635,8 @@ function CreateStudio() {
             )}
           </div>
 
-          {/* Assets */}
-          {mode !== "overlay" && (
+          {/* Assets (cinematic + b-roll are pure text-to-video — no image) */}
+          {mode !== "overlay" && mode !== "cinematic" && (
             <Dropzone
               label={mode === "lipsync" ? "Avatar face image · required" : "Product photo · required"}
               hint="png / jpg / webp"

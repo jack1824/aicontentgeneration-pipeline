@@ -14,6 +14,7 @@ const PIPELINE_FILTERS = [
   { key: "wani2v", label: "🧴 Product" },
   { key: "wans2v", label: "🗣 Avatar" },
   { key: "want2v", label: "🎬 B-roll" },
+  { key: "ltx2", label: "🎥 Cinematic" },
   { key: "sequence", label: "🎞 Sequence" },
   { key: "remix", label: "✂ Remix" },
 ];

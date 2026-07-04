@@ -13,7 +13,7 @@ export type SequenceSegment = {
 };
 
 export type GenerateRequest = {
-  mode: "overlay" | "lipsync" | "product" | "sequence";
+  mode: "overlay" | "lipsync" | "product" | "cinematic" | "sequence";
   shots?: Shot[];
   segments?: SequenceSegment[];
   script?: string | null;
@@ -141,6 +141,7 @@ export const PIPELINE_LABELS: Record<string, string> = {
   wani2v: "Product",
   wans2v: "Avatar",
   want2v: "B-roll",
+  ltx2: "Cinematic",
   sequence: "Sequence ad",
   remix: "Remix cut",
 };
