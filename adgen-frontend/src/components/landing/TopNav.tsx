@@ -88,7 +88,7 @@ export default function TopNav() {
   return (
     <nav className="sticky top-0 z-40 border-b border-white/5 bg-base/75 backdrop-blur-md">
       <div className="mx-auto flex w-full max-w-7xl items-center gap-2 px-6 py-3.5 md:px-12">
-        <Link href="/landing" className="flex shrink-0 items-center gap-2.5">
+        <Link href="/" className="flex shrink-0 items-center gap-2.5">
           <BrandMark className="size-8 shrink-0" />
           <span className="text-[12px] font-bold uppercase tracking-wider font-display">
             SOCIALADZGEN <span className="text-grad">STUDIO</span>

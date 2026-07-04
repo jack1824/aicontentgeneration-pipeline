@@ -14,6 +14,10 @@ const nextConfig: NextConfig = {
       (process.env.VERCEL ? TUNNEL_BACKEND : "http://127.0.0.1:8000");
     return [{ source: "/api/backend/:path*", destination: `${backend}/:path*` }];
   },
+  // The landing page moved from /landing to the site root; keep old shared links alive.
+  async redirects() {
+    return [{ source: "/landing", destination: "/", permanent: false }];
+  },
 };
 
 export default nextConfig;

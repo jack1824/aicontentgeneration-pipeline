@@ -13,7 +13,7 @@ import BrandMark from "@/components/BrandMark";
 
 const NAV = [
   {
-    href: "/",
+    href: "/dashboard",
     label: "Dashboard",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" className="size-4.5">
@@ -67,7 +67,7 @@ const NAV = [
 
 function Brand() {
   return (
-    <Link href="/landing" className="flex items-center gap-2.5 px-2">
+    <Link href="/" className="flex items-center gap-2.5 px-2">
       <BrandMark className="size-8 shrink-0" />
       <span className="text-[12px] font-bold uppercase tracking-wider font-display leading-tight">
         SOCIALADZGEN <span className="text-grad">STUDIO</span>
@@ -178,7 +178,7 @@ export default function Sidebar() {
     <>
       {/* ---- Desktop rail (lg+) ---- */}
       <aside className="rail-raised sticky top-0 hidden h-screen w-56 shrink-0 flex-col px-4 py-6 lg:flex">
-        {/* Logo routes to the public landing page; the Dashboard nav item covers "/" */}
+        {/* Logo routes to the landing page at "/"; the Dashboard nav item covers /dashboard */}
         <Brand />
         <Link
           href="/create"

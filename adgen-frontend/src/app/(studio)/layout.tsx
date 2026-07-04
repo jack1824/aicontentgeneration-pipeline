@@ -1,7 +1,7 @@
 import Sidebar from "@/components/Sidebar";
 
-// The studio shell: sidebar + content. The (studio) group keeps /, /create, /library
-// on their URLs while the marketing landing page (/landing) renders full-bleed.
+// The studio shell: sidebar + content. The (studio) group holds /dashboard, /create,
+// /library etc. while the marketing landing page owns "/" full-bleed via (marketing).
 // Small screens stack (top bar over content); lg+ goes side-by-side with the rail.
 export default function StudioLayout({
   children,
