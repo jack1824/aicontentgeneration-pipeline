@@ -405,6 +405,7 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
 
     # 2. GENERATE — one LTX clip per shot. The workflow renders at HALF size then
     # 2x latent-upsamples, so the injected width/height are final//2.
+    comfy.free_memory(pod)  # unload other engines' cached weights (RAM headroom)
     wf = comfy.load_workflow("ltx2_av")
     shots = req["shots"]
     base_seed = req.get("seed") or DEFAULT_BASE_SEED
@@ -511,6 +512,9 @@ def _generate_longcat(req: dict, name: str, report, on_submit=None) -> str:
     if req.get("steps"):
         inputs["steps"] = req["steps"]
 
+    # LongCat shares the pod with LTX/Wan — drop their cached weights first or
+    # the container RAM limit trips (OOM'd the pod on the first attempt).
+    comfy.free_memory(pod)
     report("generating", 15, "LongCat avatar (~16s take, 3 windows — takes a while)")
     clip = comfy.comfy_generate(
         pod, comfy.load_workflow("longcat_avatar"), inputs, LONGCAT_MAPPING,

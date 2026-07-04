@@ -68,11 +68,11 @@
   "241": {
     "class_type": "WanVideoTextEncodeCached",
     "inputs": {
-      "model_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "model_name": "umt5-xxl-enc-fp8_e4m3fn.safetensors",
       "precision": "bf16",
       "positive_prompt": "A western man stands on stage under dramatic lighting, holding a microphone close to their mouth. Wearing a vibrant red jacket with gold embroidery, the singer is speaking while smoke swirls around them, creating a dynamic and atmospheric scene.",
       "negative_prompt": "Close-up, bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards",
-      "quantization": "disabled",
+      "quantization": "fp8_e4m3fn",
       "use_disk_cache": true,
       "device": "gpu"
     }
@@ -481,7 +481,7 @@
   "134": {
     "class_type": "WanVideoBlockSwap",
     "inputs": {
-      "blocks_to_swap": 25,
+      "blocks_to_swap": 0,
       "offload_img_emb": false,
       "offload_txt_emb": false,
       "use_non_blocking": false,

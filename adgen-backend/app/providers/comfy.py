@@ -214,6 +214,19 @@ def comfy_generate(
     return download_output(pod_url, entry, out_path=out_path)
 
 
+def free_memory(pod_url: str) -> None:
+    """Ask ComfyUI to drop cached models from RAM/VRAM (POST /free).
+
+    Engine switches stack models in the container's RAM cache (LTX 29 GB +
+    Wan pairs + LongCat) until the pod OOMs — call this before loading a
+    different engine's weights. Best-effort: failures are non-fatal."""
+    try:
+        httpx.post(f"{_base(pod_url)}/free",
+                   json={"unload_models": True, "free_memory": True}, timeout=60)
+    except httpx.HTTPError:
+        pass  # cache stays warm; worst case the render is slower or retries
+
+
 def upload_file(pod_url: str, file_path: str, overwrite: bool = True,
                 remote_name: str | None = None) -> str:
     """Upload a local file (image OR audio) to the pod's input directory.
