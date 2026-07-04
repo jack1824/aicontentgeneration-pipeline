@@ -52,7 +52,7 @@ const TIME_HINTS: Record<string, Record<PresetKey, string>> = {
   // LTX engine (measured 2026-07-05): ~100s/shot incl. native sound; polish ~9 min;
   // no separate slow mode — master = moderate.
   cinematic: { preview: "≈2 min/shot · sound included", moderate: "≈2 min/shot + ~9 min polish", master: "same as moderate — LTX has one speed" },
-  longcat: { preview: "new — timing TBD", moderate: "new + ~10 min polish", master: "new + polish" },
+  longcat: { preview: "≈30 min — quality takes time", moderate: "≈30 min + ~10 min polish", master: "≈30 min + polish" },
 };
 
 const emptyShot = (): Shot => ({ prompt: "", negative_prompt: "" });
