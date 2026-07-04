@@ -78,7 +78,7 @@ function GeminiPanel({
   const autoRan = useRef(false);
 
   const runPlan = useCallback(
-    async (ideaText: string, dur: number, lang: string) => {
+    async (ideaText: string, dur: number, lang: string, avoid?: string[]) => {
       if (ideaText.trim().length < 3) return;
       setThinking(true);
       setError(null);
@@ -89,6 +89,7 @@ function GeminiPanel({
           language: lang,
           format: aspect,
           duration_s: dur,
+          ...(avoid?.length ? { avoid } : {}),
         });
         setApproaches(res.approaches);
         onPlanned();
@@ -212,12 +213,22 @@ function GeminiPanel({
       {approaches && (
         <div className="flex flex-col gap-2">
           <PitchDeck approaches={approaches} onAdopt={onAdopt} />
-          <button
-            onClick={() => setApproaches(null)}
-            className="self-start text-xs text-text-muted hover:text-text-primary"
-          >
-            ↺ brief again
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Didn't like any of them? New batch, explicitly steering away from these. */}
+            <button
+              onClick={() => runPlan(idea, duration, language, approaches.map((a) => a.title))}
+              disabled={thinking}
+              className="seg rounded-btn px-4 py-2 text-xs font-medium disabled:opacity-40"
+            >
+              ↻ 3 new directions
+            </button>
+            <button
+              onClick={() => setApproaches(null)}
+              className="text-xs text-text-muted hover:text-text-primary"
+            >
+              ↺ brief again
+            </button>
+          </div>
         </div>
       )}
     </section>

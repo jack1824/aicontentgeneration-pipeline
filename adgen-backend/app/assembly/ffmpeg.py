@@ -27,8 +27,11 @@ MUSIC_DUCK_VOLUME = 0.15
 # Audio-video fit: fixed-length video + variable-length narration never match by luck.
 # Short narration -> trim the video to end a beat after the voice (kills the dead tail).
 # Long narration -> speed it up imperceptibly (<=12%) so it fits instead of being cut.
+# The trim is CAPPED: it exists to remove a small dead tail, never to shorten the ad —
+# a 10s render with a 4s script keeps its full 10s of visuals (music/ambient runway).
 FIT_TAIL_S = 0.45
 FIT_MAX_TEMPO = 1.12
+FIT_MAX_TRIM_S = 1.5
 
 
 def _fit_narration(
@@ -52,6 +55,11 @@ def _fit_narration(
             warning = (f"narration runs ~{overrun:.1f}s past the video even at "
                        f"{FIT_MAX_TEMPO}x — shorten the script")
     out_t = min(video_dur, audio_end + FIT_TAIL_S)
+    if video_dur - out_t > FIT_MAX_TRIM_S:
+        gap = video_dur - audio_end
+        out_t = video_dur
+        warning = (f"narration ends ~{gap:.1f}s before the video — kept the full cut "
+                   f"(Library → ✂ Fix timing to trim it on purpose)")
     return tempo, out_t, warning
 
 

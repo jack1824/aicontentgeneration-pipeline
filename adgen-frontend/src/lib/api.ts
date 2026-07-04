@@ -94,6 +94,7 @@ export type PlanRequest = {
   language: string;
   format: string;
   duration_s: number;
+  avoid?: string[]; // rejected approach titles — Regenerate steers away from them
 };
 
 export type PlanApproach = {

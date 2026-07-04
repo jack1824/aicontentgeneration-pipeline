@@ -127,13 +127,15 @@ class PlanRequest(BaseModel):
     language: str = "en"
     format: str = "9:16"
     duration_s: int = Field(default=15, ge=5, le=60)
+    # Titles the user rejected (Regenerate button) — the new batch avoids them.
+    avoid: list[str] = Field(default_factory=list, max_length=12)
 
 
 @app.post("/plan")
 def plan_endpoint(req: PlanRequest):
     try:
         return llm.plan(req.idea, language=req.language, ad_format=req.format,
-                        duration_s=req.duration_s)
+                        duration_s=req.duration_s, avoid=req.avoid or None)
     except llm.PlanError as e:
         raise HTTPException(502, str(e))
 

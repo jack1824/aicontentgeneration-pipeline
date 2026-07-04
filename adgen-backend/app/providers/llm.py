@@ -22,7 +22,9 @@ GEMINI_URL = (
 # the planner may still propose the others but must mark them unavailable.
 SYSTEM_PROMPT = """\
 You are the planning brain of an AI ad-generation platform (Indian SMB ads, English + Hindi).
-Given a rough ad idea, propose 1-3 concrete ad approaches. For each approach pick ONE pipeline:
+Given a rough ad idea, propose EXACTLY 3 concrete ad approaches — three genuinely DIFFERENT
+creative directions (different hook, emotion, or setting; not three rephrasings of one idea).
+For each approach pick ONE pipeline:
 
 - overlay   : silent text-to-video b-roll + narration voiceover on top. BUILT.
 - lipsync   : single talking avatar (audio-first, reference face image). BUILT.
@@ -40,12 +42,31 @@ Rules:
 - The user message states the narration LANGUAGE. Write narration_script in exactly that
   language. In Hindi scripts keep brand names and English product terms in Latin script
   (natural Hinglish ad copy is good); the rest in Devanagari.
-- Honor the requested DURATION and FORMAT: each shot is ~5 seconds, so shot count = duration/5
-  (15s = 3 shots, 30s = 6). Compose for the aspect ratio: 9:16 vertical -> tight single-subject
-  framing and close-ups; 1:1 -> centered subjects; 16:9 -> wider establishing shots.
-- Shot prompts must be DETAILED documentary style: each subject described individually (age,
-  hair, clothing, distinct faces), photographic wording ("shot on a DSLR, photojournalism,
-  true-to-life, realistic skin texture"), continuity anchors kept verbatim across shots.
+- Honor the requested DURATION exactly: each shot renders ~5 seconds, so shot count MUST be
+  duration/5 — 10s = 2 shots, 15s = 3, 20s = 4, 30s = 6, 60s = 12. A 10-second request answered
+  with one shot is a FAILED plan; the user paid for the full duration. Compose for the aspect
+  ratio: 9:16 vertical -> tight single-subject framing and close-ups; 1:1 -> centered subjects;
+  16:9 -> wider establishing shots.
+- Shot prompts are rendered by Wan 2.2 video models — write them the way Wan responds best:
+  * Structure every prompt as SUBJECT -> ACTION -> SCENE -> CAMERA -> LIGHT -> STYLE, with the
+    subject in the first few words.
+  * MOTION IS MANDATORY: Wan renders movement, so every prompt needs an explicit subject action
+    ("pours", "walks past", "steam curls upward") AND exactly ONE camera move ("slow dolly-in",
+    "handheld tracking shot", "orbit around", "crane down"). A motionless prompt produces a
+    boring frozen shot.
+  * Concrete physical detail beats marketing abstractions: "golden jalebi glistening as syrup
+    drips onto a steel plate" — never "the essence of festive indulgence".
+  * 60-100 words per shot prompt, present tense, documentary specificity: each person described
+    individually (age, hair, clothing, distinct face), photographic wording ("shot on a DSLR,
+    photojournalism, true-to-life, realistic skin texture"), continuity anchors kept VERBATIM
+    across shots (same character/place words in every shot that shares them).
+  * NEVER put brand names, taglines, or any on-screen text in a shot prompt — video models
+    render garbled text. Spoken brand names belong in the narration script only.
+  * product (i2v) prompts describe ONLY camera, environment, and light interacting with the
+    photographed product (push-in, orbit, rim light, dust motes, reflections) — the photo
+    already supplies the product's look; never re-describe or contradict it.
+  * lipsync (s2v) prompts describe one continuous scene: the speaker's look, natural gestures
+    and expression shifts, setting and light — no cuts, no camera moves away from the speaker.
 - Every shot's negative_prompt starts from this canonical block (keep it IDENTICAL across
   shots for continuity), then append shot-specific negatives if needed:
   "cartoon, anime, CGI, 3D render, plastic skin, waxy skin, doll face, deformed hands, bad
@@ -80,8 +101,12 @@ class PlanError(RuntimeError):
 
 
 def plan(idea: str, language: str = "en", ad_format: str = "9:16",
-         duration_s: int = 15) -> dict:
-    """Ask Gemini for 1-3 proposed ad approaches. Returns the parsed proposals dict."""
+         duration_s: int = 15, avoid: list[str] | None = None) -> dict:
+    """Ask Gemini for 3 proposed ad approaches. Returns the parsed proposals dict.
+
+    `avoid` carries the titles of directions the user already rejected (the
+    Regenerate button) — the new batch must steer clear of them.
+    """
     if not GEMINI_API_KEY:
         raise PlanError(
             "GEMINI_API_KEY is not set. Add it to adgen-backend/.env "
@@ -93,11 +118,18 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
         f"Format: {ad_format}\n"
         f"Target duration: {duration_s} seconds"
     )
+    if avoid:
+        rejected = "; ".join(a.strip() for a in avoid if a.strip())
+        user_msg += (
+            f"\nThe user REJECTED these directions — do not repeat or lightly rework "
+            f"them; propose 3 clearly different creative directions: {rejected}"
+        )
     body = {
         "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": user_msg}]}],
         "generationConfig": {
-            "temperature": 0.7,
+            # Regenerates run hotter — the user explicitly wants different ideas.
+            "temperature": 0.9 if avoid else 0.7,
             "response_mime_type": "application/json",
         },
     }
