@@ -458,6 +458,48 @@ def fit_endpoint(req: FitRequest):
     return {"job_id": job_id}
 
 
+class EndCardRequest(BaseModel):
+    """Append a branded end card — the one place on-screen text belongs (video
+    models garble rendered text, so shot prompts ban it)."""
+    video_path: str
+    brand: str = Field(min_length=1, max_length=48)
+    tagline: str | None = Field(default=None, max_length=80)
+    offer: str | None = Field(default=None, max_length=60)
+    seconds: float = Field(default=2.5, ge=1.0, le=5.0)
+
+
+@app.post("/endcard")
+def endcard_endpoint(req: EndCardRequest):
+    src = Path(req.video_path)
+    if not src.exists():
+        raise HTTPException(404, f"video not found: {req.video_path}")
+    if not _under_outputs(src):
+        raise HTTPException(422, "only videos under outputs/ can get an end card")
+    job_id = _new_job("endcard", src.stem)
+
+    def run() -> None:
+        try:
+            _update(job_id, status="assembling", progress=40, detail="rendering end card")
+            out = src.with_name(f"{src.stem}-card.mp4")
+            k = 2
+            while out.exists():
+                out = src.with_name(f"{src.stem}-card{k}.mp4")
+                k += 1
+            final = ffmpeg.end_card(
+                str(src), req.brand, tagline=req.tagline, offer=req.offer,
+                seconds=req.seconds, out=str(out),
+            )
+            sidecar = src.with_suffix(".meta.json")
+            if sidecar.exists():  # a carded avatar stays voice-locked
+                Path(final).with_suffix(".meta.json").write_text(sidecar.read_text())
+            _update(job_id, status="done", progress=100, detail="", video_path=final)
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
 class ReassembleRequest(BaseModel):
     """Scene-adjust re-export (file 15): re-join picked clips in a chosen order, with
     optional new narration (voice/volume/offset) and music bed."""

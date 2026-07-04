@@ -139,6 +139,54 @@ function Lightbox({
 
   const fitting = ftJob && !["done", "error"].includes(ftJob.status);
 
+  // ---- Brand end card (drawtext outro: brand / tagline / offer) ----
+  const [ecBrand, setEcBrand] = useState("");
+  const [ecTagline, setEcTagline] = useState("");
+  const [ecOffer, setEcOffer] = useState("");
+  const [ecSeconds, setEcSeconds] = useState(2.5);
+  const [ecJobId, setEcJobId] = useState<string | null>(null);
+  const [ecJob, setEcJob] = useState<Job | null>(null);
+  const ecPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!ecJobId) return;
+    ecPollRef.current = setInterval(async () => {
+      try {
+        const j = await api.job(ecJobId);
+        setEcJob(j);
+        if (["done", "error"].includes(j.status)) {
+          if (ecPollRef.current) clearInterval(ecPollRef.current);
+          if (j.status === "done") onEnhanced();
+        }
+      } catch (e) {
+        if (String(e).includes("404") && ecPollRef.current) clearInterval(ecPollRef.current);
+      }
+    }, 3000);
+    return () => {
+      if (ecPollRef.current) clearInterval(ecPollRef.current);
+    };
+  }, [ecJobId, onEnhanced]);
+
+  const addEndCard = async () => {
+    setError(null);
+    try {
+      const { job_id } = await api.endCard({
+        video_path: item.path,
+        brand: ecBrand.trim(),
+        ...(ecTagline.trim() ? { tagline: ecTagline.trim() } : {}),
+        ...(ecOffer.trim() ? { offer: ecOffer.trim() } : {}),
+        seconds: ecSeconds,
+      });
+      setEcJobId(job_id);
+      onJobStart(item.path, job_id);
+      setEcJob({ status: "queued", progress: 0, detail: "", video_path: null, error: null });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const carding = ecJob && !["done", "error"].includes(ecJob.status);
+
   useEffect(() => {
     if (!enhanceJobId) return;
     pollRef.current = setInterval(async () => {
@@ -282,6 +330,61 @@ function Lightbox({
             </p>
           )}
           {ftJob?.status === "error" && <p className="text-xs text-accent">{ftJob.error}</p>}
+        </div>
+
+        {/* ---- Brand end card: the one place on-screen text belongs ---- */}
+        <div className="flex flex-col gap-2 rounded-btn bg-surface-2/50 p-3">
+          <span className="label-cap">🪧 Brand end card</span>
+          <input
+            value={ecBrand}
+            onChange={(e) => setEcBrand(e.target.value)}
+            placeholder="Brand name (required) — e.g. Sharma Sweets"
+            maxLength={48}
+            className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
+          />
+          <input
+            value={ecTagline}
+            onChange={(e) => setEcTagline(e.target.value)}
+            placeholder="Tagline (optional) — e.g. मिठास जो याद रहे"
+            maxLength={80}
+            className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
+          />
+          <input
+            value={ecOffer}
+            onChange={(e) => setEcOffer(e.target.value)}
+            placeholder="Offer (optional, shows in coral) — e.g. Flat 20% off"
+            maxLength={60}
+            className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
+          />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={addEndCard}
+              disabled={!ecBrand.trim() || !!carding}
+              className="hero-glow rounded-btn px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-40 disabled:shadow-none"
+            >
+              {carding ? "Adding card…" : "Add end card"}
+            </button>
+            <span className="text-[10px] text-text-muted">card length</span>
+            {[2, 2.5, 3].map((t) => (
+              <button
+                key={t}
+                onClick={() => setEcSeconds(t)}
+                className={`rounded-btn px-2 py-1 text-[10px] ${ecSeconds === t ? "seg-on" : "seg"}`}
+              >
+                {t}s
+              </button>
+            ))}
+          </div>
+          {ecJob && (
+            <p className={`text-xs text-text-secondary ${carding ? "render-breathe" : ""}`}>
+              {ecJob.status === "error"
+                ? ""
+                : ecJob.status === "done"
+                  ? "🪧 carded version saved to the library"
+                  : `adding end card — ${ecJob.detail || ecJob.status}`}
+            </p>
+          )}
+          {ecJob?.status === "error" && <p className="text-xs text-accent">{ecJob.error}</p>}
         </div>
 
         {/* ---- Edit voice ---- */}

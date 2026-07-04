@@ -66,6 +66,14 @@ export type FitRequest = {
   end_s?: number;
 };
 
+export type EndCardRequest = {
+  video_path: string;
+  brand: string;
+  tagline?: string;
+  offer?: string;
+  seconds?: number;
+};
+
 export type ReassembleRequest = {
   clips: string[];
   script?: string;
@@ -200,6 +208,12 @@ export const api = {
     }).then(jsonOrThrow),
   fit: (req: FitRequest): Promise<{ job_id: string }> =>
     fetch(`${BASE}/fit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }).then(jsonOrThrow),
+  endCard: (req: EndCardRequest): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/endcard`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),

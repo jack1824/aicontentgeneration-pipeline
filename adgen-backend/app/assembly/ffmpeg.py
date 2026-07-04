@@ -323,6 +323,78 @@ def stitch_plus_music(
     return out
 
 
+END_CARD_BG = "0x0f0f11"       # the app's dark canvas
+END_CARD_ACCENT = "0xff4d3d"   # coral accent (offer line)
+
+_FONT_CANDIDATES = [
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",  # EN + Devanagari glyphs
+    "/System/Library/Fonts/Helvetica.ttc",
+]
+
+
+def _font() -> str:
+    for f in _FONT_CANDIDATES:
+        if Path(f).exists():
+            return f
+    raise RuntimeError("no usable font found for end-card drawtext")
+
+
+def end_card(
+    video: str,
+    brand: str,
+    tagline: str | None = None,
+    offer: str | None = None,
+    seconds: float = 2.5,
+    out: str = "carded.mp4",
+) -> str:
+    """Append a branded end card (brand / tagline / offer) to a video.
+
+    Video models garble on-screen text, so prompts ban it — the card is where the
+    brand name, tagline and offer belong (docs' text-overlay chunk). The card
+    matches the video's size/fps and fades in; concat_reencode() supplies the
+    silent audio lane so soundtracks survive untouched.
+    Text goes through drawtext textfile= (no escaping minefield; Devanagari OK).
+    """
+    info = probe(video)
+    w, h = info["width"] or 720, info["height"] or 1280
+    fps = info["fps"] or 16.0
+    font = _font()
+
+    # (text, fontsize, color, y-fraction) — brand dominates, offer pops in coral.
+    rows = [(brand.strip(), h // 10, "white", 0.42)]
+    if tagline and tagline.strip():
+        rows.append((tagline.strip(), h // 24, "0xb9b9c0", 0.56))
+    if offer and offer.strip():
+        rows.append((offer.strip(), h // 18, END_CARD_ACCENT, 0.68))
+
+    tmp_files: list[str] = []
+    draws: list[str] = []
+    try:
+        for text, size, color, yfrac in rows:
+            tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                             encoding="utf-8")
+            tf.write(text)
+            tf.close()
+            tmp_files.append(tf.name)
+            draws.append(
+                f"drawtext=fontfile='{font}':textfile='{tf.name}'"
+                f":fontcolor={color}:fontsize={int(size)}"
+                f":x=(w-text_w)/2:y={yfrac:.2f}*h"
+            )
+        vf = ",".join(draws) + ",fade=t=in:st=0:d=0.35"
+        card = _stitched_path(out).replace(".stitched.", ".card.")
+        _run(["ffmpeg", "-y", "-f", "lavfi",
+              "-i", f"color=c={END_CARD_BG}:s={w}x{h}:d={seconds:.2f}:r={fps:.3f}",
+              "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", card])
+        try:
+            return concat_reencode([video, card], out=out)
+        finally:
+            Path(card).unlink(missing_ok=True)
+    finally:
+        for t in tmp_files:
+            Path(t).unlink(missing_ok=True)
+
+
 def stitch_music_only(
     clips: list[str],
     music: str,
