@@ -6,6 +6,11 @@ import type { NextConfig } from "next";
 const TUNNEL_BACKEND = "https://jewish-recorders-which-wit.trycloudflare.com";
 
 const nextConfig: NextConfig = {
+  // Gemini plans for 30/60s ads take 30-60s to write; the rewrite proxy's default
+  // 30s timeout was returning bare 500s while the backend finished fine.
+  experimental: {
+    proxyTimeout: 180_000,
+  },
   // The browser talks ONLY to this app; this app proxies to the FastAPI orchestrator.
   // No CORS, no keys client-side (docs file 02 golden rule).
   async rewrites() {

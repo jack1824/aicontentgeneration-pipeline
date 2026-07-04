@@ -8,6 +8,7 @@ The LLM plans and routes — it NEVER generates video or audio. It proposes 1-3 
 approaches (pipeline + audio strategy + shot outline) for the user to choose from.
 """
 import json
+import time
 
 import httpx
 
@@ -142,18 +143,27 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
             "response_mime_type": "application/json",
         },
     }
-    try:
-        r = httpx.post(
-            GEMINI_URL.format(model=GEMINI_MODEL),
-            headers={"x-goog-api-key": GEMINI_API_KEY},
-            json=body,
-            timeout=120,
-        )
-        r.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        raise PlanError(
-            f"Gemini plan failed ({e.response.status_code}): {e.response.text[:800]}"
-        ) from None
+    # Gemini intermittently answers 503 (model overloaded) / 429 — transient by
+    # definition, so retry before surfacing anything to the user.
+    last_err: str = ""
+    for attempt in range(3):
+        try:
+            r = httpx.post(
+                GEMINI_URL.format(model=GEMINI_MODEL),
+                headers={"x-goog-api-key": GEMINI_API_KEY},
+                json=body,
+                timeout=120,
+            )
+            r.raise_for_status()
+            break
+        except httpx.HTTPStatusError as e:
+            last_err = f"Gemini plan failed ({e.response.status_code}): {e.response.text[:800]}"
+            if e.response.status_code in (429, 500, 503) and attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise PlanError(last_err) from None
+    else:  # pragma: no cover — loop always breaks or raises
+        raise PlanError(last_err)
 
     try:
         text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
