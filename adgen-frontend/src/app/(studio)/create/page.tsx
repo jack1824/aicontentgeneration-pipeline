@@ -274,9 +274,42 @@ function CreateStudio() {
     api.voices().then((d) => setVoices(d.voices)).catch(() => {});
   }, []);
 
+  // A running render must SURVIVE navigation: the job lives on the backend, so the
+  // page state (job, takes, stages) persists per-tab and re-attaches on return.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    try {
+      const raw = sessionStorage.getItem("adgen-active-job");
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (!s?.jobId) return;
+      if (s.req) lastReqRef.current = s.req;
+      setStages(s.stages ?? []);
+      setTakes(s.takes ?? []);
+      setJob(s.job ?? { status: "queued", progress: 0, detail: "", video_path: null, error: null });
+      setJobId(s.jobId);
+    } catch {
+      /* corrupt snapshot — start clean */
+    }
+  }, []);
+
   useEffect(() => {
     if (!jobId) return;
-    pollRef.current = setInterval(async () => {
+    try {
+      sessionStorage.setItem(
+        "adgen-active-job",
+        JSON.stringify({ jobId, job, takes, stages, req: lastReqRef.current }),
+      );
+    } catch {
+      /* storage full/blocked — nonfatal */
+    }
+  }, [jobId, job, takes, stages]);
+
+  useEffect(() => {
+    if (!jobId) return;
+    const tick = async () => {
       try {
         const j = await api.job(jobId);
         setJob(j);
@@ -289,7 +322,9 @@ function CreateStudio() {
       } catch {
         /* transient poll failure — keep polling */
       }
-    }, 5000);
+    };
+    tick(); // immediate refresh (matters when re-attaching after navigation)
+    pollRef.current = setInterval(tick, 5000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };

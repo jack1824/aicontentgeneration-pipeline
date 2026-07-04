@@ -61,9 +61,35 @@ export default function SequencePage() {
     api.voices().then((d) => setVoices(d.voices)).catch(() => {});
   }, []);
 
+  // Sequence renders are long — the job must survive navigating away (per-tab).
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    try {
+      const raw = sessionStorage.getItem("adgen-active-seq-job");
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (!s?.jobId) return;
+      setJob(s.job ?? { status: "queued", progress: 0, detail: "", video_path: null, error: null });
+      setJobId(s.jobId);
+    } catch {
+      /* corrupt snapshot — start clean */
+    }
+  }, []);
+
   useEffect(() => {
     if (!jobId) return;
-    pollRef.current = setInterval(async () => {
+    try {
+      sessionStorage.setItem("adgen-active-seq-job", JSON.stringify({ jobId, job }));
+    } catch {
+      /* nonfatal */
+    }
+  }, [jobId, job]);
+
+  useEffect(() => {
+    if (!jobId) return;
+    const tick = async () => {
       try {
         const j = await api.job(jobId);
         setJob(j);
@@ -73,7 +99,9 @@ export default function SequencePage() {
       } catch {
         /* keep polling */
       }
-    }, 5000);
+    };
+    tick();
+    pollRef.current = setInterval(tick, 5000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
