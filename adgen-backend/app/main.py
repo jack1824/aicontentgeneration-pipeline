@@ -47,6 +47,21 @@ JOBS: dict[str, dict] = {}
 TERMINAL_STATES = {"done", "error", "cancelled"}
 POD_KINDS = {"generate", "postprocess"}  # kinds that occupy a pod (queue-relevant)
 
+OUTPUTS_ROOT = Path("outputs").resolve()
+
+
+def _under_outputs(p: Path) -> bool:
+    """Resolved containment check — 'outputs/../anything' and absolute paths that merely
+    CONTAIN an outputs component must not pass (they used to)."""
+    try:
+        return p.resolve().is_relative_to(OUTPUTS_ROOT)
+    except OSError:
+        return False
+
+
+class JobCancelled(RuntimeError):
+    """Raised inside a worker thread when its job was cancelled — aborts remaining stages."""
+
 
 def _new_job(kind: str, name: str | None = None) -> str:
     """Register a job with the metadata the queue view needs."""
@@ -147,17 +162,36 @@ def generate_endpoint(req: GenerateRequest):
             raise HTTPException(422, "sequence mode needs `segments` — a non-empty timeline")
     elif not req.shots:
         raise HTTPException(422, "shots must contain at least one shot")
+    # Fail-fast asset checks at REQUEST time — a typo'd path must cost an instant 404,
+    # not a full render + TTS spend that dies at the assembly step.
+    for label, p in (("music", req.music), ("avatar_image", req.avatar_image),
+                     ("product_image", req.product_image)):
+        if p and not Path(p).exists():
+            raise HTTPException(404, f"{label} file not found: {p}")
+    for i, seg in enumerate(req.segments or []):
+        if seg.image and not Path(seg.image).exists():
+            raise HTTPException(404, f"segment {i + 1} image not found: {seg.image}")
     job_id = _new_job("generate", req.name)
 
     def run() -> None:
         def on_progress(status: str, pct: int, detail: str) -> None:
+            # Cancelled jobs must stop BURNING pod/TTS work, not just hide their
+            # updates: abort the worker at the next stage/clip boundary.
+            if JOBS.get(job_id, {}).get("status") == "cancelled":
+                raise JobCancelled()
             _update(job_id, status=status, progress=pct, detail=detail)
+
+        def on_submit(prompt_id: str) -> None:
+            # Raw write (not _update): the cancel path needs the prompt_id even
+            # after cancellation to clear it from the pod queue.
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+
         try:
             final = pipeline.generate(req.model_dump(), name=req.name or job_id,
-                                      on_progress=on_progress)
+                                      on_progress=on_progress, on_submit=on_submit)
             if req.postprocess:
-                _update(job_id, status="post", progress=95,
-                        detail="CodeFormer -> SeedVR2 -> RIFE")
+                on_progress("post", 95, "CodeFormer -> SeedVR2 -> RIFE")
                 if req.mode == "sequence":
                     # Face restore only makes sense when the timeline has faces.
                     restore = any(s.pipeline == "lipsync" for s in (req.segments or []))
@@ -167,8 +201,11 @@ def generate_endpoint(req: GenerateRequest):
                     final,
                     restore_face=restore,
                     resolution=2 * min(req.width or 640, req.height or 640),
+                    on_submit=on_submit,
                 )
             _update(job_id, status="done", progress=100, detail="", video_path=final)
+        except JobCancelled:
+            pass  # job already shows 'cancelled'; nothing to report
         except Exception as e:  # surface the real cause to the poller
             _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
 
@@ -187,9 +224,17 @@ class PostprocessRequest(BaseModel):
 
 @app.post("/postprocess")
 def postprocess_endpoint(req: PostprocessRequest):
-    job_id = _new_job("postprocess", Path(req.video_path).stem)
+    src = Path(req.video_path)
+    if not src.exists():
+        raise HTTPException(404, f"video not found: {req.video_path}")
+    if not _under_outputs(src):
+        raise HTTPException(422, "only videos under outputs/ can be post-processed")
+    job_id = _new_job("postprocess", src.stem)
 
     def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
         try:
             _update(job_id, status="postprocess", progress=10,
                     detail="CodeFormer -> SeedVR2 -> RIFE")
@@ -197,6 +242,7 @@ def postprocess_endpoint(req: PostprocessRequest):
                 req.video_path, restore_face=req.restore_face,
                 resolution=req.resolution, source_fps=req.source_fps,
                 multiplier=req.multiplier, fidelity=req.fidelity,
+                on_submit=on_submit,
             )
             _update(job_id, status="done", progress=100, detail="", video_path=out)
         except Exception as e:
@@ -252,25 +298,39 @@ def job_video(job_id: str):
 
 @app.post("/jobs/{job_id}/cancel")
 def job_cancel(job_id: str):
-    """Interrupt whatever the pod is currently rendering and mark the job cancelled.
+    """Cancel a job, stopping exactly ITS pod work — never someone else's.
 
-    ComfyUI's /interrupt stops the RUNNING prompt — with our sequential single-pod usage
-    that is this job's work. The job thread will surface an error/cancelled state.
+    ComfyUI's /interrupt kills whichever prompt is RUNNING, so blindly interrupting
+    used to murder job A when a user cancelled queued job B. Now: interrupt only if
+    THIS job's prompt is the running one; delete it from the pod queue if pending;
+    otherwise just flag cancelled — the worker thread aborts at its next checkpoint.
     """
     job = JOBS.get(job_id)
     if job is None:
         raise HTTPException(404, f"unknown job_id {job_id}")
     if job["status"] in ("done", "error", "cancelled"):
         raise HTTPException(409, f"job already '{job['status']}'")
-    # Only pod-bound jobs have anything to interrupt on the pod. Local jobs
-    # (revoice/reassemble) are just marked cancelled — _update() keeps their
-    # worker threads from resurrecting them.
-    if job.get("kind") in POD_KINDS and COMFY_POD_URLS:
-        try:
-            httpx.post(f"{COMFY_POD_URLS[0].rstrip('/')}/interrupt", timeout=30)
-        except httpx.HTTPError as e:
-            raise HTTPException(502, f"could not reach pod to interrupt: {e}")
+    # Mark cancelled FIRST: the worker's progress checkpoints see it immediately,
+    # and _update() keeps the thread from resurrecting the job.
     job.update(status="cancelled", detail="interrupted by user")
+    if job.get("kind") in POD_KINDS and COMFY_POD_URLS:
+        pod = COMFY_POD_URLS[0].rstrip("/")
+        pid = job.get("prompt_id")
+        try:
+            if pid:
+                q = httpx.get(f"{pod}/queue", timeout=15).json()
+                running = {e[1] for e in q.get("queue_running", [])}
+                pending = {e[1] for e in q.get("queue_pending", [])}
+                if pid in running:
+                    httpx.post(f"{pod}/interrupt", timeout=30)
+                elif pid in pending:
+                    httpx.post(f"{pod}/queue", json={"delete": [pid]}, timeout=15)
+                # else: between clips — nothing on the pod right now; the worker
+                # thread stops at its next progress checkpoint.
+        except httpx.HTTPError:
+            # Job is already flagged cancelled locally; pod-side prompt may finish
+            # its current clip but the worker discards it at the next checkpoint.
+            job.update(detail="cancelled (pod unreachable — current clip may finish)")
     return {"ok": True, "status": "cancelled"}
 
 
@@ -290,7 +350,7 @@ def revoice_endpoint(req: RevoiceRequest):
     src = Path(req.video_path)
     if not src.exists():
         raise HTTPException(404, f"video not found: {req.video_path}")
-    if "outputs" not in src.parts:
+    if not _under_outputs(src):
         raise HTTPException(422, "only videos under outputs/ can be revoiced")
     if _voice_locked(src):
         raise HTTPException(
@@ -342,7 +402,7 @@ def fit_endpoint(req: FitRequest):
     src = Path(req.video_path)
     if not src.exists():
         raise HTTPException(404, f"video not found: {req.video_path}")
-    if "outputs" not in src.parts:
+    if not _under_outputs(src):
         raise HTTPException(422, "only videos under outputs/ can be trimmed")
     duration = ffmpeg.probe(str(src))["duration"]
     if req.mode == "manual":
@@ -404,10 +464,17 @@ class ReassembleRequest(BaseModel):
 @app.post("/reassemble")
 def reassemble_endpoint(req: ReassembleRequest):
     for c in req.clips:
-        if not Path(c).exists():
+        cp = Path(c)
+        if not cp.exists():
             raise HTTPException(404, f"clip not found: {c}")
-    if req.music and not Path(req.music).exists():
-        raise HTTPException(404, f"music file not found: {req.music}")
+        if not _under_outputs(cp):
+            raise HTTPException(422, f"only clips under outputs/ can be remixed: {c}")
+    if req.music:
+        mp = Path(req.music)
+        if not mp.exists():
+            raise HTTPException(404, f"music file not found: {req.music}")
+        if not (_under_outputs(mp) or mp.resolve().is_relative_to(Path("assets").resolve())):
+            raise HTTPException(422, "music must live under outputs/ or assets/")
     has_locked_clip = any(_voice_locked(Path(c)) for c in req.clips)
     if req.script and has_locked_clip:
         raise HTTPException(
@@ -484,6 +551,13 @@ def list_outputs():
     """List every generated video for the Library grid (newest first)."""
     items = []
     for p in Path("outputs").rglob("*.mp4"):
+        # Assembly intermediates are transient (and deleted mid-flight) — never list them.
+        if p.stem.endswith(".stitched") or p.stem.endswith("-joined"):
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue  # a running job deleted it between rglob and stat — skip, don't 500
         rel = p.relative_to("outputs")
         parts = rel.parts
         items.append({
@@ -495,8 +569,8 @@ def list_outputs():
                      else "final" if "final" in p.stem
                      else "clip"),
             "voice_lock": _voice_locked(p),
-            "size_bytes": p.stat().st_size,
-            "modified": int(p.stat().st_mtime),
+            "size_bytes": st.st_size,
+            "modified": int(st.st_mtime),
         })
     items.sort(key=lambda i: i["modified"], reverse=True)
     return {"outputs": items}

@@ -663,7 +663,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 4 · DIRECTOR GRID (quickStart) ---- */}
-        <section id="use-cases" data-dir-grid className="mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
+        <section id="use-cases" data-dir-grid className="scroll-mt-20 mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
           <div data-reveal className="mb-10 flex flex-col gap-2">
             <h2 className="text-3xl font-semibold tracking-tight font-display">
               What ad are we making today?
@@ -680,7 +680,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 5 · HOW IT WORKS ---- */}
-        <section id="how" data-steps className="mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
+        <section id="how" data-steps className="scroll-mt-20 mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
           <h2 data-reveal className="mb-10 text-3xl font-semibold tracking-tight font-display">
             Three steps. That&apos;s the whole job.
           </h2>
@@ -723,7 +723,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 7 · PIPELINE SHOWCASE ---- */}
-        <section id="tools" className="mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
+        <section id="tools" className="scroll-mt-20 mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
           <h2 data-reveal className="mb-10 text-3xl font-semibold tracking-tight font-display">
             Three engines. One studio.
           </h2>
@@ -816,7 +816,7 @@ export default function Landing() {
         </section>
 
         {/* ---- 11 · FAQ ---- */}
-        <section id="faq" className="mx-auto w-full max-w-4xl px-6 py-12 md:px-12">
+        <section id="faq" className="scroll-mt-20 mx-auto w-full max-w-4xl px-6 py-12 md:px-12">
           <h2 data-reveal className="mb-8 text-3xl font-semibold tracking-tight font-display">
             Questions, answered.
           </h2>

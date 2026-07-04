@@ -38,7 +38,7 @@ SEQ_VIDEO_DIR = Path("outputs/sequence/video")
 SEQ_AUDIO_DIR = Path("outputs/sequence/audio")
 
 
-def generate(req: dict, name: str, on_progress=None) -> str:
+def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
     """Run one generation job end to end. Returns the final video path.
 
     `name` prefixes every output file (outputs/video/<name>-*.mp4,
@@ -72,12 +72,16 @@ def generate(req: dict, name: str, on_progress=None) -> str:
             "pod unreachable — start/rebuild the ComfyUI pod (and update "
             "COMFY_POD_URLS) before generating."
         ) from None
+    # Fail BEFORE any TTS/pod spend: a typo'd music path used to surface only at the
+    # final assembly step, after the whole render had already burned time and credits.
+    if req.get("music") and not Path(req["music"]).exists():
+        raise FileNotFoundError(f"music file not found: {req['music']}")
     if mode == "sequence":
-        return _generate_sequence(req, name, report)
+        return _generate_sequence(req, name, report, on_submit)
     if mode == "lipsync":
-        return _generate_lipsync(req, name, report)
+        return _generate_lipsync(req, name, report, on_submit)
     if mode == "product":
-        return _generate_product(req, name, report)
+        return _generate_product(req, name, report, on_submit)
     if mode != "overlay":
         raise NotImplementedError(
             f"mode='{mode}' is not built yet — only 'overlay', 'lipsync' and 'product'. "
@@ -122,6 +126,7 @@ def generate(req: dict, name: str, on_progress=None) -> str:
             comfy.comfy_generate(
                 pod, wf, inputs, WAN_T2V_MAPPING,
                 out_path=str(OUTPUT_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
+                on_submit=on_submit,
             )
         )
 
@@ -131,14 +136,19 @@ def generate(req: dict, name: str, on_progress=None) -> str:
     if narration:
         final = ffmpeg.stitch_and_overlay(clips, narration, music=req.get("music"), out=final,
                                           on_warning=lambda w: report("assembling", 92, w))
+    elif req.get("music"):
+        # No narration but a music bed WAS chosen — it must not silently vanish.
+        final = ffmpeg.stitch_music_only(clips, req["music"], out=final)
     else:
         final = ffmpeg.stitch(clips, out=final)  # silent clips, no narration -> plain stitch
 
-    report("done", 100, "")
+    # The API layer owns the terminal 'done' (it sets video_path atomically with it —
+    # a 'done' from here would race pollers into a video-less done state).
+    report("assembling", 99, "export ready")
     return final
 
 
-def _generate_sequence(req: dict, name: str, report) -> str:
+def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
     """mode="sequence": the 60s-ad composer (file 15) — a TIMELINE of mixed-pipeline
     segments (e.g. lipsync hook -> i2v product shots -> t2v b-roll -> lipsync CTA),
     each with its own script slice, assembled into ONE video.
@@ -174,8 +184,14 @@ def _generate_sequence(req: dict, name: str, report) -> str:
     uploaded: dict[str, str] = {}  # local path -> pod filename (upload each asset once)
 
     def upload_once(path: str) -> str:
+        # Pod-side name carries a hash of the LOCAL path: two different files that
+        # happen to share a basename (a/face.jpg vs b/face.jpg) must not overwrite
+        # each other on the pod while the cache still points at the first upload.
         if path not in uploaded:
-            uploaded[path] = comfy.upload_file(pod, path)
+            import hashlib
+            p = Path(path)
+            unique = f"{hashlib.sha1(str(p.resolve()).encode()).hexdigest()[:8]}-{p.name}"
+            uploaded[path] = comfy.upload_file(pod, path, remote_name=unique)
         return uploaded[path]
 
     processed: list[str] = []
@@ -217,7 +233,11 @@ def _generate_sequence(req: dict, name: str, report) -> str:
             clip = comfy.comfy_generate(
                 pod, comfy.load_workflow("wan_s2v"), inputs, WAN_S2V_MAPPING,
                 out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
+                on_submit=on_submit,
             )
+            # The segment clip stays in the Library — lock its lip-synced voice
+            # just like the final, or /revoice could desync its mouth.
+            Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
         else:
             inputs = {"prompt": seg["prompt"], **common}
             if fast:
@@ -230,6 +250,7 @@ def _generate_sequence(req: dict, name: str, report) -> str:
             clip = comfy.comfy_generate(
                 pod, wf, inputs, mapping,
                 out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
+                on_submit=on_submit,
             )
             if seg.get("script"):
                 # Per-segment voiceover (AUDIO-AFTER) so the slice stays in its window.
@@ -264,11 +285,11 @@ def _generate_sequence(req: dict, name: str, report) -> str:
         # replaces these sidecars.
         Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
 
-    report("done", 100, "")
+    report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final
 
 
-def _generate_product(req: dict, name: str, report) -> str:
+def _generate_product(req: dict, name: str, report, on_submit=None) -> str:
     """mode="product": Wan i2v — animate a PRODUCT PHOTO per shot, optional narration on top.
 
     AUDIO-AFTER (file 04): clips are silent; narration/music overlay at assembly. Every shot
@@ -324,6 +345,7 @@ def _generate_product(req: dict, name: str, report) -> str:
             comfy.comfy_generate(
                 pod, wf, inputs, WAN_I2V_MAPPING,
                 out_path=str(I2V_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
+                on_submit=on_submit,
             )
         )
 
@@ -333,14 +355,16 @@ def _generate_product(req: dict, name: str, report) -> str:
     if narration:
         final = ffmpeg.stitch_and_overlay(clips, narration, music=req.get("music"), out=final,
                                           on_warning=lambda w: report("assembling", 92, w))
+    elif req.get("music"):
+        final = ffmpeg.stitch_music_only(clips, req["music"], out=final)
     else:
         final = ffmpeg.stitch(clips, out=final)
 
-    report("done", 100, "")
+    report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final
 
 
-def _generate_lipsync(req: dict, name: str, report) -> str:
+def _generate_lipsync(req: dict, name: str, report, on_submit=None) -> str:
     """mode="lipsync": Wan-S2V talking avatar. AUDIO-FIRST (file 04) — the narration is
     synthesized first and DRIVES the mouth; the reference image locks the face.
 
@@ -408,6 +432,7 @@ def _generate_lipsync(req: dict, name: str, report) -> str:
     clip = comfy.comfy_generate(
         pod, wf, inputs, WAN_S2V_MAPPING,
         out_path=str(S2V_VIDEO_DIR / f"{name}-clip1.mp4"),
+        on_submit=on_submit,
     )
 
     # 4. ASSEMBLE — audio is already inside the clip; optionally add a music bed
@@ -418,5 +443,5 @@ def _generate_lipsync(req: dict, name: str, report) -> str:
     else:
         final = ffmpeg.stitch([clip], out=final)
 
-    report("done", 100, "")
+    report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final

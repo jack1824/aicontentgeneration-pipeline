@@ -40,9 +40,20 @@ export default function RemixPage() {
       try {
         const j = await api.job(jobId);
         setJob(j);
-        if (["done", "error"].includes(j.status) && pollRef.current) clearInterval(pollRef.current);
-      } catch {
-        /* keep polling */
+        if (["done", "error", "cancelled"].includes(j.status) && pollRef.current)
+          clearInterval(pollRef.current);
+      } catch (e) {
+        if (String(e).includes("404")) {
+          // Job vanished (backend restart) — stop polling, unblock the button.
+          if (pollRef.current) clearInterval(pollRef.current);
+          setJob({
+            status: "error",
+            progress: 0,
+            detail: "",
+            video_path: null,
+            error: "re-export lost — the backend restarted mid-job. Fire it again.",
+          });
+        }
       }
     }, 4000);
     return () => {
@@ -88,7 +99,7 @@ export default function RemixPage() {
     }
   };
 
-  const running = job && !["done", "error"].includes(job.status);
+  const running = job && !["done", "error", "cancelled"].includes(job.status);
   // Lip-synced avatar scenes carry their voice IN the video — a new narration
   // would wipe it and desync the mouth (backend 422s this too).
   const lockedPicked = picked.some((p) => p.voice_lock || p.pipeline === "wans2v");

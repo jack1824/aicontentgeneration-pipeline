@@ -197,23 +197,31 @@ def comfy_generate(
     out_path: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     poll_interval: float = DEFAULT_POLL_INTERVAL,
+    on_submit=None,
 ) -> str:
     """Generate one clip on a ComfyUI pod end to end: inject → submit → poll → download.
 
     The stable seam the pipeline calls. `inputs` + `mapping` parameterize the saved workflow
-    (prompt/seed/etc.); omit them to run the workflow exactly as exported.
+    (prompt/seed/etc.); omit them to run the workflow exactly as exported. `on_submit`
+    receives the prompt_id right after submission — the cancel path needs it to know
+    whether this job is RUNNING on the pod (interrupt) or still QUEUED there (delete).
     """
     wf = inject_inputs(workflow_json, inputs, mapping or {}) if inputs else workflow_json
     prompt_id = submit_prompt(pod_url, wf)
+    if on_submit:
+        on_submit(prompt_id)
     entry = poll_until_done(pod_url, prompt_id, timeout=timeout, interval=poll_interval)
     return download_output(pod_url, entry, out_path=out_path)
 
 
-def upload_file(pod_url: str, file_path: str, overwrite: bool = True) -> str:
+def upload_file(pod_url: str, file_path: str, overwrite: bool = True,
+                remote_name: str | None = None) -> str:
     """Upload a local file (image OR audio) to the pod's input directory.
 
     ComfyUI's POST /upload/image accepts any file type and drops it into input/ — LoadImage
     and LoadAudio nodes then reference it by the returned name. Returns that pod-side name.
+    `remote_name` avoids basename collisions (two different local files both named
+    face.jpg would otherwise silently overwrite each other pod-side).
     """
     from pathlib import Path
 
@@ -224,14 +232,14 @@ def upload_file(pod_url: str, file_path: str, overwrite: bool = True) -> str:
         try:
             r = httpx.post(
                 f"{_base(pod_url)}/upload/image",
-                files={"image": (p.name, fh)},
+                files={"image": (remote_name or p.name, fh)},
                 data={"overwrite": "true" if overwrite else "false"},
                 timeout=300,
             )
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
             raise _surface_http_error(e, "ComfyUI /upload/image") from None
-    return r.json().get("name", p.name)
+    return r.json().get("name", remote_name or p.name)
 
 
 def load_workflow(name: str) -> dict:

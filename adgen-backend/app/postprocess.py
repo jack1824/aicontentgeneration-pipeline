@@ -32,6 +32,7 @@ def postprocess_video(
     source_fps: float = 16.0,
     multiplier: int = 2,
     fidelity: float = 0.6,
+    on_submit=None,
 ) -> str:
     """Run the full chain on a local video file. Returns the saved output path.
 
@@ -58,7 +59,13 @@ def postprocess_video(
 
     wf = comfy.load_workflow("postprocess")
     out_path = out_path or str(src.with_name(src.stem + "-post.mp4"))
-    return comfy.comfy_generate(
+    result = comfy.comfy_generate(
         pod, wf, inputs, POSTPROCESS_MAPPING,
-        out_path=out_path, timeout=POSTPROCESS_TIMEOUT,
+        out_path=out_path, timeout=POSTPROCESS_TIMEOUT, on_submit=on_submit,
     )
+    # Voice-lock survives enhancement: a lip-synced final stays lip-synced in its
+    # -post copy, so /revoice must keep refusing it.
+    sidecar = src.with_suffix(".meta.json")
+    if sidecar.exists():
+        Path(result).with_suffix(".meta.json").write_text(sidecar.read_text())
+    return result

@@ -165,13 +165,21 @@ export default function Sidebar() {
     return () => clearInterval(t);
   }, []);
 
-  // Navigating closes the drawer; so does Escape.
+  // Navigating closes the drawer; so does Escape. (Same-pathname links — e.g.
+  // query-only navigations or tapping the current page — don't change `pathname`,
+  // so the drawer ALSO closes on any link tap via onClickCapture below.)
   useEffect(() => setDrawerOpen(false), [pathname]);
   useEffect(() => {
     if (!drawerOpen) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setDrawerOpen(false);
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    // The page must not scroll behind the open drawer.
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [drawerOpen]);
 
   return (
@@ -223,7 +231,14 @@ export default function Sidebar() {
             onClick={() => setDrawerOpen(false)}
             aria-hidden="true"
           />
-          <div className="rail-raised absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col overflow-y-auto px-4 py-5">
+          <div
+            className="rail-raised absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col overflow-y-auto px-4 py-5"
+            onClickCapture={(e) => {
+              // Any link tap closes the drawer — including same-pathname targets
+              // that never trigger the pathname effect.
+              if ((e.target as HTMLElement).closest("a")) setDrawerOpen(false);
+            }}
+          >
             <div className="flex items-center justify-between">
               <Brand />
               <button

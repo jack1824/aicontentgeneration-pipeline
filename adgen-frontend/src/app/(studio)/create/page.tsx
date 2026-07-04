@@ -274,7 +274,9 @@ function CreateStudio() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Seed history: each re-roll fires the same request with a fresh seed ("take N").
   // `done` is tracked per take so earlier takes stay watchable while a new one renders.
-  const [takes, setTakes] = useState<{ jobId: string; label: string; done: boolean }[]>([]);
+  const [takes, setTakes] = useState<
+    { jobId: string; label: string; done: boolean; failed?: boolean }[]
+  >([]);
   const [viewTakeId, setViewTakeId] = useState<string | null>(null);
   const lastReqRef = useRef<GenerateRequest | null>(null);
   // Stage chips are frozen from the FIRED request — editing the form mid-render
@@ -327,11 +329,33 @@ function CreateStudio() {
         if (j.status === "done") {
           setTakes((ts) => ts.map((t) => (t.jobId === jobId ? { ...t, done: true } : t)));
         }
+        if (["error", "cancelled"].includes(j.status)) {
+          setTakes((ts) => ts.map((t) => (t.jobId === jobId ? { ...t, failed: true } : t)));
+        }
         if (["done", "error", "cancelled"].includes(j.status) && pollRef.current) {
           clearInterval(pollRef.current);
         }
-      } catch {
-        /* transient poll failure — keep polling */
+      } catch (e) {
+        // 404 = the job VANISHED (jobs are in-memory; the backend restarted).
+        // Anything else is a transient blip — keep polling. Without this, a dead
+        // job froze the page at "Rendering…" forever and the sessionStorage
+        // snapshot resurrected the freeze on every reload.
+        if (String(e).includes("404")) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          try {
+            sessionStorage.removeItem("adgen-active-job");
+          } catch {
+            /* nonfatal */
+          }
+          setTakes((ts) => ts.map((t) => (t.jobId === jobId ? { ...t, failed: true } : t)));
+          setJob({
+            status: "error",
+            progress: 0,
+            detail: "",
+            video_path: null,
+            error: "render lost — the backend restarted mid-job. Fire it again.",
+          });
+        }
       }
     };
     tick(); // immediate refresh (matters when re-attaching after navigation)
@@ -343,6 +367,12 @@ function CreateStudio() {
 
   const adopt = (a: PlanApproach) => {
     if (a.pipeline === "product" || a.pipeline === "lipsync" || a.pipeline === "overlay") {
+      if (a.pipeline !== mode) {
+        // Mirror the manual mode buttons: an image uploaded for ANOTHER pipeline
+        // must not silently become this one's avatar face / product photo.
+        setImage(null);
+      }
+      if (a.pipeline === "lipsync") setMusic(null); // no music UI in avatar mode
       setMode(a.pipeline);
     }
     const planShots = (a.shots?.length ? a.shots : [emptyShot()]).map((s) => ({
@@ -382,7 +412,7 @@ function CreateStudio() {
       ...(name ? { name } : {}),
       ...(mode === "lipsync" && image ? { avatar_image: image.path } : {}),
       ...(mode === "product" && image ? { product_image: image.path } : {}),
-      ...(music ? { music: music.path } : {}),
+      ...(mode !== "lipsync" && music ? { music: music.path } : {}),
       ...(voiceId ? { voice_id: voiceId } : {}),
     };
     try {
@@ -485,9 +515,13 @@ function CreateStudio() {
               <button
                 key={m.key}
                 onClick={() => {
+                  if (m.key === mode) return; // re-click must not wipe the upload
                   setMode(m.key);
                   setImage(null);
-                  if (m.key === "lipsync") setShots((s) => s.slice(0, 1));
+                  if (m.key === "lipsync") {
+                    setShots((s) => s.slice(0, 1));
+                    setMusic(null); // its dropzone is hidden in avatar mode — don't send it invisibly
+                  }
                 }}
                 className={`rounded-full px-4 py-2 text-sm ${mode === m.key ? "seg-on" : "seg"}`}
               >
@@ -721,7 +755,7 @@ function CreateStudio() {
               </div>
               {running && jobId && (
                 <button
-                  onClick={() => api.cancel(jobId).catch(() => {})}
+                  onClick={() => api.cancel(jobId).catch((e) => setError(String(e)))}
                   className="seg self-start rounded-btn px-3 py-1.5 text-xs"
                 >
                   Cancel render
@@ -742,6 +776,13 @@ function CreateStudio() {
                       >
                         {t.label}
                       </button>
+                    ) : t.failed ? (
+                      <span
+                        key={t.jobId}
+                        className="rounded-full bg-white/5 px-2.5 py-1 text-[10px] text-text-muted"
+                      >
+                        ✕ {t.label} failed
+                      </span>
                     ) : (
                       <span
                         key={t.jobId}

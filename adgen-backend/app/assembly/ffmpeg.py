@@ -148,27 +148,31 @@ def stitch_and_overlay(
     long narration is atempo'd (capped) into the window.
     """
     stitched = stitch(clips, out=_stitched_path(out))
-    vdur = probe(stitched)["duration"]
-    ndur = probe(narration)["duration"]
-    tempo, out_t, warning = _fit_narration(vdur, ndur, 300)
-    if warning and on_warning:
-        on_warning(warning)
-    narr = _narr_filter(300, tempo=tempo)
-    if music:
-        fc = (f"{narr};"
-              f"[2:a]volume={MUSIC_DUCK_VOLUME}[bg];"
-              f"[narr][bg]amix=inputs=2:duration=first[mix]")
-        cmd = ["ffmpeg", "-y", "-i", stitched, "-i", narration, "-i", music,
-               "-filter_complex", fc,
-               "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
-               "-t", f"{out_t:.3f}", out]
-    else:
-        cmd = ["ffmpeg", "-y", "-i", stitched, "-i", narration,
-               "-filter_complex", narr,
-               "-map", "0:v", "-map", "[narr]", "-c:v", "copy", "-c:a", "aac",
-               "-t", f"{out_t:.3f}", out]
-    _run(cmd)
-    Path(stitched).unlink(missing_ok=True)  # drop the intermediate; keep output folders clean
+    try:
+        vdur = probe(stitched)["duration"]
+        ndur = probe(narration)["duration"]
+        tempo, out_t, warning = _fit_narration(vdur, ndur, 300)
+        if warning and on_warning:
+            on_warning(warning)
+        narr = _narr_filter(300, tempo=tempo)
+        if music:
+            fc = (f"{narr};"
+                  f"[2:a]volume={MUSIC_DUCK_VOLUME}[bg];"
+                  f"[narr][bg]amix=inputs=2:duration=first[mix]")
+            cmd = ["ffmpeg", "-y", "-i", stitched, "-i", narration, "-i", music,
+                   "-filter_complex", fc,
+                   "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
+                   "-t", f"{out_t:.3f}", out]
+        else:
+            cmd = ["ffmpeg", "-y", "-i", stitched, "-i", narration,
+                   "-filter_complex", narr,
+                   "-map", "0:v", "-map", "[narr]", "-c:v", "copy", "-c:a", "aac",
+                   "-t", f"{out_t:.3f}", out]
+        _run(cmd)
+    finally:
+        # ALWAYS drop the intermediate — a failed overlay must not leave a
+        # *.stitched.mp4 posing as a final in the Library.
+        Path(stitched).unlink(missing_ok=True)
     return out
 
 
@@ -306,12 +310,35 @@ def stitch_plus_music(
     stitched = stitch(clips, out=_stitched_path(out))
     if not music:
         return stitched
-    fc = (f"[0:a]volume=1.0[v];[1:a]volume={MUSIC_DUCK_VOLUME}[bg];"
-          f"[v][bg]amix=inputs=2:duration=first[mix]")
-    cmd = ["ffmpeg", "-y", "-i", stitched, "-i", music,
-           "-filter_complex", fc,
-           "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
-           "-shortest", out]
-    _run(cmd)
-    Path(stitched).unlink(missing_ok=True)  # drop the intermediate; keep output folders clean
+    try:
+        fc = (f"[0:a]volume=1.0[v];[1:a]volume={MUSIC_DUCK_VOLUME}[bg];"
+              f"[v][bg]amix=inputs=2:duration=first[mix]")
+        cmd = ["ffmpeg", "-y", "-i", stitched, "-i", music,
+               "-filter_complex", fc,
+               "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
+               "-shortest", out]
+        _run(cmd)
+    finally:
+        Path(stitched).unlink(missing_ok=True)  # never leak the intermediate, even on failure
+    return out
+
+
+def stitch_music_only(
+    clips: list[str],
+    music: str,
+    out: str = "final.mp4",
+) -> str:
+    """Stitch SILENT clips (t2v/i2v) and lay a music bed as the only soundtrack.
+
+    The no-narration + music case: amix would fail (silent clips have no audio
+    stream), so the music is mapped directly at full volume and cut at video end."""
+    stitched = stitch(clips, out=_stitched_path(out))
+    try:
+        vdur = probe(stitched)["duration"]
+        cmd = ["ffmpeg", "-y", "-i", stitched, "-i", music,
+               "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
+               "-t", f"{vdur:.3f}", out]
+        _run(cmd)
+    finally:
+        Path(stitched).unlink(missing_ok=True)
     return out

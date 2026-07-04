@@ -98,7 +98,11 @@ export default function BriefChat({
           <input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit(draft)}
+            onKeyDown={(e) => {
+              // IME guard: the Enter that COMMITS a Devanagari composition must
+              // not submit a half-typed answer.
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) submit(draft);
+            }}
             placeholder={q.placeholder}
             autoFocus
             className="input-well min-w-0 flex-1 rounded-btn p-3 text-sm placeholder:text-text-muted"

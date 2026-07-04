@@ -146,7 +146,21 @@ export const PIPELINE_LABELS: Record<string, string> = {
 };
 
 async function jsonOrThrow(r: Response) {
-  if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 300)}`);
+  if (!r.ok) {
+    // FastAPI errors are {"detail": "..."} (or a Pydantic array) — surface the human
+    // part, not raw JSON. Error message keeps the status FIRST so callers can match
+    // on it (the job pollers check /^404/ to detect vanished jobs).
+    const raw = await r.text();
+    let msg = raw.slice(0, 300);
+    try {
+      const d = JSON.parse(raw)?.detail;
+      if (typeof d === "string") msg = d;
+      else if (Array.isArray(d) && d[0]?.msg) msg = d[0].msg;
+    } catch {
+      /* not JSON — keep the raw slice */
+    }
+    throw new Error(`${r.status}: ${msg}`);
+  }
   return r.json();
 }
 

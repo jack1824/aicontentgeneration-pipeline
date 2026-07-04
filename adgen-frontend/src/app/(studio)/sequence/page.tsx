@@ -96,8 +96,24 @@ export default function SequencePage() {
         if (["done", "error", "cancelled"].includes(j.status) && pollRef.current) {
           clearInterval(pollRef.current);
         }
-      } catch {
-        /* keep polling */
+      } catch (e) {
+        // 404 = job vanished (backend restart) — recover instead of freezing at
+        // "Rendering sequence…" forever (the snapshot would resurrect the freeze).
+        if (String(e).includes("404")) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          try {
+            sessionStorage.removeItem("adgen-active-seq-job");
+          } catch {
+            /* nonfatal */
+          }
+          setJob({
+            status: "error",
+            progress: 0,
+            detail: "",
+            video_path: null,
+            error: "render lost — the backend restarted mid-job. Fire it again.",
+          });
+        }
       }
     };
     tick();

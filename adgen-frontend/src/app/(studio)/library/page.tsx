@@ -206,12 +206,12 @@ function Lightbox({
           >
             ↓ Download
           </a>
-          {item.kind !== "final-post" && !enhanceJobId && (
+          {item.kind !== "final-post" && (!enhanceJobId || enhanceJob?.status === "error") && (
             <button
               onClick={enhance}
               className="hero-glow flex-1 rounded-btn px-4 py-2.5 text-xs font-semibold text-white"
             >
-              ✨ Enhance (~10 min)
+              {enhanceJob?.status === "error" ? "✨ Retry enhance" : "✨ Enhance (~10 min)"}
             </button>
           )}
         </div>
@@ -263,7 +263,8 @@ function Lightbox({
             />
             <button
               onClick={() => fixTiming("manual")}
-              disabled={!endS || !!fitting}
+              disabled={!endS || Number.isNaN(Number(endS)) || Number(endS) <= 0.5 || !!fitting}
+              title="Cut point must be past 0.5s"
               className="seg rounded-btn px-3 py-1.5 text-[11px] disabled:opacity-40"
             >
               Cut
@@ -361,7 +362,9 @@ export default function LibraryPage() {
   const [open, setOpen] = useState<OutputItem | null>(null);
   // Enhance/revoice jobs by source path — tracked HERE so closing the lightbox
   // mid-job still refreshes the grid on completion (and cards show a busy badge).
-  const [activeJobs, setActiveJobs] = useState<Record<string, string>>({});
+  // Value is a LIST: two jobs on the same clip (enhance + fix-timing) must both
+  // stay tracked, not overwrite each other.
+  const [activeJobs, setActiveJobs] = useState<Record<string, string[]>>({});
 
   // Stable identity matters: unstable refresh restarted the Lightbox poll effect
   // on every render and looped refreshes after a job finished.
@@ -375,31 +378,40 @@ export default function LibraryPage() {
   }, [refresh]);
 
   const trackJob = useCallback((path: string, jobId: string) => {
-    setActiveJobs((m) => ({ ...m, [path]: jobId }));
+    setActiveJobs((m) => ({ ...m, [path]: [...(m[path] ?? []), jobId] }));
+  }, []);
+
+  const untrack = useCallback((path: string, jobId: string) => {
+    setActiveJobs((m) => {
+      const left = (m[path] ?? []).filter((id) => id !== jobId);
+      const next = { ...m };
+      if (left.length) next[path] = left;
+      else delete next[path];
+      return next;
+    });
   }, []);
 
   useEffect(() => {
-    const ids = Object.entries(activeJobs);
-    if (ids.length === 0) return;
+    const entries = Object.entries(activeJobs);
+    if (entries.length === 0) return;
     const t = setInterval(async () => {
-      for (const [path, jobId] of ids) {
-        try {
-          const j = await api.job(jobId);
-          if (["done", "error", "cancelled"].includes(j.status)) {
-            setActiveJobs((m) => {
-              const next = { ...m };
-              delete next[path];
-              return next;
-            });
-            if (j.status === "done") refresh();
+      for (const [path, jobIds] of entries) {
+        for (const jobId of jobIds) {
+          try {
+            const j = await api.job(jobId);
+            if (["done", "error", "cancelled"].includes(j.status)) {
+              untrack(path, jobId);
+              if (j.status === "done") refresh();
+            }
+          } catch (e) {
+            // 404 = job gone (backend restart) — evict, or the badge polls forever.
+            if (String(e).includes("404")) untrack(path, jobId);
           }
-        } catch {
-          /* transient */
         }
       }
     }, 5000);
     return () => clearInterval(t);
-  }, [activeJobs, refresh]);
+  }, [activeJobs, refresh, untrack]);
 
   const filtered = useMemo(
     () =>
@@ -458,7 +470,7 @@ export default function LibraryPage() {
       {filtered.length > 0 ? (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {filtered.map((o) => (
-            <VideoCard key={o.path} item={o} busy={!!activeJobs[o.path]} onOpen={setOpen} />
+            <VideoCard key={o.path} item={o} busy={!!activeJobs[o.path]?.length} onOpen={setOpen} />
           ))}
         </div>
       ) : (
