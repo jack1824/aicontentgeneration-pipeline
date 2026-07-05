@@ -203,6 +203,9 @@ def generate_face(description: str, negative: str | None = None,
         "duration": 0.0,          # 1 frame — a still photo, not a clip
         "width": 768,
         "height": 768,
+        # PINNED to the QUALITY path (20 steps / split 10 / CFG 3.5): this face is
+        # every future ad's identity — never let a preset leak the 4-step LoRA in.
+        "lightning_lora": False,
     }
     try:
         comfy.comfy_generate(

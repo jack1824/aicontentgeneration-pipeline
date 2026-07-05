@@ -8,7 +8,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { api, OutputItem, PIPELINE_LABELS } from "@/lib/api";
+import { api, AvatarProfile, OutputItem, PIPELINE_LABELS } from "@/lib/api";
 import BrandMark from "@/components/BrandMark";
 
 const NAV = [
@@ -120,6 +120,47 @@ function NavLinks({ pathname }: { pathname: string }) {
   );
 }
 
+function AvatarStrip({ avatars }: { avatars: AvatarProfile[] }) {
+  // Saved avatars, one click from use: tapping a face opens Create in Avatar
+  // mode with that profile pre-selected (its locked face + tied voice).
+  if (avatars.length === 0) return null;
+  return (
+    <div className="mt-6 flex flex-col gap-1.5">
+      <div className="flex items-center justify-between px-3">
+        <span className="label-cap">Avatars</span>
+        <Link href="/avatars" className="text-[10px] text-text-muted hover:text-text-primary">
+          manage
+        </Link>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5 px-3">
+        {avatars.map((a) => (
+          <Link
+            key={a.id}
+            href={`/create?mode=lipsync&avatar=${a.id}`}
+            title={`${a.name} — new avatar ad`}
+          >
+            {a.image_url && (
+              // eslint-disable-next-line @next/next/no-img-element -- backend-proxied thumb
+              <img
+                src={api.assetUrl(a.image_url)}
+                alt={a.name}
+                className="size-8 rounded-full object-cover ring-1 ring-white/10 transition-shadow hover:ring-accent/60"
+              />
+            )}
+          </Link>
+        ))}
+        <Link
+          href="/avatars"
+          aria-label="New avatar"
+          className="flex size-8 items-center justify-center rounded-full border border-dashed border-white/20 text-xs text-text-muted transition-colors hover:border-accent/50 hover:text-text-primary"
+        >
+          ＋
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 function RecentRenders({ recent }: { recent: OutputItem[] }) {
   if (recent.length === 0) return null;
   return (
@@ -169,6 +210,7 @@ export default function Sidebar() {
   const pathname = usePathname();
   const [backendUp, setBackendUp] = useState<boolean | null>(null);
   const [recent, setRecent] = useState<OutputItem[]>([]);
+  const [avatars, setAvatars] = useState<AvatarProfile[]>([]);
   const [podJobs, setPodJobs] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -184,6 +226,12 @@ export default function Sidebar() {
       .catch(() => {});
     return () => clearInterval(t);
   }, []);
+
+  // Refetch on navigation: an avatar saved on /avatars must appear in the rail
+  // the moment the user moves on (the Sidebar itself never remounts).
+  useEffect(() => {
+    api.avatars().then((d) => setAvatars(d.avatars.slice(0, 8))).catch(() => {});
+  }, [pathname]);
 
   // Navigating closes the drawer; so does Escape. (Same-pathname links — e.g.
   // query-only navigations or tapping the current page — don't change `pathname`,
@@ -217,6 +265,7 @@ export default function Sidebar() {
         <div className="mt-7">
           <NavLinks pathname={pathname} />
         </div>
+        <AvatarStrip avatars={avatars} />
         {/* Latest renders fill the rail's lower half with something worth clicking. */}
         <RecentRenders recent={recent} />
         <StatusBlock backendUp={backendUp} podJobs={podJobs} />
@@ -278,6 +327,7 @@ export default function Sidebar() {
             <div className="mt-5">
               <NavLinks pathname={pathname} />
             </div>
+            <AvatarStrip avatars={avatars} />
             <RecentRenders recent={recent} />
             <StatusBlock backendUp={backendUp} podJobs={podJobs} />
           </div>
