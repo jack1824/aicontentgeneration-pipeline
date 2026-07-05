@@ -109,49 +109,60 @@ Respond with STRICT JSON only (no markdown fences):
 """
 
 
+DIALOGUE_SYSTEM_PROMPT = """\
+You are the planning brain for TWO-SPEAKER DIALOGUE ads (Indian SMB ads, English + Hindi).
+The format: shot/reverse-shot conversation — the classic problem -> solution ad. Speaker A
+voices the customer's pain; Speaker B lands the product as the answer. Each turn renders as
+ONE ~14-second talking-avatar take (Wan-S2V), and the cuts alternate between the speakers.
+
+Given a rough ad idea, write ONE dialogue:
+- Exactly the requested number of turns, alternating speakers, starting with A.
+- Every turn is SPOKEN aloud in <= 13 seconds: at most ~38 words. Natural, conversational
+  lines a real person would say — contractions, rhythm, a little humor; never robotic copy.
+  The LAST turn must land the pitch or call-to-action.
+- The user message states the LANGUAGE. Hindi dialogue: Devanagari, with brand names and
+  English product words kept in Latin script (natural Hinglish is good).
+- Give each speaker an Indian first name, a gender ("female"|"male"), and a `scene`: one
+  continuous Wan-S2V scene prompt (40-70 words) — the speaker's age, hair, clothing and
+  distinct look, their setting and light, natural gestures while talking to the camera.
+  No cuts, no camera moves, no on-screen text, no brand names inside the scene prompt.
+  The two speakers must be visually distinct people in different settings.
+- Spoken brand names belong in the turns, never in scene prompts.
+
+Respond with STRICT JSON only (no markdown fences):
+{"title": str,
+ "speakers": [
+   {"role": "a", "name": str, "gender": "female|male", "scene": str},
+   {"role": "b", "name": str, "gender": "female|male", "scene": str}],
+ "turns": [{"speaker": "a|b", "text": str}]}
+"""
+
+
 class PlanError(RuntimeError):
     pass
 
 
-def plan(idea: str, language: str = "en", ad_format: str = "9:16",
-         duration_s: int = 15, avoid: list[str] | None = None) -> dict:
-    """Ask Gemini for 3 proposed ad approaches. Returns the parsed proposals dict.
-
-    `avoid` carries the titles of directions the user already rejected (the
-    Regenerate button) — the new batch must steer clear of them.
+def _gemini_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
+    """One structured-JSON Gemini call with the platform's healing strategy:
+      503/500 (overloaded)  -> short backoff, retry same model
+      429 (free-tier quota) -> WAIT the delay Google names (fast retries burn
+                               MORE quota in the same window), retry; if still
+                               exhausted, fall back to flash-lite — free-tier
+                               quotas are per model, so its pool is separate.
     """
     if not GEMINI_API_KEY:
         raise PlanError(
             "GEMINI_API_KEY is not set. Add it to adgen-backend/.env "
             "(aistudio.google.com -> Get API key; see file 14)."
         )
-    user_msg = (
-        f"Ad idea: {idea}\n"
-        f"Language for narration: {language}\n"
-        f"Format: {ad_format}\n"
-        f"Target duration: {duration_s} seconds"
-    )
-    if avoid:
-        rejected = "; ".join(a.strip() for a in avoid if a.strip())
-        user_msg += (
-            f"\nThe user REJECTED these directions — do not repeat or lightly rework "
-            f"them; propose 3 clearly different creative directions: {rejected}"
-        )
     body = {
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_msg}]}],
         "generationConfig": {
-            # Regenerates run hotter — the user explicitly wants different ideas.
-            "temperature": 0.9 if avoid else 0.7,
+            "temperature": temperature,
             "response_mime_type": "application/json",
         },
     }
-    # Transient Gemini failures heal themselves if handled right:
-    #   503/500 (overloaded)  -> short backoff, retry same model
-    #   429 (free-tier quota) -> WAIT the delay Google names (fast retries burn
-    #                            MORE quota in the same window), retry; if still
-    #                            exhausted, fall back to flash-lite — free-tier
-    #                            quotas are per model, so its pool is separate.
     attempts = [GEMINI_MODEL, GEMINI_MODEL, GEMINI_FALLBACK_MODEL]
     last_err: str = ""
     r = None
@@ -184,9 +195,49 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
         if text.startswith("```"):
             text = text.split("\n", 1)[1] if "\n" in text else ""
             text = text.rsplit("```", 1)[0]
-        proposals = json.loads(text)
+        return json.loads(text)
     except (KeyError, IndexError, json.JSONDecodeError) as e:
         raise PlanError(f"Gemini returned an unparseable plan: {e}") from None
+
+
+def plan(idea: str, language: str = "en", ad_format: str = "9:16",
+         duration_s: int = 15, avoid: list[str] | None = None) -> dict:
+    """Ask Gemini for 3 proposed ad approaches. Returns the parsed proposals dict.
+
+    `avoid` carries the titles of directions the user already rejected (the
+    Regenerate button) — the new batch must steer clear of them.
+    """
+    user_msg = (
+        f"Ad idea: {idea}\n"
+        f"Language for narration: {language}\n"
+        f"Format: {ad_format}\n"
+        f"Target duration: {duration_s} seconds"
+    )
+    if avoid:
+        rejected = "; ".join(a.strip() for a in avoid if a.strip())
+        user_msg += (
+            f"\nThe user REJECTED these directions — do not repeat or lightly rework "
+            f"them; propose 3 clearly different creative directions: {rejected}"
+        )
+    # Regenerates run hotter — the user explicitly wants different ideas.
+    proposals = _gemini_json(SYSTEM_PROMPT, user_msg, temperature=0.9 if avoid else 0.7)
     if "approaches" not in proposals or not proposals["approaches"]:
         raise PlanError("Gemini returned no approaches.")
     return proposals
+
+
+def plan_dialogue(idea: str, language: str = "en", turns: int = 2,
+                  regenerate: bool = False) -> dict:
+    """Ask Gemini for one two-speaker dialogue ad (speakers + alternating turns)."""
+    user_msg = (
+        f"Ad idea: {idea}\n"
+        f"Language for the dialogue: {language}\n"
+        f"Number of turns: {turns}"
+    )
+    if regenerate:
+        user_msg += "\nWrite a FRESH take — different angle and lines than an earlier draft."
+    result = _gemini_json(DIALOGUE_SYSTEM_PROMPT, user_msg,
+                          temperature=0.9 if regenerate else 0.7)
+    if not result.get("turns") or len(result.get("speakers", [])) != 2:
+        raise PlanError("Gemini returned an incomplete dialogue plan.")
+    return result

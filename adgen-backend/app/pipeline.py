@@ -167,14 +167,17 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
 # duration 0 -> floor(0*fps)+1 = exactly ONE frame, extracted to PNG. QUALITY
 # path (20 steps, no Lightning LoRA): a face rendered once is reused forever.
 FACE_PROMPT_SUFFIX = (
-    ", professional portrait photograph, front-facing, looking directly at the camera, "
-    "head and shoulders framing, arms relaxed at the sides, natural skin texture, "
-    "soft flattering light, sharp focus, photorealistic"
+    ". Professional studio headshot photograph, 85mm portrait lens, front-facing, "
+    "looking directly at the camera, gentle natural closed-mouth smile, head and "
+    "shoulders framing, arms relaxed and out of frame, realistic skin pores and "
+    "texture, soft diffused key light, neutral seamless background, sharp focus "
+    "on the eyes, photorealistic"
 )
 FACE_NEGATIVE = (
-    "cartoon, anime, 3d render, cgi, illustration, painting, deformed face, "
-    "asymmetric eyes, multiple people, extra faces, side profile, sunglasses, "
-    "raised arms, hands near face, text, watermark, blur"
+    "cartoon, anime, 3d render, cgi, illustration, painting, airbrushed skin, "
+    "plastic skin, uncanny, deformed face, asymmetric eyes, crooked teeth, "
+    "exaggerated smile, multiple people, extra faces, side profile, sunglasses, "
+    "raised arms, hands, text, watermark, blur"
 )
 
 
@@ -201,8 +204,10 @@ def generate_face(description: str, negative: str | None = None,
         "negative_prompt": negative or FACE_NEGATIVE,
         "seed": seed or DEFAULT_BASE_SEED,
         "duration": 0.0,          # 1 frame — a still photo, not a clip
-        "width": 768,
-        "height": 768,
+        # 1024² (vs the videos' 640-class): stills have no motion budget to spend,
+        # so spend it on resolution — S2V gets a much cleaner identity to lock.
+        "width": 1024,
+        "height": 1024,
         # PINNED to the QUALITY path (20 steps / split 10 / CFG 3.5): this face is
         # every future ad's identity — never let a preset leak the 4-step LoRA in.
         "lightning_lora": False,

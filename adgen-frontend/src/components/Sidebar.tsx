@@ -213,6 +213,24 @@ export default function Sidebar() {
   const [avatars, setAvatars] = useState<AvatarProfile[]>([]);
   const [podJobs, setPodJobs] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // Desktop rail collapse — remembered across visits (starts open on the server
+  // render; localStorage applies after mount to avoid a hydration mismatch).
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    try {
+      setCollapsed(localStorage.getItem("adgen-rail") === "closed");
+    } catch {
+      /* storage blocked — stay open */
+    }
+  }, []);
+  const setRail = (closed: boolean) => {
+    setCollapsed(closed);
+    try {
+      localStorage.setItem("adgen-rail", closed ? "closed" : "open");
+    } catch {
+      /* nonfatal */
+    }
+  };
 
   useEffect(() => {
     const check = () => {
@@ -253,9 +271,36 @@ export default function Sidebar() {
   return (
     <>
       {/* ---- Desktop rail (lg+) ---- */}
-      <aside className="rail-raised sticky top-0 hidden h-screen w-56 shrink-0 flex-col px-4 py-6 lg:flex">
+      {collapsed && (
+        <button
+          onClick={() => setRail(false)}
+          aria-label="Open sidebar"
+          className="card-raised fixed left-3 top-3 z-40 hidden rounded-btn p-2 text-text-secondary hover:text-text-primary lg:flex"
+        >
+          <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+            <path d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
+        </button>
+      )}
+      <aside
+        className={`rail-raised sticky top-0 h-screen w-56 shrink-0 flex-col px-4 py-6 ${
+          collapsed ? "hidden" : "hidden lg:flex"
+        }`}
+      >
         {/* Logo routes to the landing page at "/"; the Dashboard nav item covers /dashboard */}
-        <Brand />
+        <div className="flex items-center justify-between">
+          <Brand />
+          <button
+            onClick={() => setRail(true)}
+            aria-label="Collapse sidebar"
+            title="Hide sidebar"
+            className="rounded-btn p-1.5 text-text-muted hover:bg-surface-2 hover:text-text-primary"
+          >
+            <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M14 6l-6 6 6 6" />
+            </svg>
+          </button>
+        </div>
         <Link
           href="/create"
           className="hero-glow mt-7 flex items-center justify-center gap-2 rounded-btn px-4 py-2.5 text-sm font-semibold text-white"

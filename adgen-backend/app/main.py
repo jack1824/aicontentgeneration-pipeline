@@ -160,6 +160,23 @@ def plan_endpoint(req: PlanRequest):
         raise HTTPException(502, str(e))
 
 
+class DialoguePlanRequest(BaseModel):
+    idea: str = Field(min_length=3)
+    language: str = "en"
+    turns: int = Field(default=2, ge=2, le=6)
+    regenerate: bool = False  # true = "fresh take" re-roll, runs hotter
+
+
+@app.post("/plan-dialogue")
+def plan_dialogue_endpoint(req: DialoguePlanRequest):
+    """The Dialogue page's brain: idea -> two speakers + alternating turns."""
+    try:
+        return llm.plan_dialogue(req.idea, language=req.language,
+                                 turns=req.turns, regenerate=req.regenerate)
+    except llm.PlanError as e:
+        raise HTTPException(502, str(e))
+
+
 @app.post("/generate")
 def generate_endpoint(req: GenerateRequest):
     if req.mode == "sequence":

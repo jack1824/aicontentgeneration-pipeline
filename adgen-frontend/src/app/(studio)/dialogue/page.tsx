@@ -26,6 +26,7 @@ type Speaker = {
   avatarId: string; // saved avatar profile — face + voice in one tap (Phase 3)
   voiceId: string;
   scene: string; // how this speaker looks/acts — reused for all their turns
+  genderHint?: string; // the brain's voice suggestion ("female"/"male")
 };
 
 type Turn = { speaker: 0 | 1; text: string };
@@ -62,6 +63,49 @@ export default function DialoguePage() {
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ---- The brain: idea -> both speakers + all turns (faces/voices stay yours) ----
+  const [idea, setIdea] = useState("");
+  const [planTurns, setPlanTurns] = useState(2);
+  const [thinking, setThinking] = useState(false);
+  const [planned, setPlanned] = useState(false);
+
+  const runPlan = async (regenerate = false) => {
+    if (idea.trim().length < 3 || thinking) return;
+    setThinking(true);
+    setError(null);
+    try {
+      const p = await api.planDialogue({
+        idea: idea.trim(),
+        language,
+        turns: planTurns,
+        regenerate,
+      });
+      setSpeakers((sp) => [
+        {
+          ...sp[0],
+          name: p.speakers[0]?.name || sp[0].name,
+          scene: p.speakers[0]?.scene ?? sp[0].scene,
+          genderHint: p.speakers[0]?.gender,
+        },
+        {
+          ...sp[1],
+          name: p.speakers[1]?.name || sp[1].name,
+          scene: p.speakers[1]?.scene ?? sp[1].scene,
+          genderHint: p.speakers[1]?.gender,
+        },
+      ] as [Speaker, Speaker]);
+      setTurns(p.turns.map((t) => ({ speaker: (t.speaker === "b" ? 1 : 0) as 0 | 1, text: t.text })));
+      if (p.title && !name) {
+        setName(p.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40));
+      }
+      setPlanned(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setThinking(false);
+    }
+  };
 
   useEffect(() => {
     api.voices().then((d) => setVoices(d.voices)).catch(() => {});
@@ -213,6 +257,62 @@ export default function DialoguePage() {
         </p>
       </header>
 
+      {/* ---- The Brain: one idea in, both sides of the conversation out ---- */}
+      <section className="card-raised flex flex-col gap-3 rounded-card p-4 sm:p-6">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <span className="hero-glow flex size-7 items-center justify-center rounded-lg text-xs text-white">✦</span>
+          <h2 className="text-lg font-semibold font-display">The Brain</h2>
+          <span className="text-xs text-text-muted">
+            one idea in — names, scenes and every line out. Faces &amp; voices stay yours.
+          </span>
+        </div>
+        <div className="hero-frame">
+          <textarea
+            value={idea}
+            onChange={(e) => setIdea(e.target.value)}
+            placeholder="Describe the ad — e.g. “cloud kitchen owner can't get orders, her friend shows her our video ad platform”"
+            rows={2}
+            className="input-well w-full rounded-xl p-4 text-[15px] leading-relaxed placeholder:text-text-muted"
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1">
+            <span className="label-cap mr-1">Turns</span>
+            {[2, 3, 4].map((t) => (
+              <button
+                key={t}
+                onClick={() => setPlanTurns(t)}
+                className={`rounded-btn px-3 py-1.5 text-xs ${planTurns === t ? "seg-on" : "seg"}`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            {planned && (
+              <button
+                onClick={() => runPlan(true)}
+                disabled={thinking}
+                className="seg rounded-btn px-3 py-2 text-xs disabled:opacity-40"
+                title="Same idea, a different take"
+              >
+                ↻ fresh take
+              </button>
+            )}
+            <button
+              onClick={() => runPlan(false)}
+              disabled={thinking || idea.trim().length < 3}
+              className="hero-glow rounded-btn px-5 py-2 text-sm font-semibold text-white disabled:opacity-40 disabled:shadow-none"
+            >
+              {thinking ? "Writing…" : "✦ Write the dialogue"}
+            </button>
+          </div>
+        </div>
+        {thinking && (
+          <p className="shimmer text-sm font-medium">Gemini is writing both sides of the conversation…</p>
+        )}
+      </section>
+
       <div className="grid items-start gap-6 lg:grid-cols-[1fr_360px]">
         <section className="card-raised flex flex-col gap-5 rounded-card p-4 sm:p-6">
           {/* ---- The two speakers ---- */}
@@ -285,6 +385,11 @@ export default function DialoguePage() {
                     onChange={(v) => patchSpeaker(i, { voiceId: v })}
                     language={language}
                   />
+                  {sp.genderHint && !sp.voiceId && (
+                    <p className="text-[10px] text-text-muted">
+                      the brain suggests a {sp.genderHint} voice for {sp.name}
+                    </p>
+                  )}
                 </div>
               );
             })}

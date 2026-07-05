@@ -141,6 +141,13 @@ export type Voice = {
   labels: Record<string, string>;
 };
 
+// The Dialogue page's brain: one two-speaker script, ready to drop into the form.
+export type DialoguePlan = {
+  title: string;
+  speakers: { role: "a" | "b"; name: string; gender: string; scene: string }[];
+  turns: { speaker: "a" | "b"; text: string }[];
+};
+
 // Render presets are a UI concept — this is the locked preset -> knobs mapping (file 15).
 export const PRESETS = {
   preview: { label: "⚡ Preview", quality: "fast", steps: 6, postprocess: false },
@@ -204,6 +211,17 @@ export const api = {
   health: () => fetch(`${BASE}/health`).then(jsonOrThrow),
   plan: (req: PlanRequest): Promise<{ approaches: PlanApproach[] }> =>
     fetch(`${BASE}/plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }).then(jsonOrThrow),
+  planDialogue: (req: {
+    idea: string;
+    language?: string;
+    turns?: number;
+    regenerate?: boolean;
+  }): Promise<DialoguePlan> =>
+    fetch(`${BASE}/plan-dialogue`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
