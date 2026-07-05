@@ -128,6 +128,8 @@ class GenerateRequest(BaseModel):
     voice_id: str | None = None          # TTS voice override (default: ELEVENLABS_VOICE_ID)
     avatar_id: str | None = None         # saved avatar profile (Phase 3) — resolves to
                                          # avatar_image + voice_id unless overridden
+    sheet_image: str | None = None       # ingredients: reference sheet image path
+    sheet_description: str | None = None  # ingredients: what the sheet's panels contain
     postprocess: bool = False            # True = run the post chain after assembly (one-call
                                          # Enhanced/Master presets; adds a "post" stage)
     width: int | None = Field(default=None, ge=64, le=1920, multiple_of=16)
@@ -203,7 +205,7 @@ def generate_endpoint(req: GenerateRequest):
     # Fail-fast asset checks at REQUEST time — a typo'd path must cost an instant 404,
     # not a full render + TTS spend that dies at the assembly step.
     for label, p in (("music", req.music), ("avatar_image", req.avatar_image),
-                     ("product_image", req.product_image)):
+                     ("product_image", req.product_image), ("sheet_image", req.sheet_image)):
         if p and not Path(p).exists():
             raise HTTPException(404, f"{label} file not found: {p}")
     for i, seg in enumerate(req.segments or []):
@@ -241,7 +243,7 @@ def generate_endpoint(req: GenerateRequest):
                     resolution=2 * min(req.width or 640, req.height or 640),
                     # LTX renders 25fps (RIFE 2x -> 50); Wan-era clips are 16 -> 32.
                     # Getting this wrong retimes the output into slow motion.
-                    source_fps=25.0 if req.mode == "cinematic" else 16.0,
+                    source_fps=25.0 if req.mode in ("cinematic", "ingredients") else 16.0,
                     on_submit=on_submit,
                 )
             _update(job_id, status="done", progress=100, detail="", video_path=final)

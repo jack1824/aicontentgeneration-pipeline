@@ -21,6 +21,7 @@ from app.config import COMFY_POD_URLS
 from app.providers import comfy
 from app.providers.tts import synthesize_voice
 from app.workflow_mappings import (
+    INGREDIENTS_MAPPING,
     LONGCAT_MAPPING,
     LTX2_MAPPING,
     WAN_I2V_MAPPING,
@@ -42,6 +43,13 @@ LTX_VIDEO_DIR = Path("outputs/ltx2/video")
 LTX_AUDIO_DIR = Path("outputs/ltx2/audio")
 LONGCAT_VIDEO_DIR = Path("outputs/longcat/video")
 LONGCAT_AUDIO_DIR = Path("outputs/longcat/audio")
+ING_VIDEO_DIR = Path("outputs/ingredients/video")
+ING_AUDIO_DIR = Path("outputs/ingredients/audio")
+
+# Ingredients (IC-LoRA) constants: trained bucket is 768x448 / 121 frames; the
+# pod template runs 25fps. 121 frames @25fps ≈ 4.84s per clip, native audio.
+ING_FPS = 25
+ING_FRAMES = 121
 
 # LTX-2.3 constants (workflows/ltx2_av.json): 25fps clips, ~5s each; the audio
 # latent runs at ~19.2 frames/s (97 frames = 5s in the official template).
@@ -95,6 +103,8 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
         return _generate_product(req, name, report, on_submit)
     if mode == "cinematic":
         return _generate_cinematic(req, name, report, on_submit)
+    if mode == "ingredients":
+        return _generate_ingredients(req, name, report, on_submit)
     if mode == "longcat":
         return _generate_longcat(req, name, report, on_submit)
     if mode != "overlay":
@@ -513,6 +523,98 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
         final = ffmpeg.stitch_plus_music(clips, music=req["music"], out=final)
     else:
         # Stream-copy concat KEEPS each clip's native audio — nothing else needed.
+        final = ffmpeg.stitch(clips, out=final)
+
+    report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
+    return final
+
+
+def _generate_ingredients(req: dict, name: str, report, on_submit=None) -> str:
+    """mode="ingredients": LTX-2.3 IC-LoRA reference-sheet control — every clip
+    keeps the characters/props/setting from an uploaded REFERENCE SHEET image
+    (brand-locked footage: same mascot, same pack, same store in every cut).
+
+    Prompting is two-part per the model card: the sheet DESCRIPTION says what
+    the panels contain; each shot prompt says what happens. Clips are ~4.8s
+    @25fps with native audio; assembly mirrors cinematic (narration ducks the
+    native soundtrack, explicit music replaces it).
+    """
+    sheet = req.get("sheet_image")
+    if not sheet:
+        raise ValueError("ingredients needs `sheet_image` — the reference sheet image.")
+    if not Path(sheet).exists():
+        raise FileNotFoundError(f"sheet_image not found: {sheet}")
+    sheet_desc = (req.get("sheet_description") or "").strip()
+    if not sheet_desc:
+        raise ValueError("ingredients needs `sheet_description` — what the sheet's "
+                         "panels contain (characters, props, setting).")
+
+    ING_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    ING_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    pod = COMFY_POD_URLS[0]
+
+    narration = None
+    if req.get("script"):
+        report("tts", 5, "synthesizing narration")
+        narration = synthesize_voice(
+            req["script"],
+            voice_id=req.get("voice_id"),
+            language=req.get("language", "hi"),
+            output_path=str(ING_AUDIO_DIR / f"{name}-narration.mp3"),
+        )
+
+    report("uploading", 8, "reference sheet -> pod")
+    sheet_name = comfy.upload_file(pod, sheet)
+
+    comfy.free_memory(pod)  # its checkpoint differs from cinematic's — make room
+    wf = comfy.load_workflow("ltx2_ingredients")
+    shots = req["shots"]
+    base_seed = req.get("seed") or DEFAULT_BASE_SEED
+    # Trained bucket is 768x448-class sizes; the sheet is scaled to the SAME
+    # frame as the output (reference downscale factor 1).
+    w = req.get("width") or 768
+    h = req.get("height") or 448
+    clips: list[str] = []
+    for i, shot in enumerate(shots):
+        pct = 12 + int(72 * i / len(shots))
+        report("generating", pct, f"brand-locked clip {i + 1}/{len(shots)} (~5s + audio)")
+        inputs = {
+            "prompt": f"Reference sheet: {sheet_desc}\n\nGenerated video: {shot['prompt']}",
+            "sheet_image": sheet_name,
+            "sheet_width": w, "sheet_height": h,
+            "width": w, "height": h,
+            "length": ING_FRAMES, "sheet_frames": ING_FRAMES,
+            "audio_frames": ING_FRAMES,
+            "seed": base_seed + i,
+            "filename_prefix": f"video/adgen_ingredients_{name}",
+        }
+        if shot.get("negative_prompt"):
+            inputs["negative_prompt"] = shot["negative_prompt"]
+        clips.append(
+            comfy.comfy_generate(
+                pod, wf, inputs, INGREDIENTS_MAPPING,
+                out_path=str(ING_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
+                on_submit=on_submit,
+            )
+        )
+
+    # Assembly mirrors cinematic: clips carry native audio in every path.
+    report("assembling", 90, "joining brand-locked clips")
+    final = str(ING_VIDEO_DIR / f"{name}-final.mp4")
+    if narration:
+        joined = ffmpeg.concat_reencode(clips, out=str(ING_VIDEO_DIR / f"{name}-joined.mp4"))
+        bed = req.get("music") or joined
+        try:
+            final = ffmpeg.replace_audio(
+                joined, narration, music=bed, out=final,
+                music_gain=0.25 if bed == joined else 0.15,
+                on_warning=lambda w_: report("assembling", 92, w_),
+            )
+        finally:
+            Path(joined).unlink(missing_ok=True)
+    elif req.get("music"):
+        final = ffmpeg.stitch_plus_music(clips, music=req["music"], out=final)
+    else:
         final = ffmpeg.stitch(clips, out=final)
 
     report("assembling", 99, "export ready")  # API layer owns the terminal 'done'

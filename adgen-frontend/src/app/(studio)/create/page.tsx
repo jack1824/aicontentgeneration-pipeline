@@ -18,6 +18,7 @@ import {
   ASPECTS,
   AspectKey,
   AvatarProfile,
+  ING_ASPECTS,
   LTX_ASPECTS,
   GenerateRequest,
   Job,
@@ -36,7 +37,7 @@ import PitchDeck from "@/components/create/PitchDeck";
 import PhoneStage from "@/components/create/PhoneStage";
 import VoicePicker from "@/components/VoicePicker";
 
-type Mode = "product" | "lipsync" | "overlay" | "cinematic" | "longcat";
+type Mode = "product" | "lipsync" | "overlay" | "cinematic" | "longcat" | "ingredients";
 type Engine = "ltx" | "wan"; // B-roll only: LTX-2 (fast, sharp, native sound) vs Wan (16fps documentary)
 const MODES: { key: Mode; label: string }[] = [
   { key: "product", label: "🧴 Product" },
@@ -44,6 +45,7 @@ const MODES: { key: Mode; label: string }[] = [
   { key: "overlay", label: "🎬 B-roll" },
   { key: "cinematic", label: "🎥 Cinematic" },
   { key: "longcat", label: "🧑‍🎤 Long Avatar" },
+  { key: "ingredients", label: "🧩 Brand Lock" },
 ];
 
 const SURPRISE_TWIST =
@@ -56,6 +58,7 @@ const TIME_HINTS: Record<string, Record<PresetKey, string>> = {
   // no separate slow mode — master = moderate.
   cinematic: { preview: "≈2 min/shot · sound included", moderate: "≈2 min/shot + ~9 min polish", master: "same as moderate — LTX has one speed" },
   longcat: { preview: "≈30 min — quality takes time", moderate: "≈30 min + ~10 min polish", master: "≈30 min + polish" },
+  ingredients: { preview: "≈3 min/shot · brand-locked + sound", moderate: "≈3 min/shot + polish", master: "same as Polished — one speed" },
 };
 
 const emptyShot = (): Shot => ({ prompt: "", negative_prompt: "" });
@@ -273,7 +276,7 @@ function CreateStudio() {
   const keep = { restore: !seeded };
   const [mode, setMode] = usePersistentState<Mode>(
     "adgen-create-mode",
-    urlMode === "lipsync" || urlMode === "overlay" || urlMode === "product" || urlMode === "cinematic" || urlMode === "longcat"
+    urlMode === "lipsync" || urlMode === "overlay" || urlMode === "product" || urlMode === "cinematic" || urlMode === "longcat" || urlMode === "ingredients"
       ? urlMode
       : uc?.mode ?? "product",
     keep,
@@ -290,6 +293,9 @@ function CreateStudio() {
   const [language, setLanguage] = usePersistentState("adgen-create-lang", "en", keep);
   const [image, setImage] = usePersistentState<Uploaded | null>("adgen-create-image", null, keep);
   const [music, setMusic] = usePersistentState<Uploaded | null>("adgen-create-music", null, keep);
+  // Ingredients: the reference sheet (image + what its panels contain).
+  const [sheet, setSheet] = usePersistentState<Uploaded | null>("adgen-create-sheet", null, keep);
+  const [sheetDesc, setSheetDesc] = usePersistentState("adgen-create-sheetdesc", "", keep);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceId, setVoiceId] = usePersistentState("adgen-create-voice", "", keep);
   // Phase 3: saved avatar profiles — picking one locks face + voice in one tap.
@@ -297,10 +303,11 @@ function CreateStudio() {
   const [avatarId, setAvatarId] = usePersistentState("adgen-create-avatarid", "", keep);
   const [previewingVoice, setPreviewingVoice] = useState(false);
   const [preset, setPreset] = usePersistentState<PresetKey>("adgen-create-preset", "preview", keep);
-  // LTX has no master tier — master is TREATED as Polished for LTX-backed
-  // renders at request time, without clobbering the user's Wan-mode choice.
-  const effPreset: PresetKey =
-    reqMode === "cinematic" && preset === "master" ? "moderate" : preset;
+  // LTX-family renders (cinematic + ingredients) have ONE sampling speed —
+  // master is TREATED as Polished at request time, without clobbering the
+  // user's Wan-mode choice.
+  const oneSpeed = reqMode === "cinematic" || mode === "ingredients";
+  const effPreset: PresetKey = oneSpeed && preset === "master" ? "moderate" : preset;
   const [aspect, setAspect] = usePersistentState<AspectKey>("adgen-create-aspect", "9:16", keep);
   const [name, setName] = usePersistentState("adgen-create-name", "", keep);
   const [planned, setPlanned] = useState(false);
@@ -454,6 +461,8 @@ function CreateStudio() {
     if (isAvatar && !script.trim()) return "avatar mode needs a narration script";
     if (isAvatar && !image && !avatarId) return "pick a saved avatar or upload a face image";
     if (mode === "product" && !image) return "upload the product photo";
+    if (mode === "ingredients" && !sheet) return "upload the reference sheet image";
+    if (mode === "ingredients" && !sheetDesc.trim()) return "describe the sheet's panels";
     return null;
   };
 
@@ -473,11 +482,18 @@ function CreateStudio() {
       quality: p.quality,
       ...("steps" in p ? { steps: p.steps } : {}),
       postprocess: p.postprocess,
-      ...(reqMode === "cinematic" ? LTX_ASPECTS[aspect] : ASPECTS[aspect]),
+      ...(mode === "ingredients"
+        ? ING_ASPECTS[aspect]
+        : reqMode === "cinematic"
+          ? LTX_ASPECTS[aspect]
+          : ASPECTS[aspect]),
       ...(name ? { name } : {}),
       ...(isAvatar && avatarId ? { avatar_id: avatarId } : {}),
       ...(isAvatar && !avatarId && image ? { avatar_image: image.path } : {}),
       ...(mode === "product" && image ? { product_image: image.path } : {}),
+      ...(mode === "ingredients" && sheet
+        ? { sheet_image: sheet.path, sheet_description: sheetDesc.trim() }
+        : {}),
       ...(mode !== "lipsync" && music ? { music: music.path } : {}),
       ...(voiceId ? { voice_id: voiceId } : {}),
     };
@@ -525,7 +541,7 @@ function CreateStudio() {
   const stagesFor = (req: GenerateRequest): { key: string[]; label: string }[] => [
     ...(req.script ? [{ key: ["tts"], label: "Voice" }] : []),
     // Only image-fed pipelines upload an asset to the pod first.
-    ...(["lipsync", "longcat", "product"].includes(req.mode) ? [{ key: ["uploading"], label: "Upload" }] : []),
+    ...(["lipsync", "longcat", "product", "ingredients"].includes(req.mode) ? [{ key: ["uploading"], label: "Upload" }] : []),
     { key: ["generating"], label: "Render" },
     { key: ["assembling"], label: "Assemble" },
     ...(req.postprocess ? [{ key: ["post", "postprocess"], label: "Enhance" }] : []),
@@ -754,8 +770,38 @@ function CreateStudio() {
             </div>
           )}
 
-          {/* Assets (b-roll and cinematic are pure text-to-video — no image) */}
-          {mode !== "overlay" && mode !== "cinematic" && (
+          {/* Ingredients: the reference sheet is the whole point — one composite
+              image of the brand's characters/props/setting, plus a description
+              of its panels (the model reads both). */}
+          {mode === "ingredients" && (
+            <>
+              <Dropzone
+                label="Reference sheet · required"
+                hint="one composite image: mascot/character turnarounds, product shots, the setting — big clean panels work best"
+                accept="image/png,image/jpeg,image/webp"
+                kind="image"
+                value={sheet}
+                onChange={setSheet}
+              />
+              <div className="flex flex-col gap-1.5">
+                <span className="label-cap">What&apos;s on the sheet · required</span>
+                <textarea
+                  value={sheetDesc}
+                  onChange={(e) => setSheetDesc(e.target.value)}
+                  placeholder="Describe each panel — e.g. “Top row: a 3D owl mascot in a green apron from multiple angles. Middle: the FreshMart tote bags and delivery car. Bottom: the store exterior with the green awning.”"
+                  rows={3}
+                  className="input-well w-full rounded-btn p-3 text-sm placeholder:text-text-muted"
+                />
+                <p className="text-[10px] text-text-muted">
+                  the shots above describe the ACTION; this describes what everything looks like —
+                  the model keeps sheet elements consistent in every shot
+                </p>
+              </div>
+            </>
+          )}
+
+          {/* Assets (b-roll, cinematic and ingredients need no product/face image) */}
+          {mode !== "overlay" && mode !== "cinematic" && mode !== "ingredients" && (
             <Dropzone
               label={
                 isAvatar
@@ -791,15 +837,15 @@ function CreateStudio() {
           <div className="flex flex-col gap-2">
             <span className="label-cap">Render preset</span>
             <div className="flex gap-1">
-              {/* LTX has ONE sampling speed — master would be a lie there, so
-                  LTX-backed renders offer Preview + Polished only. */}
-              {((reqMode === "cinematic" ? ["preview", "moderate"] : Object.keys(PRESETS)) as PresetKey[]).map((k) => (
+              {/* LTX-family (cinematic/ingredients) has ONE sampling speed —
+                  master would be a lie there, so they offer Preview + Polished only. */}
+              {((oneSpeed ? ["preview", "moderate"] : Object.keys(PRESETS)) as PresetKey[]).map((k) => (
                 <button
                   key={k}
                   onClick={() => setPreset(k)}
                   className={`flex-1 rounded-btn px-2 py-2 text-xs ${effPreset === k ? "seg-on" : "seg"}`}
                 >
-                  {reqMode === "cinematic" && k === "moderate" ? "✨ Polished" : PRESETS[k].label}
+                  {oneSpeed && k === "moderate" ? "✨ Polished" : PRESETS[k].label}
                 </button>
               ))}
             </div>

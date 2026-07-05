@@ -92,6 +92,33 @@ LTX2_MAPPING = {
     "filename_prefix": ("75", "filename_prefix"),
 }
 
+# workflows/ltx2_ingredients.json — LTX-2.3 IC-LoRA "Ingredients" reference-sheet
+# control (authored 2026-07-06 from the pod's video_ltx2_3_ic_lora template:
+# MoGe/union-control branch dropped, first-frame conditioning dropped (trained
+# with p=0), prompt-enhancer dropped). The reference sheet is a STILL image the
+# graph loops pod-side (ImageScale -> RepeatImageBatch) into the ≥121-frame
+# static video the IC-LoRA expects. Single-stage distilled sampling (8 steps,
+# cfg 1) on ltx-2.3-22b-distilled-fp8; output = length frames @25fps WITH native
+# audio. Prompt format is two-part: "Reference sheet: ...\n\nGenerated video: ...".
+# width/height go to BOTH the sheet scaler and the latent; length to the latent,
+# the repeat amount and the audio latent — the pipeline passes them together.
+INGREDIENTS_MAPPING = {
+    "prompt": ("6", "text"),                 # composed two-part prompt
+    "negative_prompt": ("7", "text"),
+    "sheet_image": ("9", "image"),           # LoadImage — UPLOADED sheet filename
+    "sheet_width": ("10", "width"),          # ImageScale (must equal output size)
+    "sheet_height": ("10", "height"),
+    "sheet_frames": ("11", "amount"),        # RepeatImageBatch (= length, >=121)
+    "width": ("12", "width"),                # EmptyLTXVLatentVideo
+    "height": ("12", "height"),
+    "length": ("12", "length"),
+    "audio_frames": ("13", "frames_number"),  # LTXVEmptyLatentAudio (= length here)
+    "lora_strength": ("4", "strength_model"),  # IC-LoRA weight (1.0; tune to 1.4)
+    "seed": ("16", "seed"),
+    "steps": ("16", "steps"),
+    "filename_prefix": ("22", "filename_prefix"),
+}
+
 # workflows/longcat_avatar.json — LongCat-Video-Avatar 1.5 talking avatar (converted
 # 2026-07-05 from the Kijai WanVideoWrapper template LongCatAvatar_audio_image_to_video,
 # SetNode/GetNode registers resolved, per-window preview muxes dropped, MelBandRoFormer

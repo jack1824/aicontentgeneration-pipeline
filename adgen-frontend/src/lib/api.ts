@@ -29,7 +29,7 @@ export type AvatarProfile = {
 };
 
 export type GenerateRequest = {
-  mode: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "sequence";
+  mode: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "ingredients" | "sequence";
   shots?: Shot[];
   segments?: SequenceSegment[];
   script?: string | null;
@@ -45,6 +45,8 @@ export type GenerateRequest = {
   product_image?: string;
   voice_id?: string;
   avatar_id?: string; // saved avatar profile — backend resolves face + voice
+  sheet_image?: string; // ingredients: the reference sheet image (server path)
+  sheet_description?: string; // ingredients: what the sheet's panels contain
   postprocess?: boolean;
 };
 
@@ -177,12 +179,21 @@ export const LTX_ASPECTS: Record<AspectKey, { width: number; height: number }> =
   "16:9": { width: 1280, height: 704 },
 };
 
+// Ingredients (IC-LoRA) trained bucket is 768x448-class — stay near it for the
+// best sheet fidelity; the reference sheet renders at the same size as output.
+export const ING_ASPECTS: Record<AspectKey, { width: number; height: number }> = {
+  "9:16": { width: 448, height: 768 },
+  "1:1": { width: 576, height: 576 },
+  "16:9": { width: 768, height: 448 },
+};
+
 // Backend pipeline folder -> what the user actually made.
 export const PIPELINE_LABELS: Record<string, string> = {
   wani2v: "Product",
   wans2v: "Avatar",
   want2v: "B-roll (Wan)",
   ltx2: "LTX (B-roll/Cinematic)",
+  ingredients: "Brand-locked (Ingredients)",
   longcat: "Long Avatar",
   sequence: "Sequence ad",
   remix: "Remix cut",
