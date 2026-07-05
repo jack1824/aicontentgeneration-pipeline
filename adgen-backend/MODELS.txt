@@ -123,8 +123,25 @@ POD DISK LAYOUT (learned the hard way, 2026-07-05; updated after the
          umt5 — it needs Kijai's non-scaled fp8 conversion.)
       (wav2vec2-chinese speech encoder auto-downloads on first run.)
 
-   PARKED: MultiTalk (Kijai WanVideoWrapper route) — revisit only if
-   LongCat's multi-speaker quality disappoints.
+   C. BRAND LOCK (LTX-2.3 IC-LoRA Ingredients) .... INSTALLED + WIRED
+      ("ingredients" mode; proven 2026-07-06: sheet 3.5 min, ~3 min/shot,
+      identity carry-over confirmed). workflow: workflows/ltx2_ingredients.json
+      models/checkpoints/ ltx-2.3-22b-distilled-fp8.safetensors      22 GB
+        (public: Lightricks/LTX-2.3-fp8 — single-stage base for the IC-LoRA)
+      models/loras/       ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors 1.3 GB
+        (GATED: Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients — needs HF login +
+         license accept + read token for wget)
+      Reference sheet = ONE still image looped pod-side to >=121 frames;
+      sheets generate via POST /sheets/generate (Wan 1-frame trick).
+
+   D. MULTI-STREAM DIALOGUE (LongCat full model) .... DOWNLOADED, wiring next
+      models/diffusion_models/LongCat/ LongCat-Avatar_comfy_bf16.safetensors 31.75 GB
+      (Kijai/LongCat-Video_comfy -> Avatar/). Two speakers, two audio streams,
+      ONE continuous shot — ref image should be a staged two-person still
+      (Wan 1-frame). Wiring pending; single-stream fp8 stays for solo takes.
+
+   PARKED: MultiTalk (Kijai WanVideoWrapper route) — superseded by the
+   LongCat multi-stream route above.
    DROPPED: multilingual wav2vec2 swap for Wan-S2V — Hindi lip test
    passed to the user's satisfaction.
 
