@@ -296,6 +296,51 @@ function CreateStudio() {
   // Ingredients: the reference sheet (image + what its panels contain).
   const [sheet, setSheet] = usePersistentState<Uploaded | null>("adgen-create-sheet", null, keep);
   const [sheetDesc, setSheetDesc] = usePersistentState("adgen-create-sheetdesc", "", keep);
+  // ✨ generated sheet: the SAME description drives the render AND the prompt.
+  const [sheetSource, setSheetSource] = usePersistentState<"upload" | "generate">(
+    "adgen-create-sheetsrc", "upload", keep);
+  const [sheetGenBusy, setSheetGenBusy] = useState(false);
+  const sheetPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => {
+    if (sheetPollRef.current) clearInterval(sheetPollRef.current);
+  }, []);
+
+  const generateSheet = async () => {
+    if (sheetDesc.trim().length < 3 || sheetGenBusy) return;
+    setSheetGenBusy(true);
+    setError(null);
+    try {
+      const dims = ING_ASPECTS[aspect];
+      const { job_id } = await api.generateSheet({
+        description: sheetDesc.trim(),
+        width: dims.width * 2, // 2x output size, SAME aspect — the sheet is
+        height: dims.height * 2, // scaled onto the output frame 1:1
+      });
+      sheetPollRef.current = setInterval(async () => {
+        try {
+          const j = await api.job(job_id);
+          if (j.status === "done" && j.video_path) {
+            if (sheetPollRef.current) clearInterval(sheetPollRef.current);
+            setSheet({ path: j.video_path, url: j.image_url ?? "", name: "generated-sheet.png" });
+            setSheetGenBusy(false);
+          } else if (["error", "cancelled"].includes(j.status)) {
+            if (sheetPollRef.current) clearInterval(sheetPollRef.current);
+            setError(j.error ?? "sheet generation failed");
+            setSheetGenBusy(false);
+          }
+        } catch (e) {
+          if (String(e).includes("404")) {
+            if (sheetPollRef.current) clearInterval(sheetPollRef.current);
+            setError("render lost — the backend restarted. Try again.");
+            setSheetGenBusy(false);
+          }
+        }
+      }, 5000);
+    } catch (e) {
+      setError(String(e));
+      setSheetGenBusy(false);
+    }
+  };
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceId, setVoiceId] = usePersistentState("adgen-create-voice", "", keep);
   // Phase 3: saved avatar profiles — picking one locks face + voice in one tap.
@@ -772,30 +817,93 @@ function CreateStudio() {
 
           {/* Ingredients: the reference sheet is the whole point — one composite
               image of the brand's characters/props/setting, plus a description
-              of its panels (the model reads both). */}
+              of its panels (the model reads both). Upload one, or generate it
+              from the SAME description on the pod. */}
           {mode === "ingredients" && (
             <>
-              <Dropzone
-                label="Reference sheet · required"
-                hint="one composite image: mascot/character turnarounds, product shots, the setting — big clean panels work best"
-                accept="image/png,image/jpeg,image/webp"
-                kind="image"
-                value={sheet}
-                onChange={setSheet}
-              />
               <div className="flex flex-col gap-1.5">
                 <span className="label-cap">What&apos;s on the sheet · required</span>
                 <textarea
                   value={sheetDesc}
                   onChange={(e) => setSheetDesc(e.target.value)}
-                  placeholder="Describe each panel — e.g. “Top row: a 3D owl mascot in a green apron from multiple angles. Middle: the FreshMart tote bags and delivery car. Bottom: the store exterior with the green awning.”"
+                  placeholder="Describe each element — e.g. “a 3D owl mascot in a green apron shown from multiple angles; the FreshMart tote bags; the white delivery car; the store exterior with a green awning”"
                   rows={3}
                   className="input-well w-full rounded-btn p-3 text-sm placeholder:text-text-muted"
                 />
                 <p className="text-[10px] text-text-muted">
                   the shots above describe the ACTION; this describes what everything looks like —
-                  the model keeps sheet elements consistent in every shot
+                  it also powers ✨ Generate sheet below
                 </p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="label-cap">Reference sheet · required</span>
+                  <div className="flex gap-1">
+                    {(
+                      [
+                        { k: "upload", l: "📤 Upload" },
+                        { k: "generate", l: "✨ Generate" },
+                      ] as { k: "upload" | "generate"; l: string }[]
+                    ).map((o) => (
+                      <button
+                        key={o.k}
+                        onClick={() => setSheetSource(o.k)}
+                        className={`rounded-btn px-2.5 py-1 text-[11px] ${sheetSource === o.k ? "seg-on" : "seg"}`}
+                      >
+                        {o.l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {sheetSource === "generate" ? (
+                  <div className="flex flex-col gap-2">
+                    {sheet && !sheetGenBusy && (
+                      <div className="input-well flex items-center gap-3 rounded-btn p-2.5">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- backend-proxied preview */}
+                        <img
+                          src={api.assetUrl(sheet.url)}
+                          alt="generated sheet"
+                          className="h-20 w-14 rounded-lg object-cover"
+                        />
+                        <p className="min-w-0 flex-1 text-[11px] text-text-secondary">
+                          this sheet locks the brand look — regenerate if panels look off
+                        </p>
+                        <button
+                          onClick={() => setSheet(null)}
+                          className="rounded-btn px-2.5 py-1.5 text-xs text-text-muted hover:bg-surface-1 hover:text-text-primary"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )}
+                    <button
+                      onClick={generateSheet}
+                      disabled={sheetGenBusy || sheetDesc.trim().length < 3}
+                      className="seg rounded-btn px-3 py-2 text-xs disabled:opacity-40"
+                    >
+                      {sheetGenBusy
+                        ? "rendering sheet… (~3-4 min)"
+                        : sheet
+                          ? "↻ generate a different sheet"
+                          : "✨ Generate sheet on the pod"}
+                    </button>
+                    {sheetGenBusy && (
+                      <p className="shimmer text-[11px]">Wan is laying out the brand panels…</p>
+                    )}
+                    {sheetDesc.trim().length < 3 && (
+                      <p className="text-[10px] text-text-muted">describe the sheet above first</p>
+                    )}
+                  </div>
+                ) : (
+                  <Dropzone
+                    label=""
+                    hint="one composite image: mascot/character turnarounds, product shots, the setting — big clean panels work best"
+                    accept="image/png,image/jpeg,image/webp"
+                    kind="image"
+                    value={sheet}
+                    onChange={setSheet}
+                  />
+                )}
               </div>
             </>
           )}

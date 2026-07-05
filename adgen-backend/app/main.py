@@ -684,6 +684,43 @@ def generate_face_endpoint(req: FaceGenRequest):
     return {"job_id": job_id}
 
 
+class SheetGenRequest(BaseModel):
+    """Generate a Brand Lock reference sheet: one Wan still laid out as clean
+    panels (characters/products/setting) on a black background — the same
+    description then serves as the sheet's panel text in the two-part prompt."""
+    description: str = Field(min_length=3, max_length=800)
+    width: int = Field(default=896, ge=448, le=1920, multiple_of=16)
+    height: int = Field(default=1536, ge=448, le=1920, multiple_of=16)
+    seed: int | None = None
+
+
+@app.post("/sheets/generate")
+def generate_sheet_endpoint(req: SheetGenRequest):
+    job_id = _new_job("generate", "brand-sheet")  # pod-occupying — shows in the queue
+
+    def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+        try:
+            _update(job_id, status="generating", progress=15,
+                    detail="rendering reference sheet (1-frame Wan, 20 steps)")
+            seed = req.seed or (int(uuid.uuid4().hex[:6], 16) % 900000) + 1
+            png = pipeline.generate_sheet(
+                req.description, width=req.width, height=req.height, seed=seed,
+                out_stem=f"gen-{job_id}", on_submit=on_submit,
+            )
+            _update(job_id, status="done", progress=100, detail="", video_path=png,
+                    image_url=f"/assets-files/sheets/{Path(png).name}")
+        except JobCancelled:
+            pass
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
 @app.post("/avatars")
 async def create_avatar(
     file: UploadFile | None = File(None),

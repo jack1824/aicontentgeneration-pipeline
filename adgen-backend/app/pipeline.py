@@ -233,6 +233,65 @@ def generate_face(description: str, negative: str | None = None,
     return str(png)
 
 
+# Brand Lock reference sheets, same 1-frame trick: one Wan still laid out as a
+# multi-panel sheet. The model card wants clean panels on a plain background
+# with NO text — text-laden panels measurably hurt identity carry-over.
+SHEET_PROMPT_PREFIX = (
+    "A professional brand reference sheet: a clean grid of separate panels on a "
+    "solid black background, no text anywhere. The panels show: "
+)
+SHEET_PROMPT_SUFFIX = (
+    ". Each element gets its own large uncluttered panel — characters as a "
+    "front-facing close-up plus full-body turnaround views, products from "
+    "several angles like studio product photography, the setting as one wide "
+    "clean panel. Crisp even lighting, photorealistic, sharp focus."
+)
+SHEET_NEGATIVE = (
+    "text, letters, words, labels, captions, watermark, numbers, cluttered "
+    "layout, overlapping panels, torn edges, collage borders, single scene, "
+    "blur, low quality"
+)
+
+
+def generate_sheet(description: str, width: int = 896, height: int = 1536,
+                   seed: int | None = None, out_stem: str = "sheet",
+                   on_submit=None) -> str:
+    """Render ONE reference-sheet still for the Ingredients pipeline.
+
+    Generated at ~2x the ad's output size and in the SAME aspect, because the
+    IC-LoRA scales the sheet to exactly the output frame (downscale factor 1) —
+    a mismatched aspect would stretch every panel.
+    """
+    if not COMFY_POD_URLS:
+        raise RuntimeError("COMFY_POD_URLS is not set in .env — no pod to generate on.")
+    pod = COMFY_POD_URLS[0]
+    httpx.get(f"{pod.rstrip('/')}/system_stats", timeout=10).raise_for_status()
+
+    out_dir = Path("assets/sheets")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp_mp4 = out_dir / f"{out_stem}.mp4"
+    png = out_dir / f"{out_stem}.png"
+
+    inputs = {
+        "prompt": SHEET_PROMPT_PREFIX + description.strip() + SHEET_PROMPT_SUFFIX,
+        "negative_prompt": SHEET_NEGATIVE,
+        "seed": seed or DEFAULT_BASE_SEED,
+        "duration": 0.0,          # 1 frame — a still sheet
+        "width": width,
+        "height": height,
+        "lightning_lora": False,  # QUALITY path — the sheet IS the brand identity
+    }
+    try:
+        comfy.comfy_generate(
+            pod, comfy.load_workflow("wan_t2v"), inputs, WAN_T2V_MAPPING,
+            out_path=str(tmp_mp4), on_submit=on_submit,
+        )
+        ffmpeg.extract_frame(str(tmp_mp4), str(png))
+    finally:
+        tmp_mp4.unlink(missing_ok=True)
+    return str(png)
+
+
 def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
     """mode="sequence": the 60s-ad composer (file 15) — a TIMELINE of mixed-pipeline
     segments (e.g. lipsync hook -> i2v product shots -> t2v b-roll -> lipsync CTA),

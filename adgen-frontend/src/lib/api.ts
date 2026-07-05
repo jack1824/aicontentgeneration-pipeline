@@ -314,6 +314,17 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
     }).then(jsonOrThrow),
+  generateSheet: (req: {
+    description: string;
+    width?: number;
+    height?: number;
+    seed?: number;
+  }): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/sheets/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }).then(jsonOrThrow),
   updateAvatar: (id: string, body: { name?: string; voice_id?: string }): Promise<AvatarProfile> =>
     fetch(`${BASE}/avatars/${id}`, {
       method: "PATCH",
