@@ -5,7 +5,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Job, OutputItem, PIPELINE_LABELS, Voice } from "@/lib/api";
+import { api, Job, OutputItem, PIPELINE_LABELS, StillItem, Voice } from "@/lib/api";
 import VideoCard from "@/components/VideoCard";
 import VoicePicker from "@/components/VoicePicker";
 
@@ -461,6 +461,7 @@ function Lightbox({
 
 export default function LibraryPage() {
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
+  const [stills, setStills] = useState<StillItem[]>([]);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [pipeline, setPipeline] = useState("all");
   const [kind, setKind] = useState("finals");
@@ -480,6 +481,7 @@ export default function LibraryPage() {
   useEffect(() => {
     refresh();
     api.voices().then((d) => setVoices(d.voices)).catch(() => {});
+    api.stills().then((d) => setStills(d.stills)).catch(() => {});
   }, [refresh]);
 
   const trackJob = useCallback((path: string, jobId: string) => {
@@ -582,6 +584,40 @@ export default function LibraryPage() {
         <p className="rounded-card border border-dashed border-white/10 p-12 text-center text-sm text-text-muted">
           nothing matches these filters
         </p>
+      )}
+
+      {/* ---- Generated stills: reference sheets + avatar faces ---- */}
+      {stills.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <div className="flex items-baseline gap-3">
+            <h2 className="font-display text-lg font-semibold">Generated stills</h2>
+            <p className="text-xs text-text-muted">
+              reference sheets &amp; faces rendered on the pod — sheets are reusable in 🧩 Brand Lock
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+            {stills.map((s) => (
+              <a
+                key={s.path}
+                href={api.assetUrl(s.url)}
+                target="_blank"
+                rel="noreferrer"
+                title={`${s.kind} · ${s.name} — open full size`}
+                className="group relative overflow-hidden rounded-card ring-1 ring-white/10 transition-shadow hover:ring-accent/50"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element -- backend-proxied preview */}
+                <img
+                  src={api.assetUrl(s.url)}
+                  alt={s.name}
+                  className="aspect-3/4 w-full object-cover"
+                />
+                <span className="absolute left-1.5 top-1.5 rounded-full bg-black/60 px-2 py-0.5 text-[10px] text-white">
+                  {s.kind === "sheet" ? "🧩 sheet" : "🧑 face"}
+                </span>
+              </a>
+            ))}
+          </div>
+        </section>
       )}
 
       {open && (

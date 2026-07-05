@@ -106,6 +106,16 @@ export type ReassembleRequest = {
   name?: string;
 };
 
+// A generated still (reference sheet / avatar face) rendered on the pod.
+export type StillItem = {
+  path: string;
+  url: string;
+  name: string;
+  kind: "sheet" | "face";
+  size_bytes: number;
+  modified: number;
+};
+
 export type OutputItem = {
   path: string;
   url: string;
@@ -334,6 +344,7 @@ export const api = {
   deleteAvatar: (id: string): Promise<{ ok: boolean }> =>
     fetch(`${BASE}/avatars/${id}`, { method: "DELETE" }).then(jsonOrThrow),
   outputs: (): Promise<{ outputs: OutputItem[] }> => fetch(`${BASE}/outputs`).then(jsonOrThrow),
+  stills: (): Promise<{ stills: StillItem[] }> => fetch(`${BASE}/stills`).then(jsonOrThrow),
   voices: (): Promise<{ voices: Voice[] }> => fetch(`${BASE}/voices`).then(jsonOrThrow),
   voicePreviewBlob: async (voice_id: string, language = "en"): Promise<Blob> => {
     const r = await fetch(`${BASE}/voice-preview`, {

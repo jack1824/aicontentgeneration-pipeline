@@ -786,6 +786,33 @@ def delete_avatar(avatar_id: str):
     return {"ok": True}
 
 
+@app.get("/stills")
+def list_stills():
+    """Generated stills — reference sheets and avatar faces rendered on the pod.
+    Sheets are reusable brand assets: the Brand Lock UI lists them for reuse and
+    the Library shows the whole gallery."""
+    items = []
+    for kind, folder, pattern in (("sheet", Path("assets/sheets"), "gen-*.png"),
+                                  ("face", Path("assets/avatars"), "gen-*.png")):
+        if not folder.exists():
+            continue
+        for p in folder.glob(pattern):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            items.append({
+                "path": str(p),
+                "url": f"/assets-files/{p.relative_to('assets').as_posix()}",
+                "name": p.name,
+                "kind": kind,
+                "size_bytes": st.st_size,
+                "modified": int(st.st_mtime),
+            })
+    items.sort(key=lambda i: i["modified"], reverse=True)
+    return {"stills": items}
+
+
 @app.get("/outputs")
 def list_outputs():
     """List every generated video for the Library grid (newest first)."""

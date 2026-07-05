@@ -27,6 +27,7 @@ import {
   PRESETS,
   PresetKey,
   Shot,
+  StillItem,
   Voice,
 } from "@/lib/api";
 import Dropzone, { Uploaded } from "@/components/Dropzone";
@@ -300,6 +301,13 @@ function CreateStudio() {
   const [sheetSource, setSheetSource] = usePersistentState<"upload" | "generate">(
     "adgen-create-sheetsrc", "upload", keep);
   const [sheetGenBusy, setSheetGenBusy] = useState(false);
+  const [recentSheets, setRecentSheets] = useState<StillItem[]>([]);
+  useEffect(() => {
+    if (mode !== "ingredients") return;
+    api.stills()
+      .then((d) => setRecentSheets(d.stills.filter((s) => s.kind === "sheet").slice(0, 6)))
+      .catch(() => {});
+  }, [mode, sheetGenBusy]); // refresh after a generation finishes too
   const sheetPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => () => {
     if (sheetPollRef.current) clearInterval(sheetPollRef.current);
@@ -903,6 +911,27 @@ function CreateStudio() {
                     value={sheet}
                     onChange={setSheet}
                   />
+                )}
+                {/* Sheets are reusable brand assets — one brand, many ads. */}
+                {recentSheets.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] text-text-muted">recent sheets — tap to reuse</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {recentSheets.map((s) => (
+                        <button
+                          key={s.path}
+                          onClick={() => setSheet({ path: s.path, url: s.url, name: s.name })}
+                          title={s.name}
+                          className={`overflow-hidden rounded-lg ring-1 transition-shadow ${
+                            sheet?.path === s.path ? "ring-accent" : "ring-white/10 hover:ring-accent/50"
+                          }`}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element -- backend-proxied thumb */}
+                          <img src={api.assetUrl(s.url)} alt={s.name} className="h-16 w-11 object-cover" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             </>
