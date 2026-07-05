@@ -163,6 +163,58 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
     return final
 
 
+# Face stills for avatar profiles: Wan t2v used as a text-to-IMAGE model —
+# duration 0 -> floor(0*fps)+1 = exactly ONE frame, extracted to PNG. QUALITY
+# path (20 steps, no Lightning LoRA): a face rendered once is reused forever.
+FACE_PROMPT_SUFFIX = (
+    ", professional portrait photograph, front-facing, looking directly at the camera, "
+    "head and shoulders framing, arms relaxed at the sides, natural skin texture, "
+    "soft flattering light, sharp focus, photorealistic"
+)
+FACE_NEGATIVE = (
+    "cartoon, anime, 3d render, cgi, illustration, painting, deformed face, "
+    "asymmetric eyes, multiple people, extra faces, side profile, sunglasses, "
+    "raised arms, hands near face, text, watermark, blur"
+)
+
+
+def generate_face(description: str, negative: str | None = None,
+                  seed: int | None = None, out_stem: str = "face",
+                  on_submit=None) -> str:
+    """Render ONE photoreal portrait still (768x768 PNG) for an avatar profile.
+
+    Returns the PNG path under assets/avatars/ — the same folder uploaded faces
+    live in, so the profile machinery treats both identically.
+    """
+    if not COMFY_POD_URLS:
+        raise RuntimeError("COMFY_POD_URLS is not set in .env — no pod to generate on.")
+    pod = COMFY_POD_URLS[0]
+    httpx.get(f"{pod.rstrip('/')}/system_stats", timeout=10).raise_for_status()
+
+    out_dir = Path("assets/avatars")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp_mp4 = out_dir / f"{out_stem}.mp4"
+    png = out_dir / f"{out_stem}.png"
+
+    inputs = {
+        "prompt": description.strip() + FACE_PROMPT_SUFFIX,
+        "negative_prompt": negative or FACE_NEGATIVE,
+        "seed": seed or DEFAULT_BASE_SEED,
+        "duration": 0.0,          # 1 frame — a still photo, not a clip
+        "width": 768,
+        "height": 768,
+    }
+    try:
+        comfy.comfy_generate(
+            pod, comfy.load_workflow("wan_t2v"), inputs, WAN_T2V_MAPPING,
+            out_path=str(tmp_mp4), on_submit=on_submit,
+        )
+        ffmpeg.extract_frame(str(tmp_mp4), str(png))
+    finally:
+        tmp_mp4.unlink(missing_ok=True)
+    return str(png)
+
+
 def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
     """mode="sequence": the 60s-ad composer (file 15) — a TIMELINE of mixed-pipeline
     segments (e.g. lipsync hook -> i2v product shots -> t2v b-roll -> lipsync CTA),

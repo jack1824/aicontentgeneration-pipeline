@@ -629,9 +629,46 @@ def list_avatars():
     return {"avatars": avatars.list_profiles()}
 
 
+class FaceGenRequest(BaseModel):
+    """Generate a synthetic avatar face: Wan t2v renders exactly ONE frame (a
+    photoreal portrait still) — no image model install needed."""
+    description: str = Field(min_length=3, max_length=500)
+    negative: str | None = Field(default=None, max_length=300)
+    seed: int | None = None
+
+
+@app.post("/avatars/generate-face")
+def generate_face_endpoint(req: FaceGenRequest):
+    job_id = _new_job("generate", "avatar-face")  # pod-occupying — shows in the queue
+
+    def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+        try:
+            _update(job_id, status="generating", progress=15,
+                    detail="rendering portrait still (1-frame Wan, 20 steps)")
+            # Fresh random seed per click unless pinned — "try again" must differ.
+            seed = req.seed or (int(uuid.uuid4().hex[:6], 16) % 900000) + 1
+            png = pipeline.generate_face(
+                req.description, negative=req.negative, seed=seed,
+                out_stem=f"gen-{job_id}", on_submit=on_submit,
+            )
+            _update(job_id, status="done", progress=100, detail="", video_path=png,
+                    image_url=f"/assets-files/avatars/{Path(png).name}")
+        except JobCancelled:
+            pass
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
 @app.post("/avatars")
 async def create_avatar(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    image_path: str | None = Form(None),  # server-side face (from /avatars/generate-face)
     name: str = Form(..., min_length=1, max_length=48),
     voice_id: str = Form(..., min_length=1),
     type: str = Form("byo"),
@@ -640,20 +677,33 @@ async def create_avatar(
 ):
     """Create a profile: locked face image + tied ElevenLabs voice.
 
-    BYO faces REQUIRE consent (file 07) — a real person's face must not enter
-    the render path without an explicit yes from the uploader.
+    The face comes from EITHER a browser upload (`file`) or a generated still
+    already on the server (`image_path`). BYO faces REQUIRE consent (file 07) —
+    a real person's face must not enter the render path without an explicit yes.
     """
     if type not in ("library", "byo"):
         raise HTTPException(422, "type must be 'library' or 'byo'")
     if type == "byo" and not consent:
         raise HTTPException(422, "BYO avatars need consent=true — confirm you have "
                                  "permission to use this person's face")
-    ext = Path(file.filename or "face").suffix.lower()
-    if ext not in AVATAR_IMAGE_EXT:
-        raise HTTPException(415, f"unsupported image type '{ext}' — allowed: {sorted(AVATAR_IMAGE_EXT)}")
-    data = await file.read()
-    if not data:
-        raise HTTPException(422, "empty image upload")
+    if file is not None:
+        ext = Path(file.filename or "face").suffix.lower()
+        if ext not in AVATAR_IMAGE_EXT:
+            raise HTTPException(415, f"unsupported image type '{ext}' — allowed: {sorted(AVATAR_IMAGE_EXT)}")
+        data = await file.read()
+        if not data:
+            raise HTTPException(422, "empty image upload")
+    elif image_path:
+        src = Path(image_path)
+        # Only faces the server itself produced/stored — never arbitrary paths.
+        if not src.resolve().is_relative_to(Path("assets").resolve()):
+            raise HTTPException(422, "image_path must live under assets/")
+        if not src.exists():
+            raise HTTPException(404, f"image not found: {image_path}")
+        ext = src.suffix.lower()
+        data = src.read_bytes()
+    else:
+        raise HTTPException(422, "provide a face: upload `file` or pass `image_path`")
     profile = avatars.create_profile(
         name=name.strip(), voice_id=voice_id, image_bytes=data, image_ext=ext,
         type_=type, consent=consent, default_settings={"language": language},

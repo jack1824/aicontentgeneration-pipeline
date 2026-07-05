@@ -57,6 +57,7 @@ export type Job = {
   kind?: string;
   name?: string | null;
   queue_position?: number;
+  image_url?: string | null; // face-gen jobs: preview URL of the rendered still
 };
 
 export type QueueItem = {
@@ -256,7 +257,8 @@ export const api = {
   avatars: (): Promise<{ avatars: AvatarProfile[] }> =>
     fetch(`${BASE}/avatars`).then(jsonOrThrow),
   createAvatar: (opts: {
-    file: File;
+    file?: File;
+    imagePath?: string; // server-side still from generateFace (instead of an upload)
     name: string;
     voice_id: string;
     consent: boolean;
@@ -264,7 +266,8 @@ export const api = {
     type?: "library" | "byo";
   }): Promise<AvatarProfile> => {
     const fd = new FormData();
-    fd.append("file", opts.file);
+    if (opts.file) fd.append("file", opts.file);
+    if (opts.imagePath) fd.append("image_path", opts.imagePath);
     fd.append("name", opts.name);
     fd.append("voice_id", opts.voice_id);
     fd.append("consent", String(opts.consent));
@@ -272,6 +275,16 @@ export const api = {
     if (opts.type) fd.append("type", opts.type);
     return fetch(`${BASE}/avatars`, { method: "POST", body: fd }).then(jsonOrThrow);
   },
+  generateFace: (req: {
+    description: string;
+    negative?: string;
+    seed?: number;
+  }): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/avatars/generate-face`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }).then(jsonOrThrow),
   updateAvatar: (id: string, body: { name?: string; voice_id?: string }): Promise<AvatarProfile> =>
     fetch(`${BASE}/avatars/${id}`, {
       method: "PATCH",

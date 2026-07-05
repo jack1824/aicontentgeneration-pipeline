@@ -51,6 +51,16 @@ export default function AvatarsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // ✨ generated-face state (Wan renders a 1-frame photoreal still on the pod)
+  const [faceSource, setFaceSource] = useState<"upload" | "generate">("upload");
+  const [genDesc, setGenDesc] = useState("");
+  const [genBusy, setGenBusy] = useState(false);
+  const [genPath, setGenPath] = useState<string | null>(null); // server path for createAvatar
+  const [genPreview, setGenPreview] = useState<string | null>(null);
+  const genPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => {
+    if (genPollRef.current) clearInterval(genPollRef.current);
+  }, []);
 
   const load = () =>
     api
@@ -70,18 +80,72 @@ export default function AvatarsPage() {
     setPreview(f ? URL.createObjectURL(f) : null);
   };
 
-  const canSave = name.trim().length > 0 && voiceId !== "" && file !== null && consent && !busy;
+  const generateFace = async () => {
+    if (genDesc.trim().length < 3 || genBusy) return;
+    setGenBusy(true);
+    setError(null);
+    setGenPath(null);
+    setGenPreview(null);
+    try {
+      const { job_id } = await api.generateFace({ description: genDesc.trim() });
+      genPollRef.current = setInterval(async () => {
+        try {
+          const j = await api.job(job_id);
+          if (j.status === "done") {
+            if (genPollRef.current) clearInterval(genPollRef.current);
+            setGenPath(j.video_path); // face-gen jobs return the PNG path here
+            setGenPreview(j.image_url ?? null);
+            setGenBusy(false);
+          } else if (["error", "cancelled"].includes(j.status)) {
+            if (genPollRef.current) clearInterval(genPollRef.current);
+            setError(j.error ?? "face generation failed");
+            setGenBusy(false);
+          }
+        } catch (e) {
+          if (String(e).includes("404")) {
+            if (genPollRef.current) clearInterval(genPollRef.current);
+            setError("render lost — the backend restarted. Try again.");
+            setGenBusy(false);
+          }
+        }
+      }, 5000);
+    } catch (e) {
+      setError(String(e));
+      setGenBusy(false);
+    }
+  };
+
+  const face = faceSource === "upload" ? (file ? "file" : null) : genPath ? "gen" : null;
+  const canSave =
+    name.trim().length > 0 &&
+    voiceId !== "" &&
+    face !== null &&
+    (face === "file" ? consent : true) && // generated faces are synthetic — no consent needed
+    !busy;
 
   const create = async () => {
-    if (!canSave || !file) return;
+    if (!canSave) return;
     setBusy(true);
     setError(null);
     try {
-      await api.createAvatar({ file, name: name.trim(), voice_id: voiceId, consent });
+      if (face === "file" && file) {
+        await api.createAvatar({ file, name: name.trim(), voice_id: voiceId, consent });
+      } else if (face === "gen" && genPath) {
+        await api.createAvatar({
+          imagePath: genPath,
+          name: name.trim(),
+          voice_id: voiceId,
+          consent: false,
+          type: "library",
+        });
+      }
       setName("");
       setVoiceId("");
       pickFile(null);
       setConsent(false);
+      setGenPath(null);
+      setGenPreview(null);
+      setGenDesc("");
       await load();
     } catch (e) {
       setError(String(e));
@@ -129,8 +193,63 @@ export default function AvatarsPage() {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <span className="label-cap">Face photo</span>
-            {preview ? (
+            <div className="flex items-center justify-between">
+              <span className="label-cap">Face</span>
+              <div className="flex gap-1">
+                {(
+                  [
+                    { k: "upload", l: "📤 Upload" },
+                    { k: "generate", l: "✨ Generate" },
+                  ] as { k: "upload" | "generate"; l: string }[]
+                ).map((o) => (
+                  <button
+                    key={o.k}
+                    onClick={() => setFaceSource(o.k)}
+                    className={`rounded-btn px-2.5 py-1 text-[11px] ${faceSource === o.k ? "seg-on" : "seg"}`}
+                  >
+                    {o.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {faceSource === "generate" ? (
+              <div className="flex flex-col gap-2">
+                <textarea
+                  value={genDesc}
+                  onChange={(e) => setGenDesc(e.target.value)}
+                  placeholder="Describe the spokesperson — e.g. “a young indian woman in her late 20s, warm confident smile, teal kurta”"
+                  rows={2}
+                  className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
+                />
+                {genPreview && !genBusy && (
+                  <div className="input-well flex items-center gap-3 rounded-btn p-2.5">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- backend-proxied preview */}
+                    <img
+                      src={api.assetUrl(genPreview)}
+                      alt="generated face"
+                      className="size-16 rounded-lg object-cover"
+                    />
+                    <p className="min-w-0 flex-1 text-[11px] text-text-secondary">
+                      this face is saved with the profile — regenerate if it&apos;s not right
+                    </p>
+                  </div>
+                )}
+                <button
+                  onClick={generateFace}
+                  disabled={genBusy || genDesc.trim().length < 3}
+                  className="seg rounded-btn px-3 py-2 text-xs disabled:opacity-40"
+                >
+                  {genBusy
+                    ? "rendering portrait… (~2–3 min)"
+                    : genPath
+                      ? "↻ generate a different face"
+                      : "✨ Generate face on the pod"}
+                </button>
+                {genBusy && (
+                  <p className="shimmer text-[11px]">Wan is painting a photoreal still…</p>
+                )}
+              </div>
+            ) : preview ? (
               <div className="input-well flex items-center gap-3 rounded-btn p-2.5">
                 {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview */}
                 <img src={preview} alt="face preview" className="size-12 rounded-lg object-cover" />
@@ -172,18 +291,20 @@ export default function AvatarsPage() {
             )}
           </div>
 
-          <label className="flex cursor-pointer items-start gap-2 text-xs text-text-secondary">
-            <input
-              type="checkbox"
-              checked={consent}
-              onChange={(e) => setConsent(e.target.checked)}
-              className="mt-0.5 accent-[var(--color-accent,#ff4d3d)]"
-            />
-            <span>
-              I have this person&apos;s permission to use their face in generated ads (or it&apos;s
-              my own face).
-            </span>
-          </label>
+          {faceSource === "upload" && (
+            <label className="flex cursor-pointer items-start gap-2 text-xs text-text-secondary">
+              <input
+                type="checkbox"
+                checked={consent}
+                onChange={(e) => setConsent(e.target.checked)}
+                className="mt-0.5 accent-(--color-accent,#ff4d3d)"
+              />
+              <span>
+                I have this person&apos;s permission to use their face in generated ads (or
+                it&apos;s my own face).
+              </span>
+            </label>
+          )}
 
           <button
             onClick={create}

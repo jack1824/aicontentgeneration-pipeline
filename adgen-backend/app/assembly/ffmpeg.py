@@ -110,6 +110,13 @@ def _run(cmd: list[str]) -> None:
         )
 
 
+def extract_frame(video: str, out: str, at_s: float = 0.0) -> str:
+    """Grab one frame as a still image (avatar face gen: Wan renders a 1-frame
+    'video' — this turns it into the PNG the profile stores)."""
+    _run(["ffmpeg", "-y", "-ss", f"{at_s:.3f}", "-i", video, "-frames:v", "1", out])
+    return out
+
+
 def stitch(clips: list[str], out: str = "stitched.mp4") -> str:
     """Concat clips into one video (codec copy). Returns the output path."""
     if not clips:
