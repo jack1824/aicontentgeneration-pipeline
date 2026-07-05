@@ -22,6 +22,7 @@ from app.providers import comfy
 from app.providers.tts import synthesize_voice
 from app.workflow_mappings import (
     INGREDIENTS_MAPPING,
+    LONGCAT_2W_MAPPING,
     LONGCAT_MAPPING,
     LTX2_MAPPING,
     WAN_I2V_MAPPING,
@@ -712,7 +713,12 @@ def _generate_longcat(req: dict, name: str, report, on_submit=None) -> str:
     audio_name = comfy.upload_file(pod, narration)
     image_name = comfy.upload_file(pod, avatar_image)
 
-    # 3. GENERATE — one continuous 3-window take (shots[0] is the scene prompt)
+    # 3. GENERATE — window count follows the NARRATION length (time is the #1
+    # user complaint): 2 windows ≈ 10.8s take when the script fits, 3 windows
+    # ≈ 15.8s otherwise. A window costs ~1/3 of the render — never spend it on
+    # seconds nobody scripted.
+    narration_s = ffmpeg.probe(narration)["duration"]
+    two_windows = narration_s <= 9.8  # 10.8s take minus a ~1s breathing tail
     shot = req["shots"][0]
     base_seed = req.get("seed") or DEFAULT_BASE_SEED
     inputs = {
@@ -721,9 +727,10 @@ def _generate_longcat(req: dict, name: str, report, on_submit=None) -> str:
         "audio": audio_name,
         "seed": base_seed,
         "seed_extend1": base_seed + 1,
-        "seed_extend2": base_seed + 2,
         "filename_prefix": f"adgen_longcat_{name}",
     }
+    if not two_windows:
+        inputs["seed_extend2"] = base_seed + 2
     if shot.get("negative_prompt"):
         inputs["negative_prompt"] = shot["negative_prompt"]
     if req.get("width"):
@@ -736,9 +743,12 @@ def _generate_longcat(req: dict, name: str, report, on_submit=None) -> str:
     # LongCat shares the pod with LTX/Wan — drop their cached weights first or
     # the container RAM limit trips (OOM'd the pod on the first attempt).
     comfy.free_memory(pod)
-    report("generating", 15, "LongCat avatar (~16s take, 3 windows — takes a while)")
+    wf_name = "longcat_avatar_2w" if two_windows else "longcat_avatar"
+    mapping = LONGCAT_2W_MAPPING if two_windows else LONGCAT_MAPPING
+    report("generating", 15,
+           f"LongCat avatar ({'~11s take, 2 windows — short script, faster' if two_windows else '~16s take, 3 windows'})")
     clip = comfy.comfy_generate(
-        pod, comfy.load_workflow("longcat_avatar"), inputs, LONGCAT_MAPPING,
+        pod, comfy.load_workflow(wf_name), inputs, mapping,
         out_path=str(LONGCAT_VIDEO_DIR / f"{name}-clip1.mp4"),
         timeout=3600.0, on_submit=on_submit,
     )

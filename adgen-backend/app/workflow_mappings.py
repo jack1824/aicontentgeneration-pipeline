@@ -139,3 +139,9 @@ LONGCAT_MAPPING = {
     "cfg": ("427", "value"),                 # shared cfg FloatConstant (1.0)
     "filename_prefix": ("453", "filename_prefix"),
 }
+
+# workflows/longcat_avatar_2w.json — the SAME graph minus the third window
+# (2026-07-06): 2x 93-frame windows, 13-frame overlap -> 173 frames ≈ 10.8s.
+# ~1/3 less compute; the pipeline auto-picks it when the narration is short —
+# rendering seconds nobody scripted is pure wasted wall-clock for the user.
+LONGCAT_2W_MAPPING = {k: v for k, v in LONGCAT_MAPPING.items() if k != "seed_extend2"}
