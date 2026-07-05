@@ -124,9 +124,19 @@ Given a rough ad idea, write ONE dialogue:
   English product words kept in Latin script (natural Hinglish is good).
 - Give each speaker an Indian first name, a gender ("female"|"male"), and a `scene`: one
   continuous Wan-S2V scene prompt (40-70 words) — the speaker's age, hair, clothing and
-  distinct look, their setting and light, natural gestures while talking to the camera.
-  No cuts, no camera moves, no on-screen text, no brand names inside the scene prompt.
-  The two speakers must be visually distinct people in different settings.
+  distinct look, natural gestures while talking. No cuts, no on-screen text, no brand
+  names inside the scene prompt. The two speakers must be visually distinct people.
+- CONVERSATION GRAMMAR (this is what makes the cut feel like one real conversation,
+  not two stitched testimonials):
+  * ONE shared location for BOTH speakers — same room, same furniture words, same
+    light words, repeated VERBATIM in both scenes (e.g. both "at a small wooden table
+    in a bright chai stall, warm afternoon light"). Never two different settings.
+  * MIRRORED EYELINES: speaker A is "framed from her left, face turned three-quarters
+    toward someone just RIGHT of camera"; speaker B is "framed from his right, face
+    turned three-quarters toward someone just LEFT of camera". Neither looks straight
+    into the lens — they are talking to EACH OTHER across the cut.
+  * Listening energy: each scene mentions the speaker occasionally nodding or reacting
+    as if mid-conversation, not delivering a monologue.
 - Spoken brand names belong in the turns, never in scene prompts.
 
 Respond with STRICT JSON only (no markdown fences):
