@@ -17,3 +17,6 @@ jobs/
 
 # avatar reference images (personal — keep local)
 assets/
+
+# Phase 3 profile DB (user data — keep local)
+data/

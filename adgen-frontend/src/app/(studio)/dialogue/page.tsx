@@ -5,11 +5,13 @@
 // Wan-S2V take (~14s) and the cuts alternate between them. Runs on the proven
 // sequence engine with per-segment voices — no new models, no long waits.
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   api,
   ASPECTS,
   AspectKey,
+  AvatarProfile,
   Job,
   PRESETS,
   PresetKey,
@@ -21,6 +23,7 @@ import VoicePicker from "@/components/VoicePicker";
 type Speaker = {
   name: string;
   image: Uploaded | null;
+  avatarId: string; // saved avatar profile — face + voice in one tap (Phase 3)
   voiceId: string;
   scene: string; // how this speaker looks/acts — reused for all their turns
 };
@@ -33,6 +36,7 @@ const SPEAKER_RING = ["ring-accent/40", "ring-sky-400/40"];
 const emptySpeaker = (name: string): Speaker => ({
   name,
   image: null,
+  avatarId: "",
   voiceId: "",
   scene: "",
 });
@@ -48,6 +52,7 @@ export default function DialoguePage() {
   ]);
   const [language, setLanguage] = useState("en");
   const [voices, setVoices] = useState<Voice[]>([]);
+  const [avatars, setAvatars] = useState<AvatarProfile[]>([]);
   const [music, setMusic] = useState<Uploaded | null>(null);
   const [preset, setPreset] = useState<PresetKey>("preview");
   const [aspect, setAspect] = useState<AspectKey>("9:16");
@@ -60,6 +65,7 @@ export default function DialoguePage() {
 
   useEffect(() => {
     api.voices().then((d) => setVoices(d.voices)).catch(() => {});
+    api.avatars().then((d) => setAvatars(d.avatars)).catch(() => {});
   }, []);
 
   // Dialogue renders are long — survive navigation like Create/Sequence do.
@@ -143,9 +149,15 @@ export default function DialoguePage() {
     }
     for (const idx of usedSpeakers) {
       const sp = speakers[idx];
-      if (!sp.image) return `${sp.name} needs a face image`;
+      if (!sp.image && !sp.avatarId) return `${sp.name} needs a face — pick an avatar or upload`;
       if (!sp.scene.trim()) return `${sp.name} needs a scene description`;
     }
+    if (
+      usedSpeakers.size === 2 &&
+      speakers[0].avatarId &&
+      speakers[0].avatarId === speakers[1].avatarId
+    )
+      return "both speakers are the same avatar — pick two different people";
     if (
       usedSpeakers.size === 2 &&
       speakers[0].voiceId &&
@@ -169,7 +181,8 @@ export default function DialoguePage() {
             pipeline: "lipsync" as const,
             prompt: sp.scene.trim(),
             script: t.text.trim(),
-            image: sp.image!.path,
+            // Saved avatar wins: the backend resolves its locked face + voice.
+            ...(sp.avatarId ? { avatar_id: sp.avatarId } : { image: sp.image!.path }),
             ...(sp.voiceId ? { voice_id: sp.voiceId } : {}),
           };
         }),
@@ -216,12 +229,48 @@ export default function DialoguePage() {
                     onChange={(e) => patchSpeaker(i, { name: e.target.value || `Speaker ${i ? "B" : "A"}` })}
                     className={`bg-transparent text-sm font-semibold outline-none ${SPEAKER_TINT[i]}`}
                   />
+                  {avatars.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {avatars.map((a) => (
+                        <button
+                          key={a.id}
+                          onClick={() =>
+                            sp.avatarId === a.id
+                              ? patchSpeaker(i, { avatarId: "" })
+                              : patchSpeaker(i, {
+                                  avatarId: a.id,
+                                  image: null,
+                                  voiceId: a.voice_id,
+                                  name: sp.name.startsWith("Speaker") ? a.name : sp.name,
+                                })
+                          }
+                          title={`use ${a.name}'s face + voice`}
+                          className={`flex items-center gap-1.5 rounded-full py-0.5 pl-0.5 pr-2.5 text-[11px] ${
+                            sp.avatarId === a.id ? "seg-on" : "seg"
+                          }`}
+                        >
+                          {a.image_url && (
+                            // eslint-disable-next-line @next/next/no-img-element -- backend-proxied thumb
+                            <img
+                              src={api.assetUrl(a.image_url)}
+                              alt={a.name}
+                              className="size-5 rounded-full object-cover"
+                            />
+                          )}
+                          {a.name}
+                        </button>
+                      ))}
+                      <Link href="/avatars" className="text-[10px] text-text-muted hover:text-text-primary">
+                        manage →
+                      </Link>
+                    </div>
+                  )}
                   <Dropzone
-                    label="Face image · required"
+                    label={sp.avatarId ? "Face image · using saved avatar" : "Face image · required"}
                     accept="image/png,image/jpeg,image/webp"
                     kind="image"
                     value={sp.image}
-                    onChange={(v) => patchSpeaker(i, { image: v })}
+                    onChange={(v) => patchSpeaker(i, { image: v, ...(v ? { avatarId: "" } : {}) })}
                   />
                   <textarea
                     value={sp.scene}

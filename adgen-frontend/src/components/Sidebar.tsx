@@ -53,6 +53,16 @@ const NAV = [
     ),
   },
   {
+    href: "/avatars",
+    label: "Avatars",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+        <circle cx="12" cy="8.5" r="3.5" />
+        <path d="M5 19.5c1.4-3 4-4.5 7-4.5s5.6 1.5 7 4.5" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
     href: "/remix",
     label: "Remix",
     icon: (

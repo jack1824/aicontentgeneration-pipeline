@@ -11,6 +11,21 @@ export type SequenceSegment = {
   script?: string;
   image?: string;
   voice_id?: string; // per-segment voice (dialogue: speaker A vs B)
+  avatar_id?: string; // saved avatar profile — backend fills image + voice_id
+};
+
+// Phase 3: a saved face + voice pair the backend re-injects on every render.
+export type AvatarProfile = {
+  id: string;
+  name: string;
+  type: "library" | "byo";
+  reference_image: string; // server path (what /generate needs)
+  image_url: string | null; // browser preview (via api.assetUrl)
+  voice_id: string;
+  default_settings: Record<string, unknown>;
+  lora_path: string | null;
+  consent: boolean;
+  created_at: number;
 };
 
 export type GenerateRequest = {
@@ -29,6 +44,7 @@ export type GenerateRequest = {
   avatar_image?: string;
   product_image?: string;
   voice_id?: string;
+  avatar_id?: string; // saved avatar profile — backend resolves face + voice
   postprocess?: boolean;
 };
 
@@ -237,6 +253,33 @@ export const api = {
     fd.append("file", file);
     return fetch(`${BASE}/assets`, { method: "POST", body: fd }).then(jsonOrThrow);
   },
+  avatars: (): Promise<{ avatars: AvatarProfile[] }> =>
+    fetch(`${BASE}/avatars`).then(jsonOrThrow),
+  createAvatar: (opts: {
+    file: File;
+    name: string;
+    voice_id: string;
+    consent: boolean;
+    language?: string;
+    type?: "library" | "byo";
+  }): Promise<AvatarProfile> => {
+    const fd = new FormData();
+    fd.append("file", opts.file);
+    fd.append("name", opts.name);
+    fd.append("voice_id", opts.voice_id);
+    fd.append("consent", String(opts.consent));
+    if (opts.language) fd.append("language", opts.language);
+    if (opts.type) fd.append("type", opts.type);
+    return fetch(`${BASE}/avatars`, { method: "POST", body: fd }).then(jsonOrThrow);
+  },
+  updateAvatar: (id: string, body: { name?: string; voice_id?: string }): Promise<AvatarProfile> =>
+    fetch(`${BASE}/avatars/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  deleteAvatar: (id: string): Promise<{ ok: boolean }> =>
+    fetch(`${BASE}/avatars/${id}`, { method: "DELETE" }).then(jsonOrThrow),
   outputs: (): Promise<{ outputs: OutputItem[] }> => fetch(`${BASE}/outputs`).then(jsonOrThrow),
   voices: (): Promise<{ voices: Voice[] }> => fetch(`${BASE}/voices`).then(jsonOrThrow),
   voicePreviewBlob: async (voice_id: string, language = "en"): Promise<Blob> => {

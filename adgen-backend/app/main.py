@@ -25,12 +25,12 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import pipeline, postprocess
+from app import avatars, pipeline, postprocess
 from app.assembly import ffmpeg
 from app.config import COMFY_POD_URLS, ELEVENLABS_API_KEY
 from app.providers import llm
@@ -109,6 +109,7 @@ class Segment(BaseModel):
     image: str | None = None             # product photo / reference face for this segment
     voice_id: str | None = None          # per-segment voice (dialogue ads: A vs B);
                                          # falls back to the job-level voice_id
+    avatar_id: str | None = None         # saved avatar profile — fills image + voice_id
 
 
 class GenerateRequest(BaseModel):
@@ -125,6 +126,8 @@ class GenerateRequest(BaseModel):
     avatar_image: str | None = None      # lipsync: path to the reference face image
     product_image: str | None = None     # product: path to the product photo (i2v start image)
     voice_id: str | None = None          # TTS voice override (default: ELEVENLABS_VOICE_ID)
+    avatar_id: str | None = None         # saved avatar profile (Phase 3) — resolves to
+                                         # avatar_image + voice_id unless overridden
     postprocess: bool = False            # True = run the post chain after assembly (one-call
                                          # Enhanced/Master presets; adds a "post" stage)
     width: int | None = Field(default=None, ge=64, le=1920, multiple_of=16)
@@ -164,6 +167,22 @@ def generate_endpoint(req: GenerateRequest):
             raise HTTPException(422, "sequence mode needs `segments` — a non-empty timeline")
     elif not req.shots:
         raise HTTPException(422, "shots must contain at least one shot")
+    # Phase 3: a saved avatar profile supplies the locked face + its voice.
+    # Explicit per-request values win; the profile only fills the gaps (file 09:
+    # the models have no memory — the stored reference_image IS the consistency).
+    if req.avatar_id:
+        prof = avatars.get_profile(req.avatar_id)
+        if prof is None:
+            raise HTTPException(404, f"unknown avatar_id {req.avatar_id}")
+        req.avatar_image = req.avatar_image or prof["reference_image"]
+        req.voice_id = req.voice_id or prof["voice_id"]
+    for i, seg in enumerate(req.segments or []):
+        if seg.avatar_id:
+            prof = avatars.get_profile(seg.avatar_id)
+            if prof is None:
+                raise HTTPException(404, f"segment {i + 1}: unknown avatar_id {seg.avatar_id}")
+            seg.image = seg.image or prof["reference_image"]
+            seg.voice_id = seg.voice_id or prof["voice_id"]
     # Fail-fast asset checks at REQUEST time — a typo'd path must cost an instant 404,
     # not a full render + TTS spend that dies at the assembly step.
     for label, p in (("music", req.music), ("avatar_image", req.avatar_image),
@@ -599,6 +618,66 @@ async def upload_asset(file: UploadFile = File(...)):
     dest = Path("assets/uploads") / f"{safe_stem}-{uuid.uuid4().hex[:8]}{ext}"
     dest.write_bytes(await file.read())
     return {"path": str(dest), "url": f"/assets-files/uploads/{dest.name}"}
+
+
+AVATAR_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+@app.get("/avatars")
+def list_avatars():
+    """All saved avatar profiles, newest first (the Avatars page grid)."""
+    return {"avatars": avatars.list_profiles()}
+
+
+@app.post("/avatars")
+async def create_avatar(
+    file: UploadFile = File(...),
+    name: str = Form(..., min_length=1, max_length=48),
+    voice_id: str = Form(..., min_length=1),
+    type: str = Form("byo"),
+    consent: bool = Form(False),
+    language: str = Form("en"),
+):
+    """Create a profile: locked face image + tied ElevenLabs voice.
+
+    BYO faces REQUIRE consent (file 07) — a real person's face must not enter
+    the render path without an explicit yes from the uploader.
+    """
+    if type not in ("library", "byo"):
+        raise HTTPException(422, "type must be 'library' or 'byo'")
+    if type == "byo" and not consent:
+        raise HTTPException(422, "BYO avatars need consent=true — confirm you have "
+                                 "permission to use this person's face")
+    ext = Path(file.filename or "face").suffix.lower()
+    if ext not in AVATAR_IMAGE_EXT:
+        raise HTTPException(415, f"unsupported image type '{ext}' — allowed: {sorted(AVATAR_IMAGE_EXT)}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(422, "empty image upload")
+    profile = avatars.create_profile(
+        name=name.strip(), voice_id=voice_id, image_bytes=data, image_ext=ext,
+        type_=type, consent=consent, default_settings={"language": language},
+    )
+    return profile
+
+
+class AvatarUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=48)
+    voice_id: str | None = None
+
+
+@app.patch("/avatars/{avatar_id}")
+def update_avatar(avatar_id: str, req: AvatarUpdateRequest):
+    if avatars.get_profile(avatar_id) is None:
+        raise HTTPException(404, f"unknown avatar_id {avatar_id}")
+    return avatars.update_profile(avatar_id, name=req.name, voice_id=req.voice_id)
+
+
+@app.delete("/avatars/{avatar_id}")
+def delete_avatar(avatar_id: str):
+    if not avatars.delete_profile(avatar_id):
+        raise HTTPException(404, f"unknown avatar_id {avatar_id}")
+    return {"ok": True}
 
 
 @app.get("/outputs")

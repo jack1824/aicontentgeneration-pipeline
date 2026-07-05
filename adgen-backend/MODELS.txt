@@ -65,6 +65,25 @@ TOTALS: ~85-90 GB on disk -> the 250 GB network volume fits
 everything with room for outputs and future pipelines (LTX etc.)
 ================================================================
 
+POD DISK LAYOUT (learned the hard way, 2026-07-05; updated after the
+2026-07-06 forced migration to pod ls5k9rn9wxassp)
+   App:   /ComfyUI  (container disk — RESET on every stop/restart/resize;
+          rebuilt from image; Manager-installed node packs die with it)
+   Store: /workspace/ComfyUI/models  (pod volume, grown to 400 GB — PERSISTS
+          across stop/start and survives RunPod auto-migration; DELETED on
+          Terminate)
+   Wiring: /ComfyUI/extra_model_paths.yaml maps the store into ComfyUI.
+   AFTER ANY POD RESET run:  /workspace/restore_after_reset.sh
+   (copies wav2vec2 + codeformer.pth container-side, re-clones SeedVR2 +
+   facerestore_cf Enhance packs; RIFE/VHS ship in the image) then restart
+   ComfyUI (POST /manager/reboot — a 502 reply means it worked).
+   NEVER `mv` between container and volume — a quota failure mid-move DELETED
+   4 source files (ltx checkpoint, gemma, kijai-umt5, wav2vec2). Copy, verify,
+   then delete. Preflight (Claude) diffs /models/* against all workflow JSONs
+   before any render — the migration proved its worth: 9 files (i2v fp8 pair,
+   6 LoRAs, LTX spatial upscaler) turned out container-side and had to be
+   re-downloaded to the volume store.
+
 7) NEXT PIPELINES (updated 2026-07-05 after web verification)
    ----------------------------------------------------------------
 
@@ -98,8 +117,11 @@ everything with room for outputs and future pipelines (LTX etc.)
         LongCat_distill_lora_alpha64_bf16.safetensors                  1.3 GB
       models/vae/
         Wan2_1_VAE_bf16.safetensors (Kijai/WanVideo_comfy)             1.4 GB
-      (wav2vec2-chinese speech encoder auto-downloads on first run;
-       umt5 text encode reuses the installed Comfy-Org file.)
+      models/text_encoders/
+        umt5-xxl-enc-fp8_e4m3fn.safetensors (Kijai/WanVideo_comfy)     6.7 GB
+        (Kijai's cached text encoder REJECTS the Comfy-Org fp8-SCALED
+         umt5 — it needs Kijai's non-scaled fp8 conversion.)
+      (wav2vec2-chinese speech encoder auto-downloads on first run.)
 
    PARKED: MultiTalk (Kijai WanVideoWrapper route) — revisit only if
    LongCat's multi-speaker quality disappoints.

@@ -4,6 +4,7 @@
 // Flow: idea -> POST /plan -> proposal cards -> "Use this plan" prefills the editor
 // -> tweak shots/script/assets -> Generate -> live render panel -> player.
 
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
   Suspense,
@@ -16,6 +17,7 @@ import {
   api,
   ASPECTS,
   AspectKey,
+  AvatarProfile,
   LTX_ASPECTS,
   GenerateRequest,
   Job,
@@ -275,6 +277,10 @@ function CreateStudio() {
   const [music, setMusic] = useState<Uploaded | null>(null);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceId, setVoiceId] = useState("");
+  // Phase 3: saved avatar profiles — picking one locks face + voice in one tap.
+  const [avatars, setAvatars] = useState<AvatarProfile[]>([]);
+  const [avatarId, setAvatarId] = useState("");
+  const avatarParam = params.get("avatar");
   const [previewingVoice, setPreviewingVoice] = useState(false);
   const [preset, setPreset] = useState<PresetKey>("preview");
   // LTX has no master tier — master is TREATED as Polished for LTX-backed
@@ -304,6 +310,26 @@ function CreateStudio() {
 
   useEffect(() => {
     api.voices().then((d) => setVoices(d.voices)).catch(() => {});
+  }, []);
+
+  const selectAvatar = useCallback((a: AvatarProfile) => {
+    setAvatarId(a.id);
+    setImage(null); // profile face replaces any one-off upload
+    setVoiceId(a.voice_id); // the tied voice — still overridable in the picker
+  }, []);
+
+  useEffect(() => {
+    api
+      .avatars()
+      .then((d) => {
+        setAvatars(d.avatars);
+        // Deep link from the Avatars page: /create?mode=lipsync&avatar=<id>
+        const pre = avatarParam && d.avatars.find((a) => a.id === avatarParam);
+        if (pre) selectAvatar(pre);
+      })
+      .catch(() => {});
+    // avatarParam is part of the component key — this runs once per seeded mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // A running render must SURVIVE navigation: the job lives on the backend, so the
@@ -412,7 +438,7 @@ function CreateStudio() {
   const blocker = (): string | null => {
     if (!shots[0]?.prompt.trim()) return "write the first shot's prompt";
     if (isAvatar && !script.trim()) return "avatar mode needs a narration script";
-    if (isAvatar && !image) return "upload the avatar's face image";
+    if (isAvatar && !image && !avatarId) return "pick a saved avatar or upload a face image";
     if (mode === "product" && !image) return "upload the product photo";
     return null;
   };
@@ -435,7 +461,8 @@ function CreateStudio() {
       postprocess: p.postprocess,
       ...(reqMode === "cinematic" ? LTX_ASPECTS[aspect] : ASPECTS[aspect]),
       ...(name ? { name } : {}),
-      ...(isAvatar && image ? { avatar_image: image.path } : {}),
+      ...(isAvatar && avatarId ? { avatar_id: avatarId } : {}),
+      ...(isAvatar && !avatarId && image ? { avatar_image: image.path } : {}),
       ...(mode === "product" && image ? { product_image: image.path } : {}),
       ...(mode !== "lipsync" && music ? { music: music.path } : {}),
       ...(voiceId ? { voice_id: voiceId } : {}),
@@ -678,15 +705,59 @@ function CreateStudio() {
             )}
           </div>
 
+          {/* Saved avatars: one tap = locked face + tied voice (Phase 3). */}
+          {isAvatar && avatars.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="label-cap">Saved avatars</span>
+              <div className="flex flex-wrap items-center gap-2">
+                {avatars.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => (avatarId === a.id ? setAvatarId("") : selectAvatar(a))}
+                    title={avatarId === a.id ? "click to unselect" : `use ${a.name}'s face + voice`}
+                    className={`flex items-center gap-2 rounded-full py-1 pl-1 pr-3 text-xs ${
+                      avatarId === a.id ? "seg-on" : "seg"
+                    }`}
+                  >
+                    {a.image_url && (
+                      // eslint-disable-next-line @next/next/no-img-element -- backend-proxied thumb
+                      <img
+                        src={api.assetUrl(a.image_url)}
+                        alt={a.name}
+                        className="size-6 rounded-full object-cover"
+                      />
+                    )}
+                    {a.name}
+                  </button>
+                ))}
+                <Link
+                  href="/avatars"
+                  className="text-[11px] text-text-muted hover:text-text-primary"
+                >
+                  manage →
+                </Link>
+              </div>
+            </div>
+          )}
+
           {/* Assets (b-roll and cinematic are pure text-to-video — no image) */}
           {mode !== "overlay" && mode !== "cinematic" && (
             <Dropzone
-              label={isAvatar ? "Avatar face image · required" : "Product photo · required"}
+              label={
+                isAvatar
+                  ? avatarId
+                    ? "Avatar face image · using saved avatar (upload to replace)"
+                    : "Avatar face image · required"
+                  : "Product photo · required"
+              }
               hint="png / jpg / webp"
               accept="image/png,image/jpeg,image/webp"
               kind="image"
               value={image}
-              onChange={setImage}
+              onChange={(v) => {
+                setImage(v);
+                if (v) setAvatarId(""); // a one-off upload overrides the saved profile
+              }}
             />
           )}
           {mode !== "lipsync" && (
@@ -873,7 +944,7 @@ function CreateStudio() {
 // "Create" after landing on /create?usecase=…) reset the seeded idea/mode state.
 function CreateStudioKeyed() {
   const params = useSearchParams();
-  const key = `${params.get("usecase") ?? ""}|${params.get("idea") ?? ""}|${params.get("mode") ?? ""}|${params.get("surprise") ?? ""}`;
+  const key = `${params.get("usecase") ?? ""}|${params.get("idea") ?? ""}|${params.get("mode") ?? ""}|${params.get("surprise") ?? ""}|${params.get("avatar") ?? ""}`;
   return <CreateStudio key={key} />;
 }
 
