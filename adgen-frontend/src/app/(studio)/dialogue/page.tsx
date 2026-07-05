@@ -19,6 +19,7 @@ import {
 } from "@/lib/api";
 import Dropzone, { Uploaded } from "@/components/Dropzone";
 import VoicePicker from "@/components/VoicePicker";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 type Speaker = {
   name: string;
@@ -43,21 +44,22 @@ const emptySpeaker = (name: string): Speaker => ({
 });
 
 export default function DialoguePage() {
-  const [speakers, setSpeakers] = useState<[Speaker, Speaker]>([
+  // Everything typed here survives navigating away and back (sessionStorage).
+  const [speakers, setSpeakers] = usePersistentState<[Speaker, Speaker]>("adgen-dlg-speakers", [
     emptySpeaker("Speaker A"),
     emptySpeaker("Speaker B"),
   ]);
-  const [turns, setTurns] = useState<Turn[]>([
+  const [turns, setTurns] = usePersistentState<Turn[]>("adgen-dlg-turns", [
     { speaker: 0, text: "" },
     { speaker: 1, text: "" },
   ]);
-  const [language, setLanguage] = useState("en");
+  const [language, setLanguage] = usePersistentState("adgen-dlg-lang", "en");
   const [voices, setVoices] = useState<Voice[]>([]);
   const [avatars, setAvatars] = useState<AvatarProfile[]>([]);
-  const [music, setMusic] = useState<Uploaded | null>(null);
-  const [preset, setPreset] = useState<PresetKey>("preview");
-  const [aspect, setAspect] = useState<AspectKey>("9:16");
-  const [name, setName] = useState("");
+  const [music, setMusic] = usePersistentState<Uploaded | null>("adgen-dlg-music", null);
+  const [preset, setPreset] = usePersistentState<PresetKey>("adgen-dlg-preset", "preview");
+  const [aspect, setAspect] = usePersistentState<AspectKey>("adgen-dlg-aspect", "9:16");
+  const [name, setName] = usePersistentState("adgen-dlg-name", "");
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
@@ -65,8 +67,8 @@ export default function DialoguePage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ---- The brain: idea -> both speakers + all turns (faces/voices stay yours) ----
-  const [idea, setIdea] = useState("");
-  const [planTurns, setPlanTurns] = useState(2);
+  const [idea, setIdea] = usePersistentState("adgen-dlg-idea", "");
+  const [planTurns, setPlanTurns] = usePersistentState("adgen-dlg-planturns", 2);
   const [thinking, setThinking] = useState(false);
   const [planned, setPlanned] = useState(false);
 

@@ -29,6 +29,7 @@ import {
   Voice,
 } from "@/lib/api";
 import Dropzone, { Uploaded } from "@/components/Dropzone";
+import { usePersistentState } from "@/lib/usePersistentState";
 import { USECASES } from "@/lib/usecases";
 import BriefChat from "@/components/create/BriefChat";
 import PitchDeck from "@/components/create/PitchDeck";
@@ -78,9 +79,16 @@ function GeminiPanel({
   onAdopt: (a: PlanApproach) => void;
   onPlanned: () => void;
 }) {
-  const [idea, setIdea] = useState(initialIdea);
+  const [idea, setIdea] = usePersistentState("adgen-create-idea", initialIdea, {
+    restore: !initialIdea, // a dashboard/usecase prefill wins over the snapshot
+  });
   // Conversational brief by default; prefilled ideas (dashboard/usecase) open in type mode.
   const [briefMode, setBriefMode] = useState<"chat" | "type">(initialIdea ? "type" : "chat");
+  // A restored idea must be visible and editable — chat mode would hide it.
+  useEffect(() => {
+    if (idea && briefMode === "chat") setBriefMode("type");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idea]);
   const [duration, setDuration] = useState(15);
   const [thinking, setThinking] = useState(false);
   const [approaches, setApproaches] = useState<PlanApproach[] | null>(null);
@@ -258,37 +266,43 @@ function CreateStudio() {
   const initialIdea = ideaParam || uc?.ideaHint || "";
 
   // ---- Editor state ----
-  const [mode, setMode] = useState<Mode>(
+  // Form state survives navigation (sessionStorage) — EXCEPT on seeded mounts
+  // (URL prefills from dashboard/landing/avatars), where the prefill must win.
+  const avatarParam = params.get("avatar");
+  const seeded = !!(ideaParam || urlMode || usecase || avatarParam);
+  const keep = { restore: !seeded };
+  const [mode, setMode] = usePersistentState<Mode>(
+    "adgen-create-mode",
     urlMode === "lipsync" || urlMode === "overlay" || urlMode === "product" || urlMode === "cinematic" || urlMode === "longcat"
       ? urlMode
       : uc?.mode ?? "product",
+    keep,
   );
   // B-roll engine: LTX-2 by default — its "preview" already IS final quality and
   // beats even Wan master on time. Wan stays for the documentary texture.
-  const [engine, setEngine] = useState<Engine>("ltx");
+  const [engine, setEngine] = usePersistentState<Engine>("adgen-create-engine", "ltx", keep);
   const isAvatar = mode === "lipsync" || mode === "longcat";
   // What actually goes in the request: B-roll+LTX rides the cinematic pipeline.
   const reqMode = mode === "overlay" && engine === "ltx" ? "cinematic" : mode;
-  const [shots, setShots] = useState<Shot[]>([emptyShot()]);
+  const [shots, setShots] = usePersistentState<Shot[]>("adgen-create-shots", [emptyShot()], keep);
   // lipsync + longcat share the avatar UX: one scene, script + face required.
-  const [script, setScript] = useState("");
-  const [language, setLanguage] = useState("en");
-  const [image, setImage] = useState<Uploaded | null>(null);
-  const [music, setMusic] = useState<Uploaded | null>(null);
+  const [script, setScript] = usePersistentState("adgen-create-script", "", keep);
+  const [language, setLanguage] = usePersistentState("adgen-create-lang", "en", keep);
+  const [image, setImage] = usePersistentState<Uploaded | null>("adgen-create-image", null, keep);
+  const [music, setMusic] = usePersistentState<Uploaded | null>("adgen-create-music", null, keep);
   const [voices, setVoices] = useState<Voice[]>([]);
-  const [voiceId, setVoiceId] = useState("");
+  const [voiceId, setVoiceId] = usePersistentState("adgen-create-voice", "", keep);
   // Phase 3: saved avatar profiles — picking one locks face + voice in one tap.
   const [avatars, setAvatars] = useState<AvatarProfile[]>([]);
-  const [avatarId, setAvatarId] = useState("");
-  const avatarParam = params.get("avatar");
+  const [avatarId, setAvatarId] = usePersistentState("adgen-create-avatarid", "", keep);
   const [previewingVoice, setPreviewingVoice] = useState(false);
-  const [preset, setPreset] = useState<PresetKey>("preview");
+  const [preset, setPreset] = usePersistentState<PresetKey>("adgen-create-preset", "preview", keep);
   // LTX has no master tier — master is TREATED as Polished for LTX-backed
   // renders at request time, without clobbering the user's Wan-mode choice.
   const effPreset: PresetKey =
     reqMode === "cinematic" && preset === "master" ? "moderate" : preset;
-  const [aspect, setAspect] = useState<AspectKey>("9:16");
-  const [name, setName] = useState("");
+  const [aspect, setAspect] = usePersistentState<AspectKey>("adgen-create-aspect", "9:16", keep);
+  const [name, setName] = usePersistentState("adgen-create-name", "", keep);
   const [planned, setPlanned] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
 

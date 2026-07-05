@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import Dropzone, { Uploaded } from "@/components/Dropzone";
 import VoicePicker from "@/components/VoicePicker";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 type SegmentDraft = {
   pipeline: SequenceSegment["pipeline"];
@@ -43,14 +44,15 @@ const emptySegment = (pipeline: SegmentDraft["pipeline"]): SegmentDraft => ({
 const segSeconds = (s: SegmentDraft) => (s.pipeline === "lipsync" ? 14.4 : 5);
 
 export default function SequencePage() {
-  const [segments, setSegments] = useState<SegmentDraft[]>([]);
-  const [language, setLanguage] = useState("en");
+  // The timeline a user builds here survives navigation (sessionStorage).
+  const [segments, setSegments] = usePersistentState<SegmentDraft[]>("adgen-seq-segments", []);
+  const [language, setLanguage] = usePersistentState("adgen-seq-lang", "en");
   const [voices, setVoices] = useState<Voice[]>([]);
-  const [voiceId, setVoiceId] = useState("");
-  const [music, setMusic] = useState<Uploaded | null>(null);
-  const [preset, setPreset] = useState<PresetKey>("preview");
-  const [aspect, setAspect] = useState<AspectKey>("9:16");
-  const [name, setName] = useState("");
+  const [voiceId, setVoiceId] = usePersistentState("adgen-seq-voice", "");
+  const [music, setMusic] = usePersistentState<Uploaded | null>("adgen-seq-music", null);
+  const [preset, setPreset] = usePersistentState<PresetKey>("adgen-seq-preset", "preview");
+  const [aspect, setAspect] = usePersistentState<AspectKey>("adgen-seq-aspect", "9:16");
+  const [name, setName] = usePersistentState("adgen-seq-name", "");
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
