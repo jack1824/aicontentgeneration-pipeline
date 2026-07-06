@@ -60,26 +60,47 @@ Rules:
   with one shot is a FAILED plan; the user paid for the full duration. Compose for the aspect
   ratio: 9:16 vertical -> tight single-subject framing and close-ups; 1:1 -> centered subjects;
   16:9 -> wider establishing shots.
-- Shot prompts are rendered by Wan 2.2 video models — write them the way Wan responds best:
-  * Structure every prompt as SUBJECT -> ACTION -> SCENE -> CAMERA -> LIGHT -> STYLE, with the
-    subject in the first few words.
-  * MOTION IS MANDATORY: Wan renders movement, so every prompt needs an explicit subject action
-    ("pours", "walks past", "steam curls upward") AND exactly ONE camera move ("slow dolly-in",
-    "handheld tracking shot", "orbit around", "crane down"). A motionless prompt produces a
-    boring frozen shot.
-  * Concrete physical detail beats marketing abstractions: "golden jalebi glistening as syrup
-    drips onto a steel plate" — never "the essence of festive indulgence".
-  * 60-100 words per shot prompt, present tense, documentary specificity: each person described
-    individually (age, hair, clothing, distinct face), photographic wording ("shot on a DSLR,
-    photojournalism, true-to-life, realistic skin texture"), continuity anchors kept VERBATIM
-    across shots (same character/place words in every shot that shares them).
+- Shot prompts read like a film director's notes, not a copywriter's. 45-90 words,
+  present tense, in EXACTLY this order:
+  STYLE -> SUBJECT -> ACTION -> SCENE -> CAMERA -> LIGHT/COLOR -> AUDIO.
+  * STYLE: every prompt opens verbatim "Realistic documentary footage:" (or
+    "Realistic documentary close-up:" for insert shots).
+  * SUBJECT: define each recurring character ONCE as a ~20-word anchor (age, face,
+    hair, exact clothing) and paste it WORD-FOR-WORD into every shot it appears in;
+    same for the location anchor. Never paraphrase an anchor — verbatim repetition
+    is what keeps the same actor and set across cuts.
+  * ACTION: one small physical action that TELLS the story beat — "his finger traces
+    an empty line in the appointment diary", "her thumb taps the phone three
+    deliberate times" — never a summary like "he looks worried". Motion is
+    mandatory: a motionless prompt produces a boring frozen shot.
+  * CAMERA: exactly ONE move, emotionally motivated ("slow creeping zoom toward his
+    still face", "camera rising from his chest to his face as he begins to smile").
+  * LIGHT/COLOR carries the EMOTION — never name a feeling, grade it: sadness =
+    "desaturated cold blue-grey tones, heavy silence"; dread = "lit from below, cold
+    shadows"; hope = "sudden warm golden light floods the room"; success = "warm
+    confident tones, morning sun streaming in".
+  * AUDIO: the final sentence is always "The audio is ..." — 1-3 concrete diegetic
+    sounds that carry the beat's emotion (a ticking wall clock, calculator key
+    clicks sharp in the silence, a soft hopeful piano note swelling). Near-silence
+    is a valid, powerful choice.
   * NEVER put brand names, taglines, or any on-screen text in a shot prompt — video models
     render garbled text. Spoken brand names belong in the narration script only.
   * product (i2v) prompts describe ONLY camera, environment, and light interacting with the
     photographed product (push-in, orbit, rim light, dust motes, reflections) — the photo
-    already supplies the product's look; never re-describe or contradict it.
+    already supplies the product's look; never re-describe or contradict it. The STYLE
+    opener and character anchors don't apply here, but keep the order and the closing
+    "The audio is ..." sentence when narration/music is planned.
   * lipsync (s2v) prompts describe one continuous scene: the speaker's look, natural gestures
     and expression shifts, setting and light — no cuts, no camera moves away from the speaker.
+- STORY ARC for multi-shot ads: assign each shot ONE beat in order — hook -> pain ->
+  agitate -> pattern break -> solution -> result -> CTA mood — and run a color
+  script: cold desaturated grades through the problem beats, turning to warm gold
+  AT the pattern-break shot and staying warm to the end.
+- SPEAKING CHARACTERS (cinematic only): to make someone talk on screen, put the
+  spoken line inside the shot prompt in quotes — 'he says warmly in Hindi: "..."' —
+  add "His lips move naturally with the words", keep lines to ~8-10 words per shot,
+  and leave that ad's narration_script empty. Two characters may exchange short
+  lines in ONE shot; each gets a distinct voice.
 - Every shot's negative_prompt starts from this canonical block (keep it IDENTICAL across
   shots for continuity), then append shot-specific negatives if needed:
   "cartoon, anime, CGI, 3D render, plastic skin, waxy skin, doll face, deformed hands, bad
