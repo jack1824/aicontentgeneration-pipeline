@@ -219,7 +219,7 @@ def stitch_and_overlay(
         if music:
             fc = (f"{narr};"
                   f"[2:a]volume={MUSIC_DUCK_VOLUME}[bg];"
-                  f"[narr][bg]amix=inputs=2:duration=first[mix]")
+                  f"[narr][bg]amix=inputs=2:duration=first:normalize=0[mix]")
             cmd = ["ffmpeg", "-y", "-i", stitched, "-i", narration, "-i", music,
                    "-filter_complex", fc,
                    "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
@@ -298,7 +298,7 @@ def replace_audio(
     narr = _narr_filter(narration_delay_ms, gain=narration_gain, tempo=tempo)
     if music:
         fc = (f"{narr};[2:a]volume={music_gain}[bg];"
-              f"[narr][bg]amix=inputs=2:duration=first[mix]")
+              f"[narr][bg]amix=inputs=2:duration=first:normalize=0[mix]")
         cmd = ["ffmpeg", "-y", "-i", video, "-i", narration, "-i", music,
                "-filter_complex", fc,
                "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
@@ -373,7 +373,7 @@ def stitch_plus_music(
         return stitched
     try:
         fc = (f"[0:a]volume=1.0[v];[1:a]volume={MUSIC_DUCK_VOLUME}[bg];"
-              f"[v][bg]amix=inputs=2:duration=first[mix]")
+              f"[v][bg]amix=inputs=2:duration=first:normalize=0[mix]")
         cmd = ["ffmpeg", "-y", "-i", stitched, "-i", music,
                "-filter_complex", fc,
                "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
