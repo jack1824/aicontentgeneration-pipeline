@@ -177,11 +177,14 @@ body {
   box-shadow: 12px 0 40px -20px rgba(0, 0, 0, 0.65);
 }
 
-/* Same panel treatment as the rail, rotated for the small-screen top bar. */
+/* Same panel treatment as the rail, rotated for the small-screen top bar —
+   frosted, so scrolled content glides beneath it. */
 .bar-raised {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 60%),
-    var(--surface-1);
+    rgba(20, 20, 22, 0.78);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   box-shadow: 0 12px 40px -20px rgba(0, 0, 0, 0.65);
 }

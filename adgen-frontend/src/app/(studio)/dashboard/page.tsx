@@ -152,28 +152,26 @@ function TemplateCard({ u, preview }: { u: UseCase; preview: OutputItem | undefi
           v.currentTime = 0;
         }
       }}
-      className="card-raised group relative flex h-72 w-52 shrink-0 snap-start flex-col justify-end overflow-hidden rounded-card p-4 transition-colors hover:border-accent/40 sm:w-56"
+      className="card-raised group relative flex h-72 w-52 shrink-0 snap-start flex-col justify-end overflow-hidden rounded-card transition-colors hover:border-accent/40 sm:w-56"
     >
       {preview ? (
-        <>
-          <video
-            ref={video}
-            src={api.fileUrl(preview)}
-            muted
-            loop
-            playsInline
-            preload="metadata"
-            className="absolute inset-0 size-full object-cover opacity-30 transition-opacity duration-300 group-hover:opacity-70"
-          />
-          <div className="absolute inset-0 bg-linear-to-t from-base via-base/55 to-transparent" />
-        </>
+        <video
+          ref={video}
+          src={api.fileUrl(preview)}
+          muted
+          loop
+          playsInline
+          preload="metadata"
+          className="absolute inset-0 size-full object-cover opacity-55 transition-opacity duration-300 group-hover:opacity-90"
+        />
       ) : (
         <div className="placeholder-live absolute inset-0" />
       )}
-      <span className="seg absolute left-3 top-3 rounded-full px-2.5 py-1 text-[10px] uppercase tracking-wider">
+      <span className="seg absolute left-3 top-3 rounded-full px-2.5 py-1 text-[10px] uppercase tracking-wider backdrop-blur-sm">
         {BADGES[u.slug] ?? "Template"}
       </span>
-      <div className="relative flex flex-col gap-1.5">
+      {/* Frosted info strip — the video plays on beneath the glass. */}
+      <div className="relative flex flex-col gap-1.5 border-t border-white/10 bg-black/35 p-4 backdrop-blur-md">
         <span className="text-xl">{u.emoji}</span>
         <h3 className="text-[15px] font-semibold font-display">{u.title}</h3>
         <p className="text-xs leading-relaxed text-text-secondary">{u.desc}</p>
@@ -223,25 +221,23 @@ function EngineBanner({
           v.currentTime = 0;
         }
       }}
-      className="card-raised group relative flex h-56 flex-col justify-end overflow-hidden rounded-card p-5 transition-colors hover:border-accent/40"
+      className="card-raised group relative flex h-56 flex-col justify-end overflow-hidden rounded-card transition-colors hover:border-accent/40"
     >
       {preview ? (
-        <>
-          <video
-            ref={video}
-            src={api.fileUrl(preview)}
-            muted
-            loop
-            playsInline
-            preload="metadata"
-            className="absolute inset-0 size-full object-cover opacity-35 transition-opacity duration-300 group-hover:opacity-75"
-          />
-          <div className="absolute inset-0 bg-linear-to-t from-base via-base/45 to-transparent" />
-        </>
+        <video
+          ref={video}
+          src={api.fileUrl(preview)}
+          muted
+          loop
+          playsInline
+          preload="metadata"
+          className="absolute inset-0 size-full object-cover opacity-60 transition-opacity duration-300 group-hover:opacity-95"
+        />
       ) : (
         <div className="placeholder-live absolute inset-0" />
       )}
-      <div className="relative flex flex-col gap-1">
+      {/* Frosted info strip — the render stays visible through the glass. */}
+      <div className="relative flex flex-col gap-1 border-t border-white/10 bg-black/35 p-5 backdrop-blur-md">
         <span className="label-cap text-accent">{e.tag}</span>
         <h3 className="text-2xl font-semibold tracking-tight font-display">{e.title}</h3>
         <p className="max-w-xs text-xs leading-relaxed text-text-secondary">{e.desc}</p>
