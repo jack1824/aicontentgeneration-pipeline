@@ -12,7 +12,6 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useRouter } from "next/navigation";
 import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -20,6 +19,7 @@ import { useGSAP } from "@gsap/react";
 import { USECASE_LIST, UseCase, usecaseHref } from "@/lib/usecases";
 import { api, OutputItem, PIPELINE_LABELS } from "@/lib/api";
 import BrandMark from "@/components/BrandMark";
+import IdeaPill from "@/components/IdeaPill";
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
 
@@ -500,36 +500,6 @@ function CtaButton({ big = false, children = "Create your first ad" }: { big?: b
   );
 }
 
-// The hero's floating prompt pill — same glass element as the studio hub, so
-// landing and dashboard read as one product. Typing routes straight into the
-// studio with the idea prefilled; empty submit still opens Create.
-function HeroIdeaPill() {
-  const router = useRouter();
-  const [idea, setIdea] = useState("");
-  const go = () =>
-    router.push(idea.trim() ? `/create?idea=${encodeURIComponent(idea.trim())}` : "/create");
-  return (
-    <div className="glass-pill flex w-full max-w-2xl items-center gap-2 rounded-full p-2 pl-5">
-      <input
-        value={idea}
-        onChange={(e) => setIdea(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && go()}
-        placeholder="e.g. 15s reel for my sweet shop — Diwali gift boxes…"
-        aria-label="Describe the ad you want"
-        className="min-w-0 flex-1 bg-transparent py-2 text-[15px] outline-none placeholder:text-text-muted"
-      />
-      <button
-        onClick={go}
-        aria-label="Create my ad"
-        className="hero-glow flex shrink-0 items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold text-white sm:px-6"
-      >
-        <span className="text-base leading-none">✦</span>
-        <span className="hidden sm:inline">Create my ad</span>
-      </button>
-    </div>
-  );
-}
-
 function UseCaseCard({ u, videoUrl }: { u: UseCase; videoUrl?: string }) {
   return (
     <Link
@@ -984,7 +954,7 @@ export default function Landing() {
               <span lang="hi">हिन्दी</span>, from nothing but your idea and a product photo.
             </p>
             <div data-hero-after className="flex w-full flex-col items-center gap-3">
-              <HeroIdeaPill />
+              <IdeaPill submitLabel="Create my ad" />
               <a href="#use-cases" className="text-xs text-text-muted transition-colors hover:text-text-primary">
                 or start from a template ↓
               </a>

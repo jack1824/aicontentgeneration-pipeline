@@ -1,17 +1,26 @@
 "use client";
 
-// Dashboard v2 — the OpenArt-style hub. A centered question, one floating
-// glass prompt pill feeding the Gemini brain, mode pills for people who
-// already know what they want, a cinematic template carousel, the recent
-// wall, pipeline banners, and prompt-book teasers. Every preview is a REAL
-// render from the library — proof, not decoration.
+// Dashboard v2 — the OpenArt/Higgsfield-style hub. A centered question with
+// word-by-word pop, one floating glass prompt pill (typewriter placeholder +
+// one-tap Try chips) feeding the Gemini brain, springy mode pills, a cinematic
+// template carousel with 3D hover tilt, the recent wall, pipeline banners and
+// prompt-book teasers. Every preview is a REAL render from the library —
+// proof, not decoration. All motion sits behind prefers-reduced-motion.
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { useGSAP } from "@gsap/react";
 import { api, OutputItem } from "@/lib/api";
 import VideoCard from "@/components/VideoCard";
+import IdeaPill from "@/components/IdeaPill";
 import { USECASE_LIST, UseCase, usecaseHref } from "@/lib/usecases";
+
+gsap.registerPlugin(ScrollTrigger, useGSAP);
+
+const HEADLINE = "What would you like to create today?";
 
 // "I know what I want" shortcuts — straight into Create with the mode set.
 const MODE_PILLS: { emoji: string; label: string; href: string }[] = [
@@ -21,6 +30,13 @@ const MODE_PILLS: { emoji: string; label: string; href: string }[] = [
   { emoji: "📦", label: "Product", href: "/create?mode=product" },
   { emoji: "🎬", label: "B-roll", href: "/create?mode=overlay" },
   { emoji: "💬", label: "Dialogue", href: "/dialogue" },
+];
+
+// One-tap starters for the pill — drawn from ads this studio actually shipped.
+const TRY_CHIPS = [
+  { label: "🦷 Clinic story", idea: "30s story ad for a dental clinic — empty waiting room turns full, हिन्दी voiceover" },
+  { label: "🌾 Farmer pride", idea: "a farmer walks his sugarcane field telling the world about his harvest, in Hindi" },
+  { label: "☕ Café launch", idea: "cozy café launch ad — two friends chatting over chai, warm morning light" },
 ];
 
 // Category badge per template card (the carousel's floating labels).
@@ -84,25 +100,64 @@ const INSPIRATIONS: { title: string; line: string }[] = [
   },
 ];
 
+// Pointer-follow 3D tilt (desktop, motion-tolerant users only). GSAP owns the
+// transform, so tilted cards must NOT also carry the CSS .lift hover class.
+function useTilt<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (!window.matchMedia("(pointer: fine)").matches) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    gsap.set(el, { transformPerspective: 700 });
+    const rx = gsap.quickTo(el, "rotationX", { duration: 0.4, ease: "power2.out" });
+    const ry = gsap.quickTo(el, "rotationY", { duration: 0.4, ease: "power2.out" });
+    const ty = gsap.quickTo(el, "y", { duration: 0.35, ease: "power2.out" });
+    const move = (e: MouseEvent) => {
+      const r = el.getBoundingClientRect();
+      const px = (e.clientX - r.left) / r.width - 0.5;
+      const py = (e.clientY - r.top) / r.height - 0.5;
+      ry(px * 8);
+      rx(-py * 8);
+      ty(-4);
+    };
+    const leave = () => {
+      rx(0);
+      ry(0);
+      ty(0);
+    };
+    el.addEventListener("mousemove", move);
+    el.addEventListener("mouseleave", leave);
+    return () => {
+      el.removeEventListener("mousemove", move);
+      el.removeEventListener("mouseleave", leave);
+    };
+  }, []);
+  return ref;
+}
+
 function TemplateCard({ u, preview }: { u: UseCase; preview: OutputItem | undefined }) {
-  const ref = useRef<HTMLVideoElement>(null);
+  const video = useRef<HTMLVideoElement>(null);
+  const tilt = useTilt<HTMLAnchorElement>();
   return (
     <Link
       href={usecaseHref(u)}
-      onMouseEnter={() => ref.current?.play().catch(() => {})}
+      ref={tilt}
+      data-card
+      onMouseEnter={() => video.current?.play().catch(() => {})}
       onMouseLeave={() => {
-        const v = ref.current;
+        const v = video.current;
         if (v) {
           v.pause();
           v.currentTime = 0;
         }
       }}
-      className="lift card-raised group relative flex h-72 w-52 shrink-0 snap-start flex-col justify-end overflow-hidden rounded-card p-4 hover:border-accent/40 sm:w-56"
+      className="card-raised group relative flex h-72 w-52 shrink-0 snap-start flex-col justify-end overflow-hidden rounded-card p-4 transition-colors hover:border-accent/40 sm:w-56"
     >
       {preview ? (
         <>
           <video
-            ref={ref}
+            ref={video}
             src={api.fileUrl(preview)}
             muted
             loop
@@ -138,9 +193,9 @@ function CarouselArrow({ dir, onClick }: { dir: "left" | "right"; onClick: () =>
     <button
       onClick={onClick}
       aria-label={dir === "left" ? "Scroll templates left" : "Scroll templates right"}
-      className="card-raised hidden size-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary md:flex"
+      className="card-raised hidden size-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-all hover:border-accent/40 hover:text-text-primary active:scale-90 md:flex"
     >
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-4.5">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-4.5" aria-hidden="true">
         {dir === "left" ? <path d="M15 6l-6 6 6 6" /> : <path d="M9 6l6 6-6 6" />}
       </svg>
     </button>
@@ -154,24 +209,26 @@ function EngineBanner({
   e: (typeof ENGINES)[number];
   preview: OutputItem | undefined;
 }) {
-  const ref = useRef<HTMLVideoElement>(null);
+  const video = useRef<HTMLVideoElement>(null);
+  const tilt = useTilt<HTMLAnchorElement>();
   return (
     <Link
       href={e.href}
-      onMouseEnter={() => ref.current?.play().catch(() => {})}
+      ref={tilt}
+      onMouseEnter={() => video.current?.play().catch(() => {})}
       onMouseLeave={() => {
-        const v = ref.current;
+        const v = video.current;
         if (v) {
           v.pause();
           v.currentTime = 0;
         }
       }}
-      className="lift card-raised group relative flex h-56 flex-col justify-end overflow-hidden rounded-card p-5 hover:border-accent/40"
+      className="card-raised group relative flex h-56 flex-col justify-end overflow-hidden rounded-card p-5 transition-colors hover:border-accent/40"
     >
       {preview ? (
         <>
           <video
-            ref={ref}
+            ref={video}
             src={api.fileUrl(preview)}
             muted
             loop
@@ -195,12 +252,58 @@ function EngineBanner({
 
 export default function Dashboard() {
   const router = useRouter();
-  const [idea, setIdea] = useState("");
   const [outputs, setOutputs] = useState<OutputItem[]>([]);
   const railRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api.outputs().then((d) => setOutputs(d.outputs)).catch(() => {});
+  }, []);
+
+  // Word pop on the headline, staggered hero items, springy pills, carousel
+  // cards sliding in, then scroll-reveals for everything below the fold.
+  useGSAP(() => {
+    const mm = gsap.matchMedia();
+    mm.add("(prefers-reduced-motion: no-preference)", () => {
+      gsap.from("[data-word]", {
+        yPercent: 110,
+        duration: 0.6,
+        stagger: 0.05,
+        ease: "power3.out",
+      });
+      gsap.from("[data-hero-item]", {
+        opacity: 0,
+        y: 16,
+        duration: 0.5,
+        delay: 0.3,
+        stagger: 0.1,
+        ease: "power2.out",
+      });
+      gsap.from("[data-pill]", {
+        opacity: 0,
+        scale: 0.6,
+        duration: 0.45,
+        delay: 0.55,
+        stagger: 0.05,
+        ease: "back.out(2)",
+      });
+      gsap.from("[data-card]", {
+        opacity: 0,
+        x: 60,
+        duration: 0.6,
+        delay: 0.45,
+        stagger: 0.06,
+        ease: "power2.out",
+      });
+      gsap.utils.toArray<HTMLElement>("[data-reveal]").forEach((el) => {
+        gsap.from(el, {
+          opacity: 0,
+          y: 32,
+          duration: 0.6,
+          ease: "power2.out",
+          scrollTrigger: { trigger: el, start: "top 86%" },
+        });
+      });
+    });
   }, []);
 
   // Latest FINAL render per pipeline = each card's living background.
@@ -215,69 +318,54 @@ export default function Dashboard() {
 
   const finals = useMemo(() => outputs.filter((o) => o.kind !== "clip").slice(0, 8), [outputs]);
 
-  const go = () => {
-    router.push(idea.trim() ? `/create?idea=${encodeURIComponent(idea.trim())}` : "/create");
-  };
-
-  // Surprise-me dice: same product, one bold direction Gemini picks. The twist
-  // is a flag, not idea text — the studio keeps the visible idea clean.
-  const surprise = () => {
-    if (!idea.trim()) return;
-    router.push(`/create?idea=${encodeURIComponent(idea.trim())}&surprise=1`);
-  };
-
   const scrollRail = (dx: number) =>
     railRef.current?.scrollBy({ left: dx, behavior: "smooth" });
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-12 px-4 py-8 sm:px-6 lg:px-8 lg:py-12 xl:px-12">
       {/* ---- Hero: the question, then the pill that answers it ---- */}
-      <section className="rise-in flex flex-col items-center gap-6 pt-4 text-center lg:pt-10">
-        <span className="rounded-full border border-white/10 bg-surface-1 px-3 py-1 text-[11px] tracking-widest text-text-secondary uppercase">
+      <section className="relative flex flex-col items-center gap-6 pt-4 text-center lg:pt-10">
+        {/* One ambient coral breath behind the pill — the page's hero moment. */}
+        <div
+          aria-hidden="true"
+          className="glow-breathe pointer-events-none absolute inset-x-0 -top-10 mx-auto h-80 max-w-2xl"
+          style={{
+            background:
+              "radial-gradient(closest-side, rgba(255,77,61,0.12), rgba(255,61,110,0.04) 55%, transparent 75%)",
+          }}
+        />
+        <span
+          data-hero-item
+          className="relative rounded-full border border-white/10 bg-surface-1 px-3 py-1 text-[11px] tracking-widest text-text-secondary uppercase"
+        >
           AI ad studio · English + हिन्दी
         </span>
-        <h1 className="max-w-3xl text-4xl font-semibold leading-[1.08] tracking-tight font-display sm:text-5xl">
-          What would you like to <span className="text-grad">create</span> today?
+        <h1 className="relative max-w-3xl text-4xl font-semibold leading-[1.08] tracking-tight font-display sm:text-5xl">
+          {HEADLINE.split(" ").map((w, i) => (
+            <span key={i} className="inline-block overflow-hidden pb-1 align-bottom">
+              <span data-word className={`inline-block ${w === "create" ? "text-grad" : ""}`}>
+                {w}&nbsp;
+              </span>
+            </span>
+          ))}
         </h1>
-        <p className="max-w-xl text-[15px] text-text-secondary">
+        <p data-hero-item className="relative max-w-xl text-[15px] text-text-secondary">
           Describe your product — Gemini plans the pipeline, shots and script. You approve
           every frame.
         </p>
 
-        <div className="glass-pill flex w-full max-w-2xl items-center gap-2 rounded-full p-2 pl-5">
-          <input
-            value={idea}
-            onChange={(e) => setIdea(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && go()}
-            placeholder="e.g. 15s Instagram ad for my handmade jasmine soap, festive Diwali vibe…"
-            className="min-w-0 flex-1 bg-transparent py-2 text-[15px] outline-none placeholder:text-text-muted"
-          />
-          <button
-            onClick={surprise}
-            disabled={!idea.trim()}
-            title="Surprise me — one bold, unexpected direction"
-            aria-label="Surprise me"
-            className="seg shrink-0 rounded-full p-2.5 text-sm disabled:opacity-40"
-          >
-            🎲
-          </button>
-          <button
-            onClick={go}
-            aria-label="Plan my ad"
-            className="hero-glow flex shrink-0 items-center gap-2 rounded-full px-3 py-2.5 text-sm font-semibold text-white sm:px-5"
-          >
-            <span className="text-base leading-none">✦</span>
-            <span className="hidden sm:inline">Plan my ad</span>
-          </button>
+        <div data-hero-item className="relative flex w-full justify-center">
+          <IdeaPill dice chips={TRY_CHIPS} />
         </div>
 
         {/* Mode pills — for people who already know the shape of their ad. */}
-        <div className="flex flex-wrap items-center justify-center gap-2">
+        <div className="relative flex flex-wrap items-center justify-center gap-2">
           {MODE_PILLS.map((m) => (
             <Link
               key={m.label}
               href={m.href}
-              className="seg flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[13px] transition-transform hover:-translate-y-0.5"
+              data-pill
+              className="seg flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[13px] transition-transform hover:-translate-y-0.5 active:scale-95"
             >
               <span>{m.emoji}</span>
               {m.label}
@@ -287,7 +375,7 @@ export default function Dashboard() {
       </section>
 
       {/* ---- Template carousel (living previews from real renders) ---- */}
-      <section className="rise-in-2 flex flex-col gap-4">
+      <section className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-medium tracking-widest text-text-muted uppercase">
             Start from a template
@@ -308,7 +396,7 @@ export default function Dashboard() {
       </section>
 
       {/* ---- What's new: the recent wall ---- */}
-      <section className="rise-in-3 flex flex-col gap-5 border-t border-white/5 pt-10">
+      <section data-reveal className="flex flex-col gap-5 border-t border-white/5 pt-10">
         <div className="flex items-baseline justify-between">
           <h2 className="text-2xl font-semibold tracking-tight font-display">
             What&apos;s <span className="text-grad">new</span>
@@ -331,7 +419,7 @@ export default function Dashboard() {
       </section>
 
       {/* ---- The engines: flagship pipelines as cinematic banners ---- */}
-      <section className="flex flex-col gap-5 border-t border-white/5 pt-10">
+      <section data-reveal className="flex flex-col gap-5 border-t border-white/5 pt-10">
         <h2 className="text-2xl font-semibold tracking-tight font-display">
           The <span className="text-grad">engines</span>
         </h2>
@@ -343,7 +431,7 @@ export default function Dashboard() {
       </section>
 
       {/* ---- Inspirations: prompt-book teasers ---- */}
-      <section className="flex flex-col gap-5 border-t border-white/5 pt-10 pb-6">
+      <section data-reveal className="flex flex-col gap-5 border-t border-white/5 pt-10 pb-6">
         <div className="flex items-baseline justify-between">
           <h2 className="text-2xl font-semibold tracking-tight font-display">
             <span className="text-grad">Inspirations</span>

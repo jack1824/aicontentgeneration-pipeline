@@ -366,6 +366,14 @@ body {
   -webkit-mask-image: linear-gradient(90deg, transparent, black 4%, black 96%, transparent);
 }
 
+/* The surprise die does a little roll when you hover it. */
+@keyframes dice-roll {
+  to { transform: rotate(360deg); }
+}
+.dice-spin:hover:not(:disabled) {
+  animation: dice-roll 0.6s ease;
+}
+
 /* Hub sections rise in on mount — one-shot, staggered by suffix. */
 @keyframes rise-in {
   from { opacity: 0; transform: translateY(14px); }

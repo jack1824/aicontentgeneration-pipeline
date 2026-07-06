@@ -153,13 +153,13 @@ function NavLinks({ pathname }: { pathname: string }) {
               <Link
                 key={n.href}
                 href={n.href}
-                className={`flex items-center gap-3 rounded-btn border border-transparent px-3 py-2 text-sm transition-colors ${
+                className={`group flex items-center gap-3 rounded-btn border border-transparent px-3 py-2 text-sm transition-colors ${
                   active
                     ? "nav-active"
                     : "text-text-secondary hover:border-white/10 hover:bg-surface-2 hover:text-text-primary"
                 }`}
               >
-                <span className={active ? "text-accent" : ""}>{n.icon}</span>
+                <span className={`transition-transform group-hover:translate-x-0.5 ${active ? "text-accent" : ""}`}>{n.icon}</span>
                 {n.label}
               </Link>
             );
