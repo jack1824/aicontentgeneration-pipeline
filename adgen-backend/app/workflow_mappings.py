@@ -119,6 +119,32 @@ INGREDIENTS_MAPPING = {
     "filename_prefix": ("22", "filename_prefix"),
 }
 
+# workflows/ltx2_lipdub.json — LTX-2.3 IC-LoRA LipDub (authored 2026-07-06 from
+# the official ComfyUI-LTXVideo two-stage distilled example; Gemma-API branch
+# dropped, frame-count math computed host-side, target audio from a SEPARATE
+# LoadAudio — our ElevenLabs track, not the video's own). Video-to-video: the
+# source video enters both stages as an IC reference (LTXAddVideoICLoRAGuide),
+# the new audio conditions via LTXVSetAudioRefTokens, and the model re-renders
+# the mouth to match. s2 = source size rounded to /64; s1 = s2/2; output length
+# and fps follow the source.
+LIPDUB_MAPPING = {
+    "prompt": ("10", "text"),                # scene description + the spoken line
+    "negative_prompt": ("11", "text"),
+    "video": ("20", "file"),                 # LoadVideo — UPLOADED source filename
+    "audio": ("27", "audio"),                # LoadAudio — UPLOADED dub track
+    "s1_width": ("22", "width"), "s1_height": ("22", "height"),
+    "s2_width": ("23", "width"), "s2_height": ("23", "height"),
+    "latent_width": ("40", "width"), "latent_height": ("40", "height"),
+    "length": ("40", "length"),              # ((frames-1)//8)*8+1, computed host-side
+    "audio_frames": ("41", "frames_number"),
+    "audio_fps": ("41", "frame_rate"),       # int fps
+    "cond_fps": ("30", "frame_rate"),        # float fps (conditioning)
+    "out_fps": ("72", "fps"),                # float fps (output mux)
+    "seed": ("47", "noise_seed"),
+    "seed_refine": ("65", "noise_seed"),
+    "filename_prefix": ("73", "filename_prefix"),
+}
+
 # workflows/longcat_avatar.json — LongCat-Video-Avatar 1.5 talking avatar (converted
 # 2026-07-05 from the Kijai WanVideoWrapper template LongCatAvatar_audio_image_to_video,
 # SetNode/GetNode registers resolved, per-window preview muxes dropped, MelBandRoFormer

@@ -22,6 +22,7 @@ from app.providers import comfy
 from app.providers.tts import synthesize_voice
 from app.workflow_mappings import (
     INGREDIENTS_MAPPING,
+    LIPDUB_MAPPING,
     LONGCAT_2W_MAPPING,
     LONGCAT_DUO_MAPPING,
     LONGCAT_MAPPING,
@@ -111,6 +112,8 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
         return _generate_longcat(req, name, report, on_submit)
     if mode == "duo":
         return _generate_duo(req, name, report, on_submit)
+    if mode == "redub":
+        return _generate_redub(req, name, report, on_submit)
     if mode != "overlay":
         raise NotImplementedError(
             f"mode='{mode}' is not built yet — 'overlay', 'lipsync', 'product', "
@@ -923,6 +926,103 @@ def _generate_duo(req: dict, name: str, report, on_submit=None) -> str:
         final = ffmpeg.stitch([clip], out=final)
 
     # Both mouths are baked to their voices — /revoice must refuse this.
+    Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
+    Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
+
+    report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
+    return final
+
+
+REDUB_VIDEO_DIR = Path("outputs/redub/video")
+REDUB_AUDIO_DIR = Path("outputs/redub/audio")
+REDUB_MAX_SECONDS = 12.0  # single-pass v1; longer sources need chunked redub (next)
+
+
+def _generate_redub(req: dict, name: str, report, on_submit=None) -> str:
+    """mode="redub": LTX LipDub — re-render an existing video's MOUTH to match a
+    NEW ElevenLabs track (any language, any voice) while preserving everything
+    else. This is how a generated ad becomes Hindi/English-dubbed with one
+    consistent brand voice — or how a speaking character gets professional audio.
+
+    req: source_video (an existing render), script + voice_id (the new line),
+    shots[0].prompt = scene description (the spoken text is appended to it).
+    """
+    src = req.get("source_video")
+    if not src:
+        raise ValueError("redub needs `source_video` — the video whose lips to re-render.")
+    if not Path(src).exists():
+        raise FileNotFoundError(f"source_video not found: {src}")
+    if not req.get("script"):
+        raise ValueError("redub needs `script` — the new spoken line(s).")
+
+    info = ffmpeg.probe(src)
+    if info["duration"] > REDUB_MAX_SECONDS:
+        raise ValueError(
+            f"source is {info['duration']:.1f}s — single-pass redub handles up to "
+            f"~{REDUB_MAX_SECONDS:.0f}s for now. Pick a shorter clip."
+        )
+    fps = info["fps"] if info["fps"] > 1 else 25.0
+    # Stage-2 (output) size: source rounded to /64 so the half-res stage stays
+    # /32-legal for LTX's latent grid. crop=disabled stretches — small aspect
+    # drift on odd sizes is invisible next to a mouth re-render.
+    s2w = max(64, round(info["width"] / 64) * 64)
+    s2h = max(64, round(info["height"] / 64) * 64)
+    frames = int(round(info["duration"] * fps))
+    length = max(9, ((frames - 1) // 8) * 8 + 1)
+
+    REDUB_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    REDUB_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    pod = COMFY_POD_URLS[0]
+
+    # 1. TTS the new line, padded/trimmed to EXACTLY the video's length
+    report("tts", 5, "synthesizing the dub track")
+    raw = synthesize_voice(
+        req["script"], voice_id=req.get("voice_id"),
+        language=req.get("language", "hi"),
+        output_path=str(REDUB_AUDIO_DIR / f"{name}-dub-raw.mp3"),
+    )
+    dub = ffmpeg.fit_audio_duration(raw, info["duration"],
+                                    str(REDUB_AUDIO_DIR / f"{name}-dub.mp3"))
+
+    # 2. UPLOAD source video + dub track
+    report("uploading", 10, "source video + dub track -> pod")
+    video_name = comfy.upload_file(pod, src)
+    audio_name = comfy.upload_file(pod, dub)
+
+    # 3. GENERATE — two-stage re-render with the source as IC reference
+    scene = req["shots"][0]["prompt"] if req.get("shots") else "A person speaking to camera"
+    base_seed = req.get("seed") or DEFAULT_BASE_SEED
+    inputs = {
+        "prompt": f"{scene} They speak clearly, saying: \"{req['script']}\"",
+        "video": video_name,
+        "audio": audio_name,
+        "s1_width": s2w // 2, "s1_height": s2h // 2,
+        "s2_width": s2w, "s2_height": s2h,
+        "latent_width": s2w // 2, "latent_height": s2h // 2,
+        "length": length,
+        "audio_frames": length,
+        "audio_fps": int(round(fps)),
+        "cond_fps": float(fps),
+        "out_fps": float(fps),
+        "seed": base_seed,
+        "seed_refine": base_seed + 1000,
+        "filename_prefix": f"video/adgen_redub_{name}",
+    }
+    if req["shots"] and req["shots"][0].get("negative_prompt"):
+        inputs["negative_prompt"] = req["shots"][0]["negative_prompt"]
+
+    comfy.free_memory(pod)
+    report("generating", 15, "re-rendering lips to the new track (two-stage)")
+    clip = comfy.comfy_generate(
+        pod, comfy.load_workflow("ltx2_lipdub"), inputs, LIPDUB_MAPPING,
+        out_path=str(REDUB_VIDEO_DIR / f"{name}-clip1.mp4"),
+        timeout=1800.0, on_submit=on_submit,
+    )
+
+    # 4. ASSEMBLE — the dubbed take IS the final; new lips are baked to the track
+    report("assembling", 95, "finalizing")
+    final = str(REDUB_VIDEO_DIR / f"{name}-final.mp4")
+    final = ffmpeg.stitch([clip], out=final)
     Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
     Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
 

@@ -138,6 +138,7 @@ class GenerateRequest(BaseModel):
     sheet_description: str | None = None  # ingredients: what the sheet's panels contain
     duo_turns: list[DuoTurn] | None = None  # duo: the conversation, alternating speakers
     duo_voices: list[str] | None = None     # duo: [voice for speaker 0, voice for speaker 1]
+    source_video: str | None = None         # redub: existing render whose lips to re-render
     postprocess: bool = False            # True = run the post chain after assembly (one-call
                                          # Enhanced/Master presets; adds a "post" stage)
     width: int | None = Field(default=None, ge=64, le=1920, multiple_of=16)
@@ -194,6 +195,16 @@ def generate_endpoint(req: GenerateRequest):
             raise HTTPException(422, "sequence mode needs `segments` — a non-empty timeline")
     elif not req.shots:
         raise HTTPException(422, "shots must contain at least one shot")
+    if req.mode == "redub":
+        if not req.source_video:
+            raise HTTPException(422, "redub needs `source_video` — pick a Library video")
+        sv = Path(req.source_video)
+        if not sv.exists():
+            raise HTTPException(404, f"source_video not found: {req.source_video}")
+        if not _under_outputs(sv):
+            raise HTTPException(422, "only videos under outputs/ can be re-dubbed")
+        if not req.script:
+            raise HTTPException(422, "redub needs `script` — the new spoken line(s)")
     if req.mode == "duo":
         if not req.duo_turns or len(req.duo_turns) < 2:
             raise HTTPException(422, "duo needs `duo_turns` — at least 2 conversation turns")

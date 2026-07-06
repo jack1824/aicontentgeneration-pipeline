@@ -146,6 +146,14 @@ def dialogue_tracks(turn_paths: list[str], speakers: list[int], out_a: str,
     return out_a, out_b, out_mix, total
 
 
+def fit_audio_duration(audio: str, seconds: float, out: str) -> str:
+    """Pad-with-silence or trim an audio file to EXACTLY `seconds` (redub tracks
+    must match the source video's length so lip timing stays aligned)."""
+    _run(["ffmpeg", "-y", "-i", audio, "-af",
+          f"apad=whole_dur={seconds:.3f},atrim=duration={seconds:.3f}", out])
+    return out
+
+
 def extract_frame(video: str, out: str, at_s: float = 0.0) -> str:
     """Grab one frame as a still image (avatar face gen: Wan renders a 1-frame
     'video' — this turns it into the PNG the profile stores)."""
