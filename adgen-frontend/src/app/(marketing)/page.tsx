@@ -72,47 +72,165 @@ function StrokeIcon({ d, className = "size-5" }: { d: string; className?: string
 // The playbook: every recipe the studio supports, click by click — the landing
 // page IS the manual. Grouped the way users think: make it, cast it, finish it.
 // The prompt book: REAL prompts from renders we shipped — users copy these
-// patterns instead of guessing. Every entry names the trick it demonstrates.
-const PROMPTBOOK: { title: string; badge: string; trick: string; prompt: string }[] = [
+// patterns instead of guessing. Every entry shows box-by-box what to type:
+// positive, negative, narration, voice — and what the studio fills in for you.
+const STD_NEG =
+  "cartoon, 3D render, CGI, plastic skin, deformed face, extra fingers, readable text, subtitles, captions, watermark, jerky motion, blurry, low quality";
+
+const PROMPTBOOK: {
+  title: string;
+  badge: string;
+  trick: string;
+  boxes: { label: string; text: string }[];
+}[] = [
   {
     title: "The emotional hook — emotion written as light",
     badge: "🎥 Cinematic + voiceover",
     trick:
-      "You never type feelings — you type what the camera sees. 'Desaturated cold blue-grey' IS the sadness. The character description gets pasted word-for-word into every shot of the ad — that's what keeps the same actor across cuts.",
-    prompt:
-      "Realistic documentary footage: an Indian dentist in his late thirties with short black hair and tired kind eyes, wearing a white doctor's coat over a light blue shirt, sits alone in the empty waiting room of a small modern dental clinic with mint-green walls and a glass door, rows of vacant chairs around him, a wall clock above. Slow creeping zoom toward his still face, desaturated cold blue-grey tones, heavy silence. The audio is a ticking wall clock and faint room hum.",
+      "You never type feelings — you type what the camera sees. 'Desaturated cold blue-grey' IS the sadness. Paste the character description word-for-word into every shot — that's what keeps the same actor across cuts.",
+    boxes: [
+      {
+        label: "Shot prompt (positive)",
+        text: "Realistic documentary footage: an Indian dentist in his late thirties with short black hair and tired kind eyes, wearing a white doctor's coat over a light blue shirt, sits alone in the empty waiting room of a small modern dental clinic with mint-green walls and a glass door, rows of vacant chairs around him, a wall clock above. Slow creeping zoom toward his still face, desaturated cold blue-grey tones, heavy silence. The audio is a ticking wall clock and faint room hum.",
+      },
+      { label: "Negative prompt", text: STD_NEG },
+      {
+        label: "Narration script — one script rides over ALL shots",
+        text: "Aaj aapke clinic mein... kitne naye patients aaye? Ek? Do?... Ya phir aaj bhi... zero. … Aapka competitor abhi bhi ads chala raha hai. Aap kab shuru karenge? Link mein jaao. Abhi.",
+      },
+      { label: "Voice", text: "any हिन्दी/English voice — the studio times the VO across the whole video" },
+    ],
   },
   {
     title: "A character who SPEAKS on screen",
-    badge: "🎥 Cinematic · narration box EMPTY",
+    badge: "🎥 Cinematic",
     trick:
       "Put the spoken line inside the shot, in quotes, and ask for the lips. The model generates the voice AND the lip-sync. Keep lines to ~8–10 words per 5-second shot.",
-    prompt:
-      "Realistic documentary footage, tracking shot moving alongside a middle-aged Indian farmer in his forties with a weathered sun-tanned face, a thick black moustache, wearing a beige cotton turban and a brown Nehru vest over a cream kurta, walking briskly along a raised brick canal embankment beside lush green sugarcane fields. As he walks he looks ahead and says warmly in Hindi: \"अपने खेत की कहानी अब पूरी दुनिया देखेगी।\" His lips move naturally with the words. Golden afternoon sunlight. The audio is his warm Hindi voice over faint birdsong and footsteps.",
+    boxes: [
+      {
+        label: "Shot prompt (positive)",
+        text: "Realistic documentary footage, tracking shot moving alongside a middle-aged Indian farmer in his forties with a weathered sun-tanned face, a thick black moustache, wearing a beige cotton turban and a brown Nehru vest over a cream kurta, walking briskly along a raised brick canal embankment beside lush green sugarcane fields. As he walks he looks ahead and says warmly in Hindi: \"अपने खेत की कहानी अब पूरी दुनिया देखेगी।\" His lips move naturally with the words. Golden afternoon sunlight. The audio is his warm Hindi voice over faint birdsong and footsteps.",
+      },
+      { label: "Negative prompt", text: STD_NEG },
+      { label: "Narration script", text: "(leave EMPTY — the spoken line lives inside the shot prompt)" },
+    ],
   },
   {
     title: "Two people talking in ONE shot",
-    badge: "🎥 Cinematic · two voices, one clip",
+    badge: "🎥 Cinematic · two voices",
     trick:
       "Write both lines in sequence — the model gives each person their own voice and animates both faces. The most natural conversation money can't usually buy.",
-    prompt:
-      "Realistic documentary footage: a middle-aged Indian farmer with a thick black moustache in a beige turban and a middle-aged Indian woman with dark hair in a neat bun wearing a green cotton saree stand together at the edge of lush green sugarcane fields. He turns to her and asks in Hindi: \"इस बार की फ़सल देखी?\" She smiles and replies in Hindi: \"सबसे अच्छी!\" Both faces animated, lips matching their words. Static camera, medium two-shot. The audio is their two distinct Hindi voices, his deep, hers bright, with soft field ambience.",
+    boxes: [
+      {
+        label: "Shot prompt (positive)",
+        text: "Realistic documentary footage: a middle-aged Indian farmer with a thick black moustache in a beige turban and a middle-aged Indian woman with dark hair in a neat bun wearing a green cotton saree stand together at the edge of lush green sugarcane fields. He turns to her and asks in Hindi: \"इस बार की फ़सल देखी?\" She smiles and replies in Hindi: \"सबसे अच्छी!\" Both faces animated, lips matching their words. Static camera, medium two-shot. The audio is their two distinct Hindi voices, his deep, hers bright, with soft field ambience.",
+      },
+      { label: "Negative prompt", text: STD_NEG },
+      { label: "Narration script", text: "(leave EMPTY)" },
+    ],
   },
   {
     title: "The moving-background tracking shot",
     badge: "🎬 B-roll / Cinematic",
     trick:
       "Three load-bearing phrases make the background move: 'tracking shot moving alongside', 'camera tracks smoothly parallel at walking pace', 'background moving naturally with parallax' — and the negative kills the classic walk fails.",
-    prompt:
-      "Realistic documentary footage, tracking shot moving alongside a middle-aged Indian farmer in his forties walking briskly along a raised brick canal embankment. He gestures with his right arm outstretched as he walks, mid-conversation, expressive face. Behind him, lush green sugarcane fields stretch to the horizon under a clear pale-blue sky, a calm canal of water on the right. Camera tracks smoothly parallel to him at walking pace, keeping him centered, background moving naturally with parallax. Golden afternoon sunlight, candid, unposed, photojournalism, realistic skin texture, natural fabric movement.",
+    boxes: [
+      {
+        label: "Shot prompt (positive)",
+        text: "Realistic documentary footage, tracking shot moving alongside a middle-aged Indian farmer in his forties walking briskly along a raised brick canal embankment. He gestures with his right arm outstretched as he walks, mid-conversation, expressive face. Behind him, lush green sugarcane fields stretch to the horizon under a clear pale-blue sky, a calm canal of water on the right. Camera tracks smoothly parallel to him at walking pace, keeping him centered, background moving naturally with parallax. Golden afternoon sunlight, candid, unposed, photojournalism, realistic skin texture, natural fabric movement.",
+      },
+      {
+        label: "Negative prompt (motion edition)",
+        text: "static camera, frozen background, stiff walk, sliding feet, cartoon, 3D render, CGI, plastic skin, distorted face, deformed hands, extra limbs, warping, morphing, jerky motion, readable text, subtitles, captions, watermark, blurry, low quality",
+      },
+    ],
+  },
+  {
+    title: "A full 30-second ad — the shot math",
+    badge: "🎬 Full ads · any mode",
+    trick:
+      "One shot ≈ 5 seconds, one Hindi narration word ≈ ⅔ second — so budget ~8 words of script per shot and add a shot for every 5 seconds. Order the beats: hook → pain → break → solution → result → CTA. Paste the same character + location anchors into every shot.",
+    boxes: [
+      {
+        label: "Anchors — paste verbatim into EVERY shot",
+        text: "an Indian dentist in his late thirties with short black hair and tired kind eyes, wearing a white doctor's coat over a light blue shirt … a small modern dental clinic with mint-green walls and a glass door",
+      },
+      {
+        label: "Narration script (whole ad, one box)",
+        text: "Aaj aapke clinic mein... kitne naye patients aaye? … Social Adz mein sirf teen steps. Apna clinic type karo. Area set karo. Budget decide karo. … Link mein jaao. Abhi.",
+      },
+      { label: "Negative prompt (same in every shot)", text: STD_NEG },
+    ],
+  },
+  {
+    title: "Brand Lock — same product in every shot",
+    badge: "🧩 Brand Lock",
+    trick:
+      "Describe the brand's elements once — the studio renders a reference sheet, then every shot is generated AGAINST that sheet, so the mug, emblem and café stay identical across cuts. Text is banned from the sheet automatically (it hurts identity carry-over).",
+    boxes: [
+      {
+        label: "Sheet description (✨ Generate)",
+        text: "a stoneware coffee mug in deep forest green with a small carved mountain emblem, shown from front and side angles; a brown paper coffee bag with the same mountain emblem, front and back; a cozy cafe interior with warm wooden counters, brass fixtures and hanging filament bulbs",
+      },
+      {
+        label: "Shot prompt (positive) — just the action",
+        text: "Slow cinematic push-in on the deep green stoneware mug with the mountain emblem, steaming on the warm wooden cafe counter. Soft morning light through the window catches the steam; the brass fixtures glow in the blurred background. The camera settles close on the emblem. The audio is gentle cafe ambience with a low espresso-machine hiss.",
+      },
+      { label: "Negative prompt", text: STD_NEG },
+    ],
+  },
+  {
+    title: "An avatar face — describe the person, nothing else",
+    badge: "🧑‍🎤 Avatars · photo",
+    trick:
+      "Type only WHO they are — age, face, hair, clothes. The studio appends the studio-headshot camera, lighting and its own negative automatically, and renders at full quality. This face becomes the identity for every future avatar ad.",
+    boxes: [
+      {
+        label: "Face description (all you type)",
+        text: "an Indian dentist in his late thirties with short black hair and tired kind eyes, wearing a white doctor's coat over a light blue shirt",
+      },
+      {
+        label: "Added for you (auto)",
+        text: "Professional studio headshot photograph, 85mm portrait lens, front-facing, gentle natural smile, realistic skin texture, soft diffused key light, neutral background… + a portrait-tuned negative",
+      },
+    ],
+  },
+  {
+    title: "Re-dub — change the words, keep the video",
+    badge: "🎤 Library · Re-dub",
+    trick:
+      "Pick any finished render in the Library, give it a new script and voice — only the lips are re-rendered, the scene stays identical. This is also how you fix voice drift between clips.",
+    boxes: [
+      { label: "New script", text: "अपने खेत की कहानी अब पूरी दुनिया देखेगी। Social Adz ke saath." },
+      {
+        label: "Scene description (what's on screen)",
+        text: "a middle-aged Indian farmer in a beige turban and brown Nehru vest walking along a canal embankment beside green sugarcane fields, golden afternoon light",
+      },
+      { label: "Voice + language", text: "any ElevenLabs voice · हिन्दी or English" },
+    ],
+  },
+  {
+    title: "The end card — where your text belongs",
+    badge: "🪧 End card · any video",
+    trick:
+      "AI video garbles writing — that's why 'readable text' sits in every negative. Your brand name, tagline and offer go on the end card instead: crisp, real text, appended to any Library video.",
+    boxes: [
+      { label: "Brand", text: "Social Adz" },
+      { label: "Tagline", text: "Reach More. Grow More." },
+      { label: "Offer / CTA", text: "Link mein jaao — Abhi" },
+    ],
   },
   {
     title: "The one negative prompt you always paste",
     badge: "every shot, every mode",
     trick:
       "Identical in every shot card — consistency helps the model. 'Readable text' is in there because AI video garbles writing; your brand text belongs on the end card instead.",
-    prompt:
-      "static camera, frozen background, stiff walk, sliding feet, cartoon, 3D render, CGI, plastic skin, distorted face, deformed hands, extra limbs, warping, morphing, jerky motion, readable text, subtitles, captions, watermark, blurry, low quality",
+    boxes: [
+      {
+        label: "Negative prompt (universal)",
+        text: "static camera, frozen background, stiff walk, sliding feet, cartoon, 3D render, CGI, plastic skin, distorted face, deformed hands, extra limbs, warping, morphing, jerky motion, readable text, subtitles, captions, watermark, blurry, low quality",
+      },
+    ],
   },
 ];
 
@@ -967,8 +1085,9 @@ export default function Landing() {
               The <span className="text-grad">prompt book</span>
             </h2>
             <p className="max-w-2xl text-[15px] text-text-secondary">
-              Real prompts from ads rendered on this platform — copy the pattern, swap your
-              subject. Every shot follows one order:
+              Real prompts from ads rendered on this platform — every card shows exactly what
+              goes in each box. Copy the pattern, swap your subject. Every shot follows one
+              order:
             </p>
             <p className="label-cap tracking-widest">
               style → subject → action → scene → camera → light → sound
@@ -984,9 +1103,16 @@ export default function Landing() {
                   </span>
                 </div>
                 <p className="text-[12px] leading-relaxed text-text-secondary">{p.trick}</p>
-                <pre className="max-h-44 overflow-y-auto rounded-btn bg-black/30 p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-text-secondary">
-                  {p.prompt}
-                </pre>
+                {p.boxes.map((b) => (
+                  <div key={b.label} className="flex flex-col gap-1">
+                    <span className="label-cap text-[10px] tracking-widest text-accent">
+                      {b.label}
+                    </span>
+                    <pre className="max-h-36 overflow-y-auto rounded-btn bg-black/30 p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-text-secondary">
+                      {b.text}
+                    </pre>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
