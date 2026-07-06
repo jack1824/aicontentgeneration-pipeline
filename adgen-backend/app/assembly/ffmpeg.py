@@ -64,11 +64,21 @@ def _fit_narration(
 
 
 def _narr_filter(delay_ms: int, gain: float = 1.0, tempo: float | None = None) -> str:
-    """Narration filter chain: tempo BEFORE delay (the delay must not be sped up)."""
+    """Narration filter chain: delay FIRST, then tempo.
+
+    atempo BEFORE adelay produced a SILENT narration lane under amix (ffmpeg
+    timestamp quirk — bisected 2026-07-07: the sa01 render had ambience but no
+    voice whenever tempo-fitting kicked in). Delay is pre-scaled by the tempo so
+    the effective start offset stays what the caller asked for.
+    """
     parts = []
-    if tempo and tempo > 1.001:
+    eff_delay = delay_ms
+    has_tempo = bool(tempo and tempo > 1.001)
+    if has_tempo:
+        eff_delay = int(round(delay_ms * min(tempo, 2.0)))
+    parts.append(f"adelay={eff_delay}|{eff_delay}")
+    if has_tempo:
         parts.append(f"atempo={min(tempo, 2.0):.4f}")
-    parts.append(f"adelay={delay_ms}|{delay_ms}")
     if abs(gain - 1.0) > 1e-6:
         parts.append(f"volume={gain}")
     parts.append("apad")

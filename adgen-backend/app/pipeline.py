@@ -587,6 +587,19 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
             language=req.get("language", "hi"),
             output_path=str(LTX_AUDIO_DIR / f"{name}-narration.mp3"),
         )
+        # A narration that outruns the video gets tempo-fit only up to ~1.12x —
+        # past that it would be CUT mid-sentence. Fail now with the exact fix
+        # instead of shipping half a script (the sa01 lesson: 91s VO, 53s video).
+        ndur = ffmpeg.probe(narration)["duration"]
+        clip_s = 4.84  # measured real seconds per LTX clip (121f @25fps after mux)
+        capacity = len(req["shots"]) * clip_s
+        if ndur > capacity * 1.10:
+            import math
+            need = math.ceil((ndur / 1.08 - capacity) / clip_s)
+            raise ValueError(
+                f"narration runs {ndur:.0f}s but {len(req['shots'])} shots give only "
+                f"~{capacity:.0f}s of video — add ~{need} more shots or shorten the script."
+            )
 
     # 2. GENERATE — one LTX clip per shot. The workflow renders at HALF size then
     # 2x latent-upsamples, so the injected width/height are final//2.
