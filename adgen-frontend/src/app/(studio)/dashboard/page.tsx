@@ -1,52 +1,27 @@
 "use client";
 
-// Dashboard: the front door. One idea bar that feeds the Gemini brain, three
-// pipeline cards previewing REAL renders from the library, and the recent wall.
+// Dashboard: the front door. One idea bar that feeds the Gemini brain, a
+// template gallery previewing REAL renders from the library (OpenArt pattern:
+// users pick by OUTCOME, not by pipeline name), and the recent wall.
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, OutputItem } from "@/lib/api";
 import VideoCard from "@/components/VideoCard";
+import { USECASE_LIST, UseCase, usecaseHref } from "@/lib/usecases";
 
-const PIPELINE_CARDS = [
-  {
-    mode: "product",
-    pipeline: "wani2v",
-    emoji: "🧴",
-    title: "Product Spotlight",
-    desc: "Upload one product photo — get cinematic camera moves around it. The photo locks the product's exact look.",
-    time: "~2 min per clip",
-  },
-  {
-    mode: "lipsync",
-    pipeline: "wans2v",
-    emoji: "🗣",
-    title: "Talking Avatar",
-    desc: "A spokesperson reads your script, lips synced to the voice. One face image + narration in.",
-    time: "~14s spokesperson take",
-  },
-  {
-    mode: "overlay",
-    pipeline: "want2v",
-    emoji: "🎬",
-    title: "Cinematic B-roll",
-    desc: "Pure text-to-video scenes with your voiceover on top. Best for lifestyle and story ads.",
-    time: "5s per shot, stitched",
-  },
-] as const;
-
-function PipelineCard({
-  card,
+function TemplateCard({
+  u,
   preview,
 }: {
-  card: (typeof PIPELINE_CARDS)[number];
+  u: UseCase;
   preview: OutputItem | undefined;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   return (
     <Link
-      href={`/create?mode=${card.mode}`}
+      href={usecaseHref(u)}
       onMouseEnter={() => ref.current?.play().catch(() => {})}
       onMouseLeave={() => {
         const v = ref.current;
@@ -55,7 +30,7 @@ function PipelineCard({
           v.currentTime = 0;
         }
       }}
-      className="lift card-raised group relative flex min-h-64 flex-col justify-end overflow-hidden rounded-card p-5 hover:border-accent/40"
+      className="lift card-raised group relative flex min-h-52 flex-col justify-end overflow-hidden rounded-card p-4 hover:border-accent/40"
     >
       {preview && (
         <>
@@ -66,17 +41,17 @@ function PipelineCard({
             loop
             playsInline
             preload="metadata"
-            className="absolute inset-0 size-full object-cover opacity-25 transition-opacity duration-300 group-hover:opacity-50"
+            className="absolute inset-0 size-full object-cover opacity-25 transition-opacity duration-300 group-hover:opacity-60"
           />
           <div className="absolute inset-0 bg-linear-to-t from-base via-base/60 to-transparent" />
         </>
       )}
-      <div className="relative flex flex-col gap-2">
-        <span className="text-2xl">{card.emoji}</span>
-        <h3 className="text-lg font-semibold font-display">{card.title}</h3>
-        <p className="text-sm leading-relaxed text-text-secondary">{card.desc}</p>
-        <p className="mt-1 flex items-center justify-between text-xs text-text-muted">
-          {card.time}
+      <div className="relative flex flex-col gap-1.5">
+        <span className="text-xl">{u.emoji}</span>
+        <h3 className="text-base font-semibold font-display">{u.title}</h3>
+        <p className="text-xs leading-relaxed text-text-secondary">{u.desc}</p>
+        <p className="mt-0.5 flex items-center justify-between text-[11px] text-text-muted">
+          {u.time}
           <span className="text-accent opacity-0 transition-opacity group-hover:opacity-100">
             Start →
           </span>
@@ -196,14 +171,14 @@ export default function Dashboard() {
         </div>
       </section>
 
-      {/* ---- Three ways to make an ad (living previews from real renders) ---- */}
+      {/* ---- Template gallery (living previews from real renders) ---- */}
       <section className="flex flex-col gap-5 border-t border-white/5 pt-8">
         <h2 className="text-sm font-medium tracking-widest text-text-muted uppercase">
-          Three ways in
+          Start from a template
         </h2>
-        <div className="grid gap-4 md:grid-cols-3">
-          {PIPELINE_CARDS.map((c) => (
-            <PipelineCard key={c.mode} card={c} preview={previews[c.pipeline]} />
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+          {USECASE_LIST.map((u) => (
+            <TemplateCard key={u.slug} u={u} preview={previews[u.pipeline]} />
           ))}
         </div>
       </section>

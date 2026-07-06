@@ -16,7 +16,7 @@ import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useGSAP } from "@gsap/react";
-import { USECASE_LIST, UseCase } from "@/lib/usecases";
+import { USECASE_LIST, UseCase, usecaseHref } from "@/lib/usecases";
 import { api, OutputItem, PIPELINE_LABELS } from "@/lib/api";
 import BrandMark from "@/components/BrandMark";
 
@@ -203,7 +203,7 @@ function CtaButton({ big = false, children = "Create your first ad" }: { big?: b
 function UseCaseCard({ u, videoUrl }: { u: UseCase; videoUrl?: string }) {
   return (
     <Link
-      href={`/create?usecase=${u.slug}`}
+      href={usecaseHref(u)}
       data-dir
       className="lift group relative flex min-h-56 flex-col justify-end overflow-hidden rounded-card border border-white/5 bg-surface-1 p-5 hover:border-accent/50 hover:ring-1 hover:ring-accent/40"
     >
@@ -904,7 +904,7 @@ export default function Landing() {
             {USECASE_LIST.map((u) => (
               <Link
                 key={u.slug}
-                href={`/create?usecase=${u.slug}`}
+                href={usecaseHref(u)}
                 className="text-sm text-text-secondary hover:text-text-primary"
               >
                 {u.title}

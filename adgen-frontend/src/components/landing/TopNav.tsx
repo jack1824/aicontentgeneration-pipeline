@@ -5,7 +5,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { USECASE_LIST } from "@/lib/usecases";
+import { USECASE_LIST, usecaseHref } from "@/lib/usecases";
 import BrandMark from "@/components/BrandMark";
 
 const TOOLS = [
@@ -113,7 +113,7 @@ export default function TopNav() {
             {USECASE_LIST.map((u) => (
               <Link
                 key={u.slug}
-                href={`/create?usecase=${u.slug}`}
+                href={usecaseHref(u)}
                 className="flex flex-col gap-0.5 rounded-btn px-3 py-2.5 transition-colors hover:bg-surface-2"
               >
                 <span className="text-sm text-text-primary">{u.title}</span>
@@ -167,7 +167,7 @@ export default function TopNav() {
           ))}
           <p className="label-cap px-1 pb-1 pt-4">Use cases</p>
           {USECASE_LIST.map((u) => (
-            <Link key={u.slug} href={`/create?usecase=${u.slug}`} className="block rounded-btn px-3 py-2 text-sm text-text-secondary hover:bg-surface-2 hover:text-text-primary">
+            <Link key={u.slug} href={usecaseHref(u)} className="block rounded-btn px-3 py-2 text-sm text-text-secondary hover:bg-surface-2 hover:text-text-primary">
               {u.title}
             </Link>
           ))}
