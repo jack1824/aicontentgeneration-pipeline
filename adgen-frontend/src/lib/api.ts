@@ -29,7 +29,7 @@ export type AvatarProfile = {
 };
 
 export type GenerateRequest = {
-  mode: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "ingredients" | "sequence";
+  mode: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "ingredients" | "sequence" | "redub";
   shots?: Shot[];
   segments?: SequenceSegment[];
   script?: string | null;
@@ -47,6 +47,7 @@ export type GenerateRequest = {
   avatar_id?: string; // saved avatar profile — backend resolves face + voice
   sheet_image?: string; // ingredients: the reference sheet image (server path)
   sheet_description?: string; // ingredients: what the sheet's panels contain
+  source_video?: string; // redub: existing render whose lips to re-render
   postprocess?: boolean;
 };
 

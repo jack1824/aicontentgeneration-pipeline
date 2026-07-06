@@ -94,6 +94,57 @@ function Lightbox({
 
   const revoicing = rvJob && !["done", "error"].includes(rvJob.status);
 
+  // ---- Re-dub (LipDub): re-render the LIPS to a new spoken track — works on
+  // speaking-character clips regardless of voice lock (it REPLACES the lips).
+  const [redubOpen, setRedubOpen] = useState(false);
+  const [rdScript, setRdScript] = useState("");
+  const [rdScene, setRdScene] = useState("");
+  const [rdVoice, setRdVoice] = useState("");
+  const [rdLang, setRdLang] = useState("hi");
+  const [rdJobId, setRdJobId] = useState<string | null>(null);
+  const [rdJob, setRdJob] = useState<Job | null>(null);
+  const rdPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!rdJobId) return;
+    rdPollRef.current = setInterval(async () => {
+      try {
+        const j = await api.job(rdJobId);
+        setRdJob(j);
+        if (["done", "error"].includes(j.status)) {
+          if (rdPollRef.current) clearInterval(rdPollRef.current);
+          if (j.status === "done") onEnhanced();
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 5000);
+    return () => {
+      if (rdPollRef.current) clearInterval(rdPollRef.current);
+    };
+  }, [rdJobId, onEnhanced]);
+
+  const redub = async () => {
+    setError(null);
+    try {
+      const { job_id } = await api.generate({
+        mode: "redub",
+        source_video: item.path,
+        script: rdScript.trim(),
+        language: rdLang,
+        ...(rdVoice ? { voice_id: rdVoice } : {}),
+        shots: [{ prompt: rdScene.trim() || "A person speaking naturally to the camera" }],
+      });
+      setRdJobId(job_id);
+      onJobStart(item.path, job_id);
+      setRdJob({ status: "queued", progress: 0, detail: "", video_path: null, error: null });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const redubbing = rdJob && !["done", "error"].includes(rdJob.status);
+
   // ---- Fix timing (trim dead tail / manual end cut) ----
   const [tailS, setTailS] = useState(0.45);
   const [endS, setEndS] = useState("");
@@ -453,6 +504,71 @@ function Lightbox({
             )}
           </div>
         )}
+        {/* ---- Re-dub (lips re-rendered to a NEW spoken track) ---- */}
+        <div className="flex flex-col gap-2.5">
+          {!redubOpen ? (
+            <button
+              onClick={() => setRedubOpen(true)}
+              className="seg rounded-btn px-4 py-2.5 text-xs font-medium"
+            >
+              🎤 Re-dub (re-renders the LIPS to a new spoken line — any language)
+            </button>
+          ) : (
+            <div className="flex flex-col gap-2.5 rounded-btn bg-surface-2/50 p-3">
+              <span className="label-cap">New spoken line</span>
+              <textarea
+                value={rdScript}
+                onChange={(e) => setRdScript(e.target.value)}
+                placeholder="What they should say — the mouth is re-rendered to match…"
+                rows={2}
+                className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
+              />
+              <input
+                value={rdScene}
+                onChange={(e) => setRdScene(e.target.value)}
+                placeholder="One line describing the shot (helps the model) — optional"
+                className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
+              />
+              <div className="flex gap-1">
+                {[
+                  { v: "hi", l: "हिन्दी" },
+                  { v: "en", l: "EN" },
+                ].map((o) => (
+                  <button
+                    key={o.v}
+                    onClick={() => setRdLang(o.v)}
+                    className={`rounded-btn px-2.5 py-1.5 text-[11px] ${rdLang === o.v ? "seg-on" : "seg"}`}
+                  >
+                    {o.l}
+                  </button>
+                ))}
+              </div>
+              <VoicePicker voices={voices} value={rdVoice} onChange={setRdVoice} language={rdLang} />
+              <button
+                onClick={redub}
+                disabled={rdScript.trim().length < 3 || !!redubbing}
+                className="hero-glow rounded-btn px-4 py-2 text-xs font-semibold text-white disabled:opacity-40 disabled:shadow-none"
+              >
+                {redubbing ? "Re-rendering lips…" : "Re-dub"}
+              </button>
+              <p className="text-[10px] text-text-muted">
+                works on clips up to ~12s with a visible speaker · takes a few minutes
+              </p>
+            </div>
+          )}
+          {rdJob && (
+            <div className={`rounded-btn bg-surface-2/50 p-3 ${redubbing ? "render-breathe" : ""}`}>
+              <p className="text-xs text-text-secondary">
+                {rdJob.status === "done"
+                  ? "🎤 Dubbed version saved to the library (outputs/redub)"
+                  : rdJob.status === "error"
+                    ? ""
+                    : `re-dubbing — ${rdJob.detail || rdJob.status}`}
+              </p>
+              {rdJob.status === "error" && <p className="text-xs text-accent">{rdJob.error}</p>}
+            </div>
+          )}
+        </div>
         {error && <p className="text-xs text-accent">{error}</p>}
       </div>
     </div>
