@@ -12,6 +12,7 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -499,12 +500,42 @@ function CtaButton({ big = false, children = "Create your first ad" }: { big?: b
   );
 }
 
+// The hero's floating prompt pill — same glass element as the studio hub, so
+// landing and dashboard read as one product. Typing routes straight into the
+// studio with the idea prefilled; empty submit still opens Create.
+function HeroIdeaPill() {
+  const router = useRouter();
+  const [idea, setIdea] = useState("");
+  const go = () =>
+    router.push(idea.trim() ? `/create?idea=${encodeURIComponent(idea.trim())}` : "/create");
+  return (
+    <div className="glass-pill flex w-full max-w-2xl items-center gap-2 rounded-full p-2 pl-5">
+      <input
+        value={idea}
+        onChange={(e) => setIdea(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && go()}
+        placeholder="e.g. 15s reel for my sweet shop — Diwali gift boxes…"
+        aria-label="Describe the ad you want"
+        className="min-w-0 flex-1 bg-transparent py-2 text-[15px] outline-none placeholder:text-text-muted"
+      />
+      <button
+        onClick={go}
+        aria-label="Create my ad"
+        className="hero-glow flex shrink-0 items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold text-white sm:px-6"
+      >
+        <span className="text-base leading-none">✦</span>
+        <span className="hidden sm:inline">Create my ad</span>
+      </button>
+    </div>
+  );
+}
+
 function UseCaseCard({ u, videoUrl }: { u: UseCase; videoUrl?: string }) {
   return (
     <Link
       href={usecaseHref(u)}
       data-dir
-      className="lift group relative flex min-h-56 flex-col justify-end overflow-hidden rounded-card border border-white/5 bg-surface-1 p-5 hover:border-accent/50 hover:ring-1 hover:ring-accent/40"
+      className="lift group relative flex h-72 w-60 shrink-0 snap-start flex-col justify-end overflow-hidden rounded-card border border-white/5 bg-surface-1 p-5 hover:border-accent/50 hover:ring-1 hover:ring-accent/40 sm:w-64"
     >
       {videoUrl ? (
         <CardVideo src={videoUrl} />
@@ -709,6 +740,7 @@ const SPOTLIGHTS: { title: string; body: string; visual: ReactNode }[] = [
 ];
 
 export default function Landing() {
+  const dirRailRef = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const heroRef = useRef<HTMLElement>(null);
   const [blobOn, setBlobOn] = useState(false);
@@ -951,8 +983,11 @@ export default function Landing() {
               AI-made video ads for Indian businesses — in English and{" "}
               <span lang="hi">हिन्दी</span>, from nothing but your idea and a product photo.
             </p>
-            <div data-hero-after>
-              <CtaButton big />
+            <div data-hero-after className="flex w-full flex-col items-center gap-3">
+              <HeroIdeaPill />
+              <a href="#use-cases" className="text-xs text-text-muted transition-colors hover:text-text-primary">
+                or start from a template ↓
+              </a>
             </div>
           </div>
         </section>
@@ -997,15 +1032,40 @@ export default function Landing() {
 
         {/* ---- 4 · DIRECTOR GRID (quickStart) ---- */}
         <section id="use-cases" data-dir-grid className="scroll-mt-20 mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
-          <div data-reveal className="mb-10 flex flex-col gap-2">
-            <h2 className="text-3xl font-semibold tracking-tight font-display">
-              What ad are we making today?
-            </h2>
-            <p className="text-sm text-text-muted">
-              Pick a direction — we set the stage, you add your product.
-            </p>
+          <div data-reveal className="mb-8 flex items-end justify-between gap-4">
+            <div className="flex flex-col gap-2">
+              <h2 className="text-3xl font-semibold tracking-tight font-display">
+                What ad are we making today?
+              </h2>
+              <p className="text-sm text-text-muted">
+                Pick a direction — we set the stage, you add your product.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => dirRailRef.current?.scrollBy({ left: -560, behavior: "smooth" })}
+                aria-label="Scroll templates left"
+                className="card-raised hidden size-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary md:flex"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-4.5" aria-hidden="true">
+                  <path d="M15 6l-6 6 6 6" />
+                </svg>
+              </button>
+              <button
+                onClick={() => dirRailRef.current?.scrollBy({ left: 560, behavior: "smooth" })}
+                aria-label="Scroll templates right"
+                className="card-raised hidden size-10 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary md:flex"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-4.5" aria-hidden="true">
+                  <path d="M9 6l6 6-6 6" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+          <div
+            ref={dirRailRef}
+            className="edge-fade -mx-1 flex snap-x gap-4 overflow-x-auto px-1 pb-2"
+          >
             {USECASE_LIST.map((u) => (
               <UseCaseCard key={u.slug} u={u} videoUrl={allocation.directors[u.slug]} />
             ))}
