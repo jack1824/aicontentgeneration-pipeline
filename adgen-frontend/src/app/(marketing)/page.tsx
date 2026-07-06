@@ -69,6 +69,142 @@ function StrokeIcon({ d, className = "size-5" }: { d: string; className?: string
   );
 }
 
+// The playbook: every recipe the studio supports, click by click — the landing
+// page IS the manual. Grouped the way users think: make it, cast it, finish it.
+const PLAYBOOK: {
+  group: string;
+  recipes: { emoji: string; title: string; where: string; steps: string[]; note?: string }[];
+}[] = [
+  {
+    group: "Make it",
+    recipes: [
+      {
+        emoji: "💡",
+        title: "One idea → a full ad plan",
+        where: "Dashboard",
+        steps: [
+          "Type your idea in the bar — product, audience, mood",
+          "The Brain proposes 3 directions with shots and script",
+          "Pick one → everything prefills → Generate",
+        ],
+        note: "every shot and line stays editable before you render",
+      },
+      {
+        emoji: "🎥",
+        title: "Cinematic shots with real sound",
+        where: "Create · Cinematic",
+        steps: [
+          "Describe the shot — subject, camera move, light",
+          "Add narration + a हिन्दी/English voice — or leave it silent for pure ambience",
+          "Generate — ≈2 min per shot, soundtrack included",
+        ],
+      },
+      {
+        emoji: "🗣",
+        title: "Make a character SPEAK on screen",
+        where: "Create · Cinematic",
+        steps: [
+          "Leave the narration box empty",
+          "Put the spoken line inside the shot itself, in quotes — “she says warmly: ‘…’”",
+          "Generate — voice and lips come out with the scene",
+        ],
+      },
+      {
+        emoji: "🧩",
+        title: "Brand Lock — same product in every shot",
+        where: "Create · Brand Lock",
+        steps: [
+          "Describe your brand's elements — mascot, pack, store",
+          "✨ Generate the reference sheet (or upload your own)",
+          "Write shots — every one keeps your brand identical",
+        ],
+        note: "sheets are reusable: one brand, many ads",
+      },
+      {
+        emoji: "🎬",
+        title: "Full 30-second ads",
+        where: "Create · any mode",
+        steps: [
+          "+ Add shot for every 5 seconds — or let the Brain plan the timeline",
+          "One narration carries across all shots",
+          "Generate once — shots render, stitch and mix automatically",
+        ],
+      },
+    ],
+  },
+  {
+    group: "The people in it",
+    recipes: [
+      {
+        emoji: "🧑",
+        title: "Generate a spokesperson",
+        where: "Avatars",
+        steps: [
+          "✨ Generate → describe them — age, look, vibe",
+          "Re-roll until you love the face",
+          "Name + voice → Save — reusable forever with one tap",
+        ],
+      },
+      {
+        emoji: "🎤",
+        title: "Talking avatar ads",
+        where: "Create · Avatar",
+        steps: [
+          "Tap a saved avatar chip — face and voice fill in",
+          "Write the script — it drives the lips",
+          "Generate — a ~14s spokesperson take",
+        ],
+      },
+      {
+        emoji: "💬",
+        title: "Two-person dialogue ads",
+        where: "Dialogue",
+        steps: [
+          "Type the idea → ✦ Write the dialogue — both sides written for you",
+          "Tap one avatar chip per speaker",
+          "Generate — the classic problem → solution ad, cut for cut",
+        ],
+      },
+    ],
+  },
+  {
+    group: "Finish it",
+    recipes: [
+      {
+        emoji: "🎙",
+        title: "Re-dub any clip — any language",
+        where: "Library · your video",
+        steps: [
+          "Open the video → 🎤 Re-dub",
+          "Type the new line, pick any voice, हिन्दी or English",
+          "The lips re-render to match — everything else stays",
+        ],
+        note: "clips up to ~12s with a visible speaker",
+      },
+      {
+        emoji: "✨",
+        title: "Polish — only when you want it",
+        where: "presets · Library",
+        steps: [
+          "⚡ Preview never polishes — what you wrote is what renders",
+          "Pick ✨ Polished at render time, or Enhance any video later",
+          "Face restore + 2× upscale + smoother motion",
+        ],
+      },
+      {
+        emoji: "🏷",
+        title: "Brand end card",
+        where: "Library · your video",
+        steps: [
+          "Open the video → End card",
+          "Brand name, tagline, offer",
+          "A clean closing card is stitched on — the one place text belongs",
+        ],
+      },
+    ],
+  },
+];
+
 const STEPS: { icon: ReactNode; title: string; body: ReactNode }[] = [
   {
     icon: <StrokeIcon d="M4 5.5h16v10.5H9l-5 4.5z" />,
@@ -729,6 +865,51 @@ export default function Landing() {
                 </div>
                 <h3 className="mt-4 text-lg font-semibold font-display">{s.title}</h3>
                 <p className="mt-2 text-sm leading-relaxed text-text-secondary">{s.body}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ---- 5b · THE PLAYBOOK: every ad, click by click ---- */}
+        <section id="playbook" className="scroll-mt-20 mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
+          <div data-reveal className="mb-10 flex flex-col gap-2">
+            <h2 className="text-3xl font-semibold tracking-tight font-display">
+              The <span className="text-grad">playbook</span>
+            </h2>
+            <p className="max-w-xl text-[15px] text-text-secondary">
+              Everything the studio can make — and exactly where the buttons are. No manual, no
+              tutorials: every recipe is two or three clicks.
+            </p>
+          </div>
+          <div className="grid gap-8 lg:grid-cols-3">
+            {PLAYBOOK.map((group) => (
+              <div key={group.group} className="flex flex-col gap-4">
+                <span className="label-cap">{group.group}</span>
+                {group.recipes.map((r) => (
+                  <div key={r.title} data-reveal className="card-raised rounded-card p-5">
+                    <div className="flex items-start justify-between gap-3">
+                      <h3 className="text-[15px] font-semibold font-display">
+                        <span className="mr-1.5">{r.emoji}</span>
+                        {r.title}
+                      </h3>
+                      <span className="seg shrink-0 rounded-full px-2.5 py-1 text-[10px] whitespace-nowrap">
+                        {r.where}
+                      </span>
+                    </div>
+                    <ol className="mt-3 flex flex-col gap-1.5">
+                      {r.steps.map((s, i) => (
+                        <li
+                          key={i}
+                          className="flex items-baseline gap-2 text-[13px] leading-relaxed text-text-secondary"
+                        >
+                          <span className="shrink-0 text-[11px] font-semibold text-accent">{i + 1}</span>
+                          <span>{s}</span>
+                        </li>
+                      ))}
+                    </ol>
+                    {r.note && <p className="mt-2.5 text-[11px] text-text-muted">{r.note}</p>}
+                  </div>
+                ))}
               </div>
             ))}
           </div>
