@@ -71,6 +71,51 @@ function StrokeIcon({ d, className = "size-5" }: { d: string; className?: string
 
 // The playbook: every recipe the studio supports, click by click — the landing
 // page IS the manual. Grouped the way users think: make it, cast it, finish it.
+// The prompt book: REAL prompts from renders we shipped — users copy these
+// patterns instead of guessing. Every entry names the trick it demonstrates.
+const PROMPTBOOK: { title: string; badge: string; trick: string; prompt: string }[] = [
+  {
+    title: "The emotional hook — emotion written as light",
+    badge: "🎥 Cinematic + voiceover",
+    trick:
+      "You never type feelings — you type what the camera sees. 'Desaturated cold blue-grey' IS the sadness. The character description gets pasted word-for-word into every shot of the ad — that's what keeps the same actor across cuts.",
+    prompt:
+      "Realistic documentary footage: an Indian dentist in his late thirties with short black hair and tired kind eyes, wearing a white doctor's coat over a light blue shirt, sits alone in the empty waiting room of a small modern dental clinic with mint-green walls and a glass door, rows of vacant chairs around him, a wall clock above. Slow creeping zoom toward his still face, desaturated cold blue-grey tones, heavy silence. The audio is a ticking wall clock and faint room hum.",
+  },
+  {
+    title: "A character who SPEAKS on screen",
+    badge: "🎥 Cinematic · narration box EMPTY",
+    trick:
+      "Put the spoken line inside the shot, in quotes, and ask for the lips. The model generates the voice AND the lip-sync. Keep lines to ~8–10 words per 5-second shot.",
+    prompt:
+      "Realistic documentary footage, tracking shot moving alongside a middle-aged Indian farmer in his forties with a weathered sun-tanned face, a thick black moustache, wearing a beige cotton turban and a brown Nehru vest over a cream kurta, walking briskly along a raised brick canal embankment beside lush green sugarcane fields. As he walks he looks ahead and says warmly in Hindi: \"अपने खेत की कहानी अब पूरी दुनिया देखेगी।\" His lips move naturally with the words. Golden afternoon sunlight. The audio is his warm Hindi voice over faint birdsong and footsteps.",
+  },
+  {
+    title: "Two people talking in ONE shot",
+    badge: "🎥 Cinematic · two voices, one clip",
+    trick:
+      "Write both lines in sequence — the model gives each person their own voice and animates both faces. The most natural conversation money can't usually buy.",
+    prompt:
+      "Realistic documentary footage: a middle-aged Indian farmer with a thick black moustache in a beige turban and a middle-aged Indian woman with dark hair in a neat bun wearing a green cotton saree stand together at the edge of lush green sugarcane fields. He turns to her and asks in Hindi: \"इस बार की फ़सल देखी?\" She smiles and replies in Hindi: \"सबसे अच्छी!\" Both faces animated, lips matching their words. Static camera, medium two-shot. The audio is their two distinct Hindi voices, his deep, hers bright, with soft field ambience.",
+  },
+  {
+    title: "The moving-background tracking shot",
+    badge: "🎬 B-roll / Cinematic",
+    trick:
+      "Three load-bearing phrases make the background move: 'tracking shot moving alongside', 'camera tracks smoothly parallel at walking pace', 'background moving naturally with parallax' — and the negative kills the classic walk fails.",
+    prompt:
+      "Realistic documentary footage, tracking shot moving alongside a middle-aged Indian farmer in his forties walking briskly along a raised brick canal embankment. He gestures with his right arm outstretched as he walks, mid-conversation, expressive face. Behind him, lush green sugarcane fields stretch to the horizon under a clear pale-blue sky, a calm canal of water on the right. Camera tracks smoothly parallel to him at walking pace, keeping him centered, background moving naturally with parallax. Golden afternoon sunlight, candid, unposed, photojournalism, realistic skin texture, natural fabric movement.",
+  },
+  {
+    title: "The one negative prompt you always paste",
+    badge: "every shot, every mode",
+    trick:
+      "Identical in every shot card — consistency helps the model. 'Readable text' is in there because AI video garbles writing; your brand text belongs on the end card instead.",
+    prompt:
+      "static camera, frozen background, stiff walk, sliding feet, cartoon, 3D render, CGI, plastic skin, distorted face, deformed hands, extra limbs, warping, morphing, jerky motion, readable text, subtitles, captions, watermark, blurry, low quality",
+  },
+];
+
 const PLAYBOOK: {
   group: string;
   recipes: { emoji: string; title: string; where: string; steps: string[]; note?: string }[];
@@ -910,6 +955,38 @@ export default function Landing() {
                     {r.note && <p className="mt-2.5 text-[11px] text-text-muted">{r.note}</p>}
                   </div>
                 ))}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ---- 5c · THE PROMPT BOOK: real prompts from shipped renders ---- */}
+        <section id="prompts" className="scroll-mt-20 mx-auto w-full max-w-7xl px-6 py-12 md:px-12">
+          <div data-reveal className="mb-4 flex flex-col gap-2">
+            <h2 className="text-3xl font-semibold tracking-tight font-display">
+              The <span className="text-grad">prompt book</span>
+            </h2>
+            <p className="max-w-2xl text-[15px] text-text-secondary">
+              Real prompts from ads rendered on this platform — copy the pattern, swap your
+              subject. Every shot follows one order:
+            </p>
+            <p className="label-cap tracking-widest">
+              style → subject → action → scene → camera → light → sound
+            </p>
+          </div>
+          <div className="grid gap-5 lg:grid-cols-2">
+            {PROMPTBOOK.map((p) => (
+              <div key={p.title} data-reveal className="card-raised flex flex-col gap-3 rounded-card p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <h3 className="text-[15px] font-semibold font-display">{p.title}</h3>
+                  <span className="seg shrink-0 rounded-full px-2.5 py-1 text-[10px] whitespace-nowrap">
+                    {p.badge}
+                  </span>
+                </div>
+                <p className="text-[12px] leading-relaxed text-text-secondary">{p.trick}</p>
+                <pre className="max-h-44 overflow-y-auto rounded-btn bg-black/30 p-3 text-[11px] leading-relaxed whitespace-pre-wrap text-text-secondary">
+                  {p.prompt}
+                </pre>
               </div>
             ))}
           </div>
