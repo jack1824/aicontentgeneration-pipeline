@@ -23,6 +23,7 @@ from app.providers.tts import synthesize_voice
 from app.workflow_mappings import (
     INGREDIENTS_MAPPING,
     LONGCAT_2W_MAPPING,
+    LONGCAT_DUO_MAPPING,
     LONGCAT_MAPPING,
     LTX2_MAPPING,
     WAN_I2V_MAPPING,
@@ -108,6 +109,8 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
         return _generate_ingredients(req, name, report, on_submit)
     if mode == "longcat":
         return _generate_longcat(req, name, report, on_submit)
+    if mode == "duo":
+        return _generate_duo(req, name, report, on_submit)
     if mode != "overlay":
         raise NotImplementedError(
             f"mode='{mode}' is not built yet — 'overlay', 'lipsync', 'product', "
@@ -281,6 +284,55 @@ def generate_sheet(description: str, width: int = 896, height: int = 1536,
         "width": width,
         "height": height,
         "lightning_lora": False,  # QUALITY path — the sheet IS the brand identity
+    }
+    try:
+        comfy.comfy_generate(
+            pod, comfy.load_workflow("wan_t2v"), inputs, WAN_T2V_MAPPING,
+            out_path=str(tmp_mp4), on_submit=on_submit,
+        )
+        ffmpeg.extract_frame(str(tmp_mp4), str(png))
+    finally:
+        tmp_mp4.unlink(missing_ok=True)
+    return str(png)
+
+
+# Scene stills (duo refs, staged shots): cinematic framing, NOT the headshot or
+# sheet scaffolds — the still IS the set: whatever is in it is what S2V/LongCat
+# will animate (the eyeline test proved prompts can't override the ref image).
+SCENE_PROMPT_SUFFIX = (
+    ". Cinematic photograph, natural believable framing, realistic skin texture "
+    "and fabric detail, soft directional light, sharp focus, photorealistic, "
+    "no text anywhere"
+)
+SCENE_NEGATIVE = (
+    "text, letters, captions, watermark, cartoon, anime, 3d render, cgi, "
+    "illustration, deformed faces, asymmetric eyes, extra limbs, cloned faces, "
+    "blur, low quality"
+)
+
+
+def generate_scene(description: str, width: int = 832, height: int = 480,
+                   seed: int | None = None, out_stem: str = "scene",
+                   on_submit=None) -> str:
+    """Render ONE staged scene still (e.g. the two-person duo reference:
+    speaker 1 on the LEFT, speaker 2 on the RIGHT). Quality path, 1 frame."""
+    if not COMFY_POD_URLS:
+        raise RuntimeError("COMFY_POD_URLS is not set in .env — no pod to generate on.")
+    pod = COMFY_POD_URLS[0]
+    httpx.get(f"{pod.rstrip('/')}/system_stats", timeout=10).raise_for_status()
+
+    out_dir = Path("assets/stills")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp_mp4 = out_dir / f"{out_stem}.mp4"
+    png = out_dir / f"{out_stem}.png"
+    inputs = {
+        "prompt": description.strip() + SCENE_PROMPT_SUFFIX,
+        "negative_prompt": SCENE_NEGATIVE,
+        "seed": seed or DEFAULT_BASE_SEED,
+        "duration": 0.0,
+        "width": width,
+        "height": height,
+        "lightning_lora": False,  # the still becomes the whole set — QUALITY only
     }
     try:
         comfy.comfy_generate(
@@ -762,6 +814,115 @@ def _generate_longcat(req: dict, name: str, report, on_submit=None) -> str:
         final = ffmpeg.stitch([clip], out=final)
 
     # Lips are baked to this voice — /revoice must refuse it.
+    Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
+    Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
+
+    report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
+    return final
+
+
+DUO_VIDEO_DIR = Path("outputs/duo/video")
+DUO_AUDIO_DIR = Path("outputs/duo/audio")
+DUO_MAX_SPEECH_S = 15.0  # 3-window take is ~15.8s — the conversation must fit
+
+
+def _generate_duo(req: dict, name: str, report, on_submit=None) -> str:
+    """mode="duo": MULTI-STREAM dialogue — two people in ONE continuous LongCat
+    take. The reference image is a staged two-person still (speaker 0 seated
+    LEFT, speaker 1 RIGHT); each speaker's own audio stream drives their mouth
+    while the other visibly listens. This is the genuinely-natural conversation
+    the cut-per-turn dialogue can't do.
+
+    req extras: duo_turns=[{speaker:0|1, text}], duo_voices=[voiceA, voiceB],
+    avatar_image = the two-person still, shots[0].prompt = scene/action.
+    """
+    turns = req.get("duo_turns") or []
+    if len(turns) < 2:
+        raise ValueError("duo needs at least 2 turns.")
+    voices = req.get("duo_voices") or []
+    if len(voices) != 2:
+        raise ValueError("duo needs `duo_voices` — one ElevenLabs voice per speaker.")
+    ref = req.get("avatar_image")
+    if not ref:
+        raise ValueError("duo needs `avatar_image` — the staged TWO-PERSON still "
+                         "(speaker 1 on the left, speaker 2 on the right).")
+    if not Path(ref).exists():
+        raise FileNotFoundError(f"avatar_image not found: {ref}")
+
+    DUO_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    DUO_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    pod = COMFY_POD_URLS[0]
+
+    # 1. TTS every turn with its speaker's voice
+    report("tts", 5, f"synthesizing {len(turns)} turns")
+    turn_files, speakers = [], []
+    for i, t in enumerate(turns):
+        spk = int(t["speaker"])
+        turn_files.append(synthesize_voice(
+            t["text"], voice_id=voices[spk], language=req.get("language", "hi"),
+            output_path=str(DUO_AUDIO_DIR / f"{name}-turn{i + 1}.mp3"),
+        ))
+        speakers.append(spk)
+
+    # 2. Per-speaker timeline tracks + combined mux track
+    report("tts", 10, "building the two audio streams")
+    track_a, track_b, mix, total = ffmpeg.dialogue_tracks(
+        turn_files, speakers,
+        str(DUO_AUDIO_DIR / f"{name}-trackA.mp3"),
+        str(DUO_AUDIO_DIR / f"{name}-trackB.mp3"),
+        str(DUO_AUDIO_DIR / f"{name}-mix.mp3"),
+    )
+    if total > DUO_MAX_SPEECH_S:
+        raise ValueError(
+            f"the conversation runs {total:.1f}s — a duo take fits ~{DUO_MAX_SPEECH_S:.0f}s "
+            f"of speech. Trim the lines (about 3 words/second)."
+        )
+
+    # 3. UPLOAD ref still + all three tracks
+    report("uploading", 12, "two-person still + audio streams -> pod")
+    inputs = {
+        "prompt": req["shots"][0]["prompt"],
+        "ref_image": comfy.upload_file(pod, ref),
+        "audio": comfy.upload_file(pod, track_a),
+        "audio_b": comfy.upload_file(pod, track_b),
+        "audio_mix": comfy.upload_file(pod, mix),
+        "filename_prefix": f"adgen_duo_{name}",
+    }
+    base_seed = req.get("seed") or DEFAULT_BASE_SEED
+    inputs.update({"seed": base_seed, "seed_extend1": base_seed + 1,
+                   "seed_extend2": base_seed + 2})
+    if req["shots"][0].get("negative_prompt"):
+        inputs["negative_prompt"] = req["shots"][0]["negative_prompt"]
+    w = req.get("width") or 832
+    h = req.get("height") or 480
+    inputs.update({
+        "width": w, "height": h,
+        # speaker masks: left/right halves of the frame
+        "m_full1_w": w, "m_full1_h": h, "m_half1_w": w // 2, "m_half1_h": h,
+        "m_full2_w": w, "m_full2_h": h, "m_half2_w": w // 2, "m_half2_h": h,
+        "m_x2": w // 2,
+    })
+    if req.get("steps"):
+        inputs["steps"] = req["steps"]
+
+    # 4. GENERATE — one continuous two-person take (heaviest model we run)
+    comfy.free_memory(pod)
+    report("generating", 15, "multi-stream duo take (~16s, both speakers in frame)")
+    clip = comfy.comfy_generate(
+        pod, comfy.load_workflow("longcat_duo"), inputs, LONGCAT_DUO_MAPPING,
+        out_path=str(DUO_VIDEO_DIR / f"{name}-clip1.mp4"),
+        timeout=3600.0, on_submit=on_submit,
+    )
+
+    # 5. ASSEMBLE — conversation audio already muxed; optional music bed
+    report("assembling", 92, "finalizing")
+    final = str(DUO_VIDEO_DIR / f"{name}-final.mp4")
+    if req.get("music"):
+        final = ffmpeg.stitch_plus_music([clip], music=req["music"], out=final)
+    else:
+        final = ffmpeg.stitch([clip], out=final)
+
+    # Both mouths are baked to their voices — /revoice must refuse this.
     Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
     Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
 

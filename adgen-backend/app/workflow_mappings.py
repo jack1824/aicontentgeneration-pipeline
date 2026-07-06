@@ -140,7 +140,24 @@ LONGCAT_MAPPING = {
     "filename_prefix": ("453", "filename_prefix"),
 }
 
-# workflows/longcat_avatar_2w.json — the SAME graph minus the third window
+# workflows/longcat_duo.json — MULTI-STREAM dialogue (2026-07-06): the proven
+# LongCat graph on the FULL bf16 model (fp8-quantized at load), with a second
+# audio stream (audio_2, multi_audio_type 'para') and left/right speaker masks
+# (SolidMask+MaskComposite halves -> MaskBatchMulti -> ref_target_masks).
+# The ref image is a staged TWO-PERSON still: speaker 0 sits LEFT, speaker 1
+# RIGHT. Per-speaker tracks carry silence during the other's turns; a third
+# combined track feeds the final mux.
+LONGCAT_DUO_MAPPING = {
+    **LONGCAT_MAPPING,
+    "audio_b": ("600", "audio"),             # LoadAudio — speaker 1's timeline track
+    "audio_mix": ("620", "audio"),           # LoadAudio — combined conversation (mux)
+    # mask canvas must match the frame size — the pipeline injects all of these
+    "m_full1_w": ("610", "width"), "m_full1_h": ("610", "height"),
+    "m_half1_w": ("611", "width"), "m_half1_h": ("611", "height"),
+    "m_full2_w": ("613", "width"), "m_full2_h": ("613", "height"),
+    "m_half2_w": ("614", "width"), "m_half2_h": ("614", "height"),
+    "m_x2": ("615", "x"),                    # right half starts at width//2
+}
 # (2026-07-06): 2x 93-frame windows, 13-frame overlap -> 173 frames ≈ 10.8s.
 # ~1/3 less compute; the pipeline auto-picks it when the narration is short —
 # rendering seconds nobody scripted is pure wasted wall-clock for the user.

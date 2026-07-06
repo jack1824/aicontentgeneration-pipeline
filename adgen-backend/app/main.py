@@ -100,6 +100,12 @@ class Shot(BaseModel):
     negative_prompt: str | None = None   # Wan 2.2 negative box
 
 
+class DuoTurn(BaseModel):
+    """One line of a multi-stream duo conversation (speaker 0 = LEFT seat)."""
+    speaker: Literal[0, 1]
+    text: str = Field(min_length=1, max_length=300)
+
+
 class Segment(BaseModel):
     """One timeline entry of a sequence job (file 15's 60s mixed-pipeline ad)."""
     pipeline: Literal["overlay", "lipsync", "product"]
@@ -130,6 +136,8 @@ class GenerateRequest(BaseModel):
                                          # avatar_image + voice_id unless overridden
     sheet_image: str | None = None       # ingredients: reference sheet image path
     sheet_description: str | None = None  # ingredients: what the sheet's panels contain
+    duo_turns: list[DuoTurn] | None = None  # duo: the conversation, alternating speakers
+    duo_voices: list[str] | None = None     # duo: [voice for speaker 0, voice for speaker 1]
     postprocess: bool = False            # True = run the post chain after assembly (one-call
                                          # Enhanced/Master presets; adds a "post" stage)
     width: int | None = Field(default=None, ge=64, le=1920, multiple_of=16)
@@ -186,6 +194,16 @@ def generate_endpoint(req: GenerateRequest):
             raise HTTPException(422, "sequence mode needs `segments` — a non-empty timeline")
     elif not req.shots:
         raise HTTPException(422, "shots must contain at least one shot")
+    if req.mode == "duo":
+        if not req.duo_turns or len(req.duo_turns) < 2:
+            raise HTTPException(422, "duo needs `duo_turns` — at least 2 conversation turns")
+        if not req.duo_voices or len(req.duo_voices) != 2:
+            raise HTTPException(422, "duo needs `duo_voices` — exactly one voice per speaker")
+        if req.duo_voices[0] == req.duo_voices[1]:
+            raise HTTPException(422, "duo speakers need two DIFFERENT voices")
+        if not req.avatar_image:
+            raise HTTPException(422, "duo needs `avatar_image` — the staged two-person "
+                                     "still (speaker 1 LEFT, speaker 2 RIGHT)")
     # Phase 3: a saved avatar profile supplies the locked face + its voice.
     # Explicit per-request values win; the profile only fills the gaps (file 09:
     # the models have no memory — the stored reference_image IS the consistency).
@@ -694,6 +712,42 @@ class SheetGenRequest(BaseModel):
     seed: int | None = None
 
 
+class SceneGenRequest(BaseModel):
+    """Generate a staged scene still — e.g. the duo reference: two people at one
+    table, speaker 1 on the LEFT, speaker 2 on the RIGHT."""
+    description: str = Field(min_length=3, max_length=800)
+    width: int = Field(default=832, ge=448, le=1920, multiple_of=16)
+    height: int = Field(default=480, ge=448, le=1920, multiple_of=16)
+    seed: int | None = None
+
+
+@app.post("/stills/generate")
+def generate_scene_endpoint(req: SceneGenRequest):
+    job_id = _new_job("generate", "scene-still")
+
+    def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+        try:
+            _update(job_id, status="generating", progress=15,
+                    detail="rendering scene still (1-frame Wan, 20 steps)")
+            seed = req.seed or (int(uuid.uuid4().hex[:6], 16) % 900000) + 1
+            png = pipeline.generate_scene(
+                req.description, width=req.width, height=req.height, seed=seed,
+                out_stem=f"gen-{job_id}", on_submit=on_submit,
+            )
+            _update(job_id, status="done", progress=100, detail="", video_path=png,
+                    image_url=f"/assets-files/stills/{Path(png).name}")
+        except JobCancelled:
+            pass
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
 @app.post("/sheets/generate")
 def generate_sheet_endpoint(req: SheetGenRequest):
     job_id = _new_job("generate", "brand-sheet")  # pod-occupying — shows in the queue
@@ -793,7 +847,8 @@ def list_stills():
     the Library shows the whole gallery."""
     items = []
     for kind, folder, pattern in (("sheet", Path("assets/sheets"), "gen-*.png"),
-                                  ("face", Path("assets/avatars"), "gen-*.png")):
+                                  ("face", Path("assets/avatars"), "gen-*.png"),
+                                  ("scene", Path("assets/stills"), "gen-*.png")):
         if not folder.exists():
             continue
         for p in folder.glob(pattern):

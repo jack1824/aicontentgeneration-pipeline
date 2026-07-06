@@ -110,6 +110,42 @@ def _run(cmd: list[str]) -> None:
         )
 
 
+def dialogue_tracks(turn_paths: list[str], speakers: list[int], out_a: str,
+                    out_b: str, out_mix: str, gap_s: float = 0.3) -> tuple[str, str, str, float]:
+    """Build the multi-stream timeline for a duo take: per-speaker tracks where
+    each speaker is SILENT during the other's turns (LongCat drives each mouth
+    from its own stream), plus the combined conversation for the final mux.
+    Returns (track_a, track_b, mix, total_seconds)."""
+    durs = [probe(p)["duration"] for p in turn_paths]
+
+    def build(track_speaker: int | None, out: str) -> None:
+        # mix (track_speaker None) = every turn audible; per-speaker = own turns
+        # audible, silence elsewhere. A short gap after each turn keeps pacing.
+        n = len(turn_paths)
+        inputs: list[str] = []
+        for p in turn_paths:
+            inputs += ["-i", p]
+        parts, filters = [], []
+        for i, (spk, d) in enumerate(zip(speakers, durs)):
+            if track_speaker is None or spk == track_speaker:
+                filters.append(f"[{i}:a]aresample=44100,aformat=channel_layouts=mono[t{i}]")
+            else:
+                filters.append(
+                    f"anullsrc=r=44100:cl=mono,atrim=duration={d:.3f}[t{i}]")
+            parts.append(f"[t{i}]")
+            filters.append(f"anullsrc=r=44100:cl=mono,atrim=duration={gap_s:.3f}[g{i}]")
+            parts.append(f"[g{i}]")
+        filters.append("".join(parts) + f"concat=n={2 * n}:v=0:a=1[out]")
+        _run(["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filters),
+              "-map", "[out]", out])
+
+    build(0, out_a)
+    build(1, out_b)
+    build(None, out_mix)
+    total = sum(durs) + gap_s * len(durs)
+    return out_a, out_b, out_mix, total
+
+
 def extract_frame(video: str, out: str, at_s: float = 0.0) -> str:
     """Grab one frame as a still image (avatar face gen: Wan renders a 1-frame
     'video' — this turns it into the PNG the profile stores)."""
