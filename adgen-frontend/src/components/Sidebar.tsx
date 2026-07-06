@@ -11,77 +11,122 @@ import { useEffect, useState } from "react";
 import { api, AvatarProfile, OutputItem, PIPELINE_LABELS } from "@/lib/api";
 import BrandMark from "@/components/BrandMark";
 
-const NAV = [
+type NavItem = { href: string; label: string; icon: React.ReactNode };
+
+// Grouped nav (OpenArt pattern): uppercase section labels, monochrome icons,
+// coral-outline active state. Home sits alone above the groups.
+const NAV_GROUPS: { label: string | null; items: NavItem[] }[] = [
   {
-    href: "/dashboard",
-    label: "Dashboard",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" className="size-4.5">
-        <path d="M3 10.5 12 3l9 7.5" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M5 9.5V21h14V9.5" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    ),
+    label: null,
+    items: [
+      {
+        href: "/dashboard",
+        label: "Home",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <path d="M3 10.5 12 3l9 7.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M5 9.5V21h14V9.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        ),
+      },
+    ],
   },
   {
-    href: "/create",
     label: "Create",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
-        <path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1" strokeLinecap="round" />
-        <circle cx="12" cy="12" r="3.2" />
-      </svg>
-    ),
+    items: [
+      {
+        href: "/create",
+        label: "Single ad",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1" strokeLinecap="round" />
+            <circle cx="12" cy="12" r="3.2" />
+          </svg>
+        ),
+      },
+      {
+        href: "/sequence",
+        label: "Sequence",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <rect x="3" y="6" width="18" height="12" rx="2" />
+            <path d="M8 6v12M16 6v12" />
+          </svg>
+        ),
+      },
+      {
+        href: "/dialogue",
+        label: "Dialogue",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <path d="M4 5h11v8H8l-4 3V5z" strokeLinejoin="round" />
+            <path d="M13 10h7v6h-3l-2.5 2V16H13" strokeLinejoin="round" />
+          </svg>
+        ),
+      },
+      {
+        href: "/remix",
+        label: "Remix",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <path d="M4 7h10m0 0-3-3m3 3-3 3M20 17H10m0 0 3-3m-3 3 3 3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        ),
+      },
+    ],
   },
   {
-    href: "/sequence",
-    label: "Sequence",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
-        <rect x="3" y="6" width="18" height="12" rx="2" />
-        <path d="M8 6v12M16 6v12" />
-      </svg>
-    ),
+    label: "Assets",
+    items: [
+      {
+        href: "/library",
+        label: "Library",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <rect x="3" y="3" width="8" height="8" rx="1.5" />
+            <rect x="13" y="3" width="8" height="8" rx="1.5" />
+            <rect x="3" y="13" width="8" height="8" rx="1.5" />
+            <rect x="13" y="13" width="8" height="8" rx="1.5" />
+          </svg>
+        ),
+      },
+      {
+        href: "/avatars",
+        label: "Avatars",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <circle cx="12" cy="8.5" r="3.5" />
+            <path d="M5 19.5c1.4-3 4-4.5 7-4.5s5.6 1.5 7 4.5" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+    ],
   },
   {
-    href: "/dialogue",
-    label: "Dialogue",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
-        <path d="M4 5h11v8H8l-4 3V5z" strokeLinejoin="round" />
-        <path d="M13 10h7v6h-3l-2.5 2V16H13" strokeLinejoin="round" />
-      </svg>
-    ),
-  },
-  {
-    href: "/avatars",
-    label: "Avatars",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
-        <circle cx="12" cy="8.5" r="3.5" />
-        <path d="M5 19.5c1.4-3 4-4.5 7-4.5s5.6 1.5 7 4.5" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    href: "/remix",
-    label: "Remix",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
-        <path d="M4 7h10m0 0-3-3m3 3-3 3M20 17H10m0 0 3-3m-3 3 3 3" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    ),
-  },
-  {
-    href: "/library",
-    label: "Library",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
-        <rect x="3" y="3" width="8" height="8" rx="1.5" />
-        <rect x="13" y="3" width="8" height="8" rx="1.5" />
-        <rect x="3" y="13" width="8" height="8" rx="1.5" />
-        <rect x="13" y="13" width="8" height="8" rx="1.5" />
-      </svg>
-    ),
+    label: "Inspire",
+    items: [
+      {
+        href: "/#prompts",
+        label: "Prompt book",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4z" strokeLinejoin="round" />
+            <path d="M5 16.5A2.5 2.5 0 0 1 7.5 14H19" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+      {
+        href: "/#playbook",
+        label: "Playbook",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M3 9h18M8 4v5" strokeLinecap="round" />
+            <path d="m11 13 4 2.5-4 2.5v-5z" strokeLinejoin="round" />
+          </svg>
+        ),
+      },
+    ],
   },
 ];
 
@@ -98,24 +143,29 @@ function Brand() {
 
 function NavLinks({ pathname }: { pathname: string }) {
   return (
-    <nav className="flex flex-col gap-1">
-      {NAV.map((n) => {
-        const active = pathname === n.href;
-        return (
-          <Link
-            key={n.href}
-            href={n.href}
-            className={`flex items-center gap-3 rounded-btn px-3 py-2.5 text-sm transition-colors ${
-              active
-                ? "bg-accent/10 text-text-primary"
-                : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
-            }`}
-          >
-            <span className={active ? "text-accent" : ""}>{n.icon}</span>
-            {n.label}
-          </Link>
-        );
-      })}
+    <nav className="flex flex-col gap-4">
+      {NAV_GROUPS.map((g) => (
+        <div key={g.label ?? "home"} className="flex flex-col gap-1">
+          {g.label && <span className="label-cap px-3 pb-0.5">{g.label}</span>}
+          {g.items.map((n) => {
+            const active = pathname === n.href;
+            return (
+              <Link
+                key={n.href}
+                href={n.href}
+                className={`flex items-center gap-3 rounded-btn border border-transparent px-3 py-2 text-sm transition-colors ${
+                  active
+                    ? "nav-active"
+                    : "text-text-secondary hover:border-white/10 hover:bg-surface-2 hover:text-text-primary"
+                }`}
+              >
+                <span className={active ? "text-accent" : ""}>{n.icon}</span>
+                {n.label}
+              </Link>
+            );
+          })}
+        </div>
+      ))}
     </nav>
   );
 }
