@@ -269,7 +269,7 @@ def generate_endpoint(req: GenerateRequest):
                 final = postprocess.postprocess_video(
                     final,
                     restore_face=restore,
-                    resolution=2 * min(req.width or 640, req.height or 640),
+                    resolution=min(1088, 2 * min(req.width or 640, req.height or 640)),
                     # LTX renders 25fps (RIFE 2x -> 50); Wan-era clips are 16 -> 32.
                     # Getting this wrong retimes the output into slow motion.
                     source_fps=25.0 if req.mode in ("cinematic", "ingredients") else 16.0,
@@ -306,8 +306,10 @@ def postprocess_endpoint(req: PostprocessRequest):
     # Derive fps/target-size from the actual file — the Library can't know them.
     info = ffmpeg.probe(str(src))
     source_fps = req.source_fps or (info["fps"] if info["fps"] > 1 else 16.0)
+    # 2x the short side, hard-capped: SeedVR2 at 1408+ on verticals OOM-kills
+    # the pod even in 10s chunks (the sa01 polish crash) — 1088 is the safe roof.
     resolution = req.resolution or max(
-        480, min(2160, 2 * min(info["width"] or 432, info["height"] or 432))
+        480, min(1088, 2 * min(info["width"] or 432, info["height"] or 432))
     )
     job_id = _new_job("postprocess", src.stem)
 
