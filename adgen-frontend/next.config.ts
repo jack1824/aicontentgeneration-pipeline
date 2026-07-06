@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 // Test-phase default for Vercel deploys: the Cloudflare quick tunnel into the
 // user's local backend (not a secret; rotates when the tunnel restarts — update
 // here and push). BACKEND_URL env var always wins when set.
-const TUNNEL_BACKEND = "https://jewish-recorders-which-wit.trycloudflare.com";
+const TUNNEL_BACKEND = "https://toolkit-cleaners-jim-fashion.trycloudflare.com";
 
 const nextConfig: NextConfig = {
   // Gemini plans for 30/60s ads take 30-60s to write; the rewrite proxy's default
