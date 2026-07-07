@@ -60,6 +60,19 @@ LTX_FPS = 25
 LTX_CLIP_SECONDS = 5
 
 
+def inject_cast(prompt: str, anchors: list[str]) -> str:
+    """Prepend the cast's verbatim anchors to a shot prompt.
+
+    The ingredients-wrapper mechanism generalized: anchors are the consistency
+    (verbatim repetition keeps the same actor across cuts and across ads), so
+    every cast member's anchor rides at the head of every shot prompt. Pure
+    function — unit-testable without a pod."""
+    if not anchors:
+        return prompt
+    block = " ".join(a.strip().rstrip(".") + "." for a in anchors if a.strip())
+    return f"Featuring {block}\n\n{prompt}"
+
+
 def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
     """Run one generation job end to end. Returns the final video path.
 
@@ -98,6 +111,16 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
     # final assembly step, after the whole render had already burned time and credits.
     if req.get("music") and not Path(req["music"]).exists():
         raise FileNotFoundError(f"music file not found: {req['music']}")
+    # Cast injection — ONE site for every mode. Product is exempt: its prompts
+    # describe camera/light around a photographed product, and a character
+    # anchor there would fight the i2v start image.
+    anchors = req.get("cast_anchors") or []
+    if anchors and mode != "product":
+        for shot in req.get("shots") or []:
+            shot["prompt"] = inject_cast(shot["prompt"], anchors)
+        for seg in req.get("segments") or []:
+            if seg.get("prompt") and seg.get("pipeline") != "product":
+                seg["prompt"] = inject_cast(seg["prompt"], anchors)
     if mode == "sequence":
         return _generate_sequence(req, name, report, on_submit)
     if mode == "lipsync":

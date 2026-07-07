@@ -28,6 +28,20 @@ export type AvatarProfile = {
   created_at: number;
 };
 
+// A saved character: the anchor is pasted VERBATIM into every shot it's cast
+// in — that repetition is what keeps the same actor across cuts and ads.
+export type Character = {
+  id: string;
+  name: string;
+  anchor: string;
+  face_image: string | null;
+  sheet_image: string | null;
+  image_url: string | null; // browser preview of the face
+  sheet_url: string | null; // browser preview of the sheet
+  voice_id: string | null;
+  created_at: number;
+};
+
 export type GenerateRequest = {
   mode: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "ingredients" | "sequence" | "redub";
   shots?: Shot[];
@@ -45,6 +59,7 @@ export type GenerateRequest = {
   product_image?: string;
   voice_id?: string;
   avatar_id?: string; // saved avatar profile — backend resolves face + voice
+  character_ids?: string[]; // saved cast — anchors injected into every shot
   sheet_image?: string; // ingredients: the reference sheet image (server path)
   sheet_description?: string; // ingredients: what the sheet's panels contain
   source_video?: string; // redub: existing render whose lips to re-render
@@ -148,6 +163,7 @@ export type PlanRequest = {
   format: string;
   duration_s: number;
   avoid?: string[]; // rejected approach titles — Regenerate steers away from them
+  cast_ids?: string[]; // saved characters the plan must build shots around
 };
 
 export type PlanApproach = {
@@ -364,6 +380,35 @@ export const api = {
     }).then(jsonOrThrow),
   deleteAvatar: (id: string): Promise<{ ok: boolean }> =>
     fetch(`${BASE}/avatars/${id}`, { method: "DELETE" }).then(jsonOrThrow),
+  characters: (): Promise<{ characters: Character[] }> =>
+    fetch(`${BASE}/characters`).then(jsonOrThrow),
+  createCharacter: (body: {
+    name: string;
+    anchor: string;
+    face_image?: string;
+    sheet_image?: string;
+    voice_id?: string;
+  }): Promise<Character> =>
+    fetch(`${BASE}/characters`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  updateCharacter: (
+    id: string,
+    body: { name?: string; anchor?: string; voice_id?: string },
+  ): Promise<Character> =>
+    fetch(`${BASE}/characters/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  deleteCharacter: (id: string): Promise<{ ok: boolean }> =>
+    fetch(`${BASE}/characters/${id}`, { method: "DELETE" }).then(jsonOrThrow),
+  generateCharacterFace: (id: string): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/characters/${id}/generate-face`, { method: "POST" }).then(jsonOrThrow),
+  generateCharacterSheet: (id: string): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/characters/${id}/generate-sheet`, { method: "POST" }).then(jsonOrThrow),
   outputs: (): Promise<{ outputs: OutputItem[] }> => fetch(`${BASE}/outputs`).then(jsonOrThrow),
   stills: (): Promise<{ stills: StillItem[] }> => fetch(`${BASE}/stills`).then(jsonOrThrow),
   voices: (): Promise<{ voices: Voice[] }> => fetch(`${BASE}/voices`).then(jsonOrThrow),

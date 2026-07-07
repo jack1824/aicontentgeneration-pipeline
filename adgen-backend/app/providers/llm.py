@@ -232,11 +232,16 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
 
 
 def plan(idea: str, language: str = "en", ad_format: str = "9:16",
-         duration_s: int = 15, avoid: list[str] | None = None) -> dict:
+         duration_s: int = 15, avoid: list[str] | None = None,
+         cast: list[dict] | None = None) -> dict:
     """Ask Gemini for 3 proposed ad approaches. Returns the parsed proposals dict.
 
     `avoid` carries the titles of directions the user already rejected (the
     Regenerate button) — the new batch must steer clear of them.
+    `cast` carries saved characters as {name, anchor} — the plan must build its
+    shots around them and paste each anchor VERBATIM (the SUBJECT-anchor rule
+    the system prompt already teaches, now with a fixed cast instead of an
+    invented one).
     """
     user_msg = (
         f"Ad idea: {idea}\n"
@@ -244,6 +249,14 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
         f"Format: {ad_format}\n"
         f"Target duration: {duration_s} seconds"
     )
+    if cast:
+        lines = "\n".join(f'- {c["name"]}: "{c["anchor"]}"' for c in cast)
+        user_msg += (
+            f"\nCAST — build the shots around these saved characters. Paste each "
+            f"character's anchor WORD-FOR-WORD into every shot they appear in "
+            f"(never paraphrase an anchor — verbatim repetition is what keeps the "
+            f"same actor across cuts):\n{lines}"
+        )
     if avoid:
         rejected = "; ".join(a.strip() for a in avoid if a.strip())
         user_msg += (

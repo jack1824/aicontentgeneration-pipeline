@@ -18,6 +18,7 @@ import {
   ASPECTS,
   AspectKey,
   AvatarProfile,
+  Character,
   ING_ASPECTS,
   LTX_ASPECTS,
   GenerateRequest,
@@ -273,7 +274,8 @@ function CreateStudio() {
   // Form state survives navigation (sessionStorage) — EXCEPT on seeded mounts
   // (URL prefills from dashboard/landing/avatars), where the prefill must win.
   const avatarParam = params.get("avatar");
-  const seeded = !!(ideaParam || urlMode || usecase || avatarParam);
+  const castParam = params.get("cast");
+  const seeded = !!(ideaParam || urlMode || usecase || avatarParam || castParam);
   const keep = { restore: !seeded };
   const [mode, setMode] = usePersistentState<Mode>(
     "adgen-create-mode",
@@ -354,6 +356,9 @@ function CreateStudio() {
   // Phase 3: saved avatar profiles — picking one locks face + voice in one tap.
   const [avatars, setAvatars] = useState<AvatarProfile[]>([]);
   const [avatarId, setAvatarId] = usePersistentState("adgen-create-avatarid", "", keep);
+  // The cast: saved characters whose anchors repeat in every shot prompt.
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [castIds, setCastIds] = usePersistentState<string[]>("adgen-create-cast", [], keep);
   const [previewingVoice, setPreviewingVoice] = useState(false);
   const [preset, setPreset] = usePersistentState<PresetKey>("adgen-create-preset", "preview", keep);
   // LTX-family renders (cinematic + ingredients) have ONE sampling speed —
@@ -402,7 +407,17 @@ function CreateStudio() {
         if (pre) selectAvatar(pre);
       })
       .catch(() => {});
-    // avatarParam is part of the component key — this runs once per seeded mount.
+    api
+      .characters()
+      .then((d) => {
+        setCharacters(d.characters);
+        // Deep link from the Cast section: /create?mode=cinematic&cast=<id>
+        if (castParam && d.characters.some((c) => c.id === castParam)) {
+          setCastIds([castParam]);
+        }
+      })
+      .catch(() => {});
+    // avatarParam/castParam are part of the component key — runs once per seeded mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -549,6 +564,9 @@ function CreateStudio() {
         : {}),
       ...(mode !== "lipsync" && music ? { music: music.path } : {}),
       ...(voiceId ? { voice_id: voiceId } : {}),
+      ...(!isAvatar && mode !== "product" && castIds.length
+        ? { character_ids: castIds }
+        : {}),
     };
     try {
       const { job_id } = await api.generate(req);
@@ -820,6 +838,63 @@ function CreateStudio() {
                   manage →
                 </Link>
               </div>
+            </div>
+          )}
+
+          {/* The cast: saved characters — their anchors ride VERBATIM at the
+              head of every shot prompt (the consistency the client asked for).
+              Not shown in avatar modes (avatars cover face+voice there) or
+              product mode (a character anchor would fight the product photo). */}
+          {!isAvatar && mode !== "product" && characters.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="label-cap">Cast</span>
+              <div className="flex flex-wrap items-center gap-2">
+                {characters.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() =>
+                      setCastIds(
+                        castIds.includes(c.id)
+                          ? castIds.filter((x) => x !== c.id)
+                          : [...castIds, c.id],
+                      )
+                    }
+                    title={
+                      castIds.includes(c.id)
+                        ? "click to remove from this ad"
+                        : `cast ${c.name} — their description repeats in every shot`
+                    }
+                    className={`flex items-center gap-2 rounded-full py-1 pl-1 pr-3 text-xs ${
+                      castIds.includes(c.id) ? "seg-on" : "seg"
+                    }`}
+                  >
+                    {c.image_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- backend-proxied thumb
+                      <img
+                        src={api.assetUrl(c.image_url)}
+                        alt={c.name}
+                        className="size-6 rounded-full object-cover"
+                      />
+                    ) : (
+                      <span className="flex size-6 items-center justify-center rounded-full bg-surface-2 text-[10px]">
+                        {c.name.slice(0, 1)}
+                      </span>
+                    )}
+                    {c.name}
+                  </button>
+                ))}
+                <Link
+                  href="/avatars"
+                  className="text-[11px] text-text-muted hover:text-text-primary"
+                >
+                  manage →
+                </Link>
+              </div>
+              {castIds.length > 0 && (
+                <p className="text-[10px] text-text-muted">
+                  cast members&apos; descriptions are added to every shot automatically
+                </p>
+              )}
             </div>
           )}
 
@@ -1141,7 +1216,7 @@ function CreateStudio() {
 // "Create" after landing on /create?usecase=…) reset the seeded idea/mode state.
 function CreateStudioKeyed() {
   const params = useSearchParams();
-  const key = `${params.get("usecase") ?? ""}|${params.get("idea") ?? ""}|${params.get("mode") ?? ""}|${params.get("surprise") ?? ""}|${params.get("avatar") ?? ""}`;
+  const key = `${params.get("usecase") ?? ""}|${params.get("idea") ?? ""}|${params.get("mode") ?? ""}|${params.get("surprise") ?? ""}|${params.get("avatar") ?? ""}|${params.get("cast") ?? ""}`;
   return <CreateStudio key={key} />;
 }
 

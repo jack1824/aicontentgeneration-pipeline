@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import avatars, pipeline, postprocess
+from app import avatars, characters, pipeline, postprocess
 from app.assembly import ffmpeg
 from app.config import COMFY_POD_URLS, ELEVENLABS_API_KEY
 from app.providers import llm
@@ -163,6 +163,8 @@ class GenerateRequest(BaseModel):
     voice_id: str | None = None          # TTS voice override (default: ELEVENLABS_VOICE_ID)
     avatar_id: str | None = None         # saved avatar profile (Phase 3) — resolves to
                                          # avatar_image + voice_id unless overridden
+    character_ids: list[str] | None = None  # saved cast — anchors injected into every
+                                            # shot prompt; face/sheet/voice fill gaps
     sheet_image: str | None = None       # ingredients: reference sheet image path
     sheet_description: str | None = None  # ingredients: what the sheet's panels contain
     duo_turns: list[DuoTurn] | None = None  # duo: the conversation, alternating speakers
@@ -189,13 +191,22 @@ class PlanRequest(BaseModel):
     duration_s: int = Field(default=15, ge=5, le=60)
     # Titles the user rejected (Regenerate button) — the new batch avoids them.
     avoid: list[str] = Field(default_factory=list, max_length=12)
+    # Saved cast: the plan must reuse these characters' anchors VERBATIM.
+    cast_ids: list[str] = Field(default_factory=list, max_length=4)
 
 
 @app.post("/plan")
 def plan_endpoint(req: PlanRequest):
+    cast = []
+    for cid in req.cast_ids:
+        ch = characters.get_character(cid)
+        if ch is None:
+            raise HTTPException(404, f"unknown character_id {cid}")
+        cast.append({"name": ch["name"], "anchor": ch["anchor"]})
     try:
         return llm.plan(req.idea, language=req.language, ad_format=req.format,
-                        duration_s=req.duration_s, avoid=req.avoid or None)
+                        duration_s=req.duration_s, avoid=req.avoid or None,
+                        cast=cast or None)
     except llm.PlanError as e:
         raise HTTPException(502, str(e))
 
@@ -260,6 +271,22 @@ def generate_endpoint(req: GenerateRequest):
                 raise HTTPException(404, f"segment {i + 1}: unknown avatar_id {seg.avatar_id}")
             seg.image = seg.image or prof["reference_image"]
             seg.voice_id = seg.voice_id or prof["voice_id"]
+    # Cast: saved characters carry the consistency. Their anchors are injected
+    # into every shot prompt by the pipeline (verbatim repetition IS the same
+    # actor across cuts); face/sheet/voice only fill gaps, explicit values win.
+    cast_anchors: list[str] = []
+    for cid in req.character_ids or []:
+        ch = characters.get_character(cid)
+        if ch is None:
+            raise HTTPException(404, f"unknown character_id {cid}")
+        cast_anchors.append(ch["anchor"])
+        if ch["face_image"] and not req.avatar_image:
+            req.avatar_image = ch["face_image"]
+        if ch["voice_id"] and not req.voice_id:
+            req.voice_id = ch["voice_id"]
+        if req.mode == "ingredients" and ch["sheet_image"] and not req.sheet_image:
+            req.sheet_image = ch["sheet_image"]
+            req.sheet_description = req.sheet_description or ch["anchor"]
     # Fail-fast asset checks at REQUEST time — a typo'd path must cost an instant 404,
     # not a full render + TTS spend that dies at the assembly step.
     for label, p in (("music", req.music), ("avatar_image", req.avatar_image),
@@ -286,7 +313,9 @@ def generate_endpoint(req: GenerateRequest):
                 JOBS[job_id]["prompt_id"] = prompt_id
 
         try:
-            final = pipeline.generate(req.model_dump(), name=req.name or job_id,
+            payload = req.model_dump()
+            payload["cast_anchors"] = cast_anchors
+            final = pipeline.generate(payload, name=req.name or job_id,
                                       on_progress=on_progress, on_submit=on_submit)
             if req.postprocess:
                 on_progress("post", 95, "CodeFormer -> SeedVR2 -> RIFE")
@@ -902,6 +931,144 @@ def delete_avatar(avatar_id: str):
     if not avatars.delete_profile(avatar_id):
         raise HTTPException(404, f"unknown avatar_id {avatar_id}")
     return {"ok": True}
+
+
+# ---- Characters (the cast): anchor-first consistency across ads ----
+
+class CharacterCreateRequest(BaseModel):
+    """A saved character = a verbatim shot-prompt anchor (+ optional face/sheet/
+    voice). The anchor is pasted word-for-word into every shot it's cast in —
+    that repetition is what keeps the same actor across cuts and across ads."""
+    name: str = Field(min_length=1, max_length=48)
+    anchor: str = Field(min_length=10, max_length=400)
+    face_image: str | None = None   # server path under assets/ (upload or generated)
+    sheet_image: str | None = None
+    voice_id: str | None = None
+
+
+class CharacterUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=48)
+    anchor: str | None = Field(default=None, min_length=10, max_length=400)
+    face_image: str | None = None
+    sheet_image: str | None = None
+    voice_id: str | None = None
+
+
+def _check_asset_path(label: str, p: str | None) -> None:
+    if p is None:
+        return
+    path = Path(p)
+    if not path.exists():
+        raise HTTPException(404, f"{label} file not found: {p}")
+    if not path.resolve().is_relative_to(Path("assets").resolve()):
+        raise HTTPException(422, f"{label} must live under assets/")
+
+
+@app.get("/characters")
+def list_characters_endpoint():
+    """All saved characters, newest first (the Cast page grid)."""
+    return {"characters": characters.list_characters()}
+
+
+@app.post("/characters")
+def create_character_endpoint(req: CharacterCreateRequest):
+    _check_asset_path("face_image", req.face_image)
+    _check_asset_path("sheet_image", req.sheet_image)
+    return characters.create_character(
+        name=req.name, anchor=req.anchor.strip(), face_image=req.face_image,
+        sheet_image=req.sheet_image, voice_id=req.voice_id,
+    )
+
+
+@app.patch("/characters/{char_id}")
+def update_character_endpoint(char_id: str, req: CharacterUpdateRequest):
+    if characters.get_character(char_id) is None:
+        raise HTTPException(404, f"unknown character_id {char_id}")
+    _check_asset_path("face_image", req.face_image)
+    _check_asset_path("sheet_image", req.sheet_image)
+    return characters.update_character(
+        char_id, name=req.name, anchor=req.anchor and req.anchor.strip(),
+        face_image=req.face_image, sheet_image=req.sheet_image, voice_id=req.voice_id,
+    )
+
+
+@app.delete("/characters/{char_id}")
+def delete_character_endpoint(char_id: str):
+    if not characters.delete_character(char_id):
+        raise HTTPException(404, f"unknown character_id {char_id}")
+    return {"ok": True}
+
+
+@app.post("/characters/{char_id}/generate-face")
+def character_face_endpoint(char_id: str):
+    """Render the character's portrait from their anchor (1-frame Wan still)
+    and attach it to the profile — unlocks the avatar modes for this character."""
+    ch = characters.get_character(char_id)
+    if ch is None:
+        raise HTTPException(404, f"unknown character_id {char_id}")
+    job_id = _new_job("generate", f"face-{ch['name']}")
+
+    def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+        try:
+            _update(job_id, status="generating", progress=15,
+                    detail="rendering portrait still (1-frame Wan, 20 steps)")
+            seed = (int(uuid.uuid4().hex[:6], 16) % 900000) + 1
+            characters.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            png = pipeline.generate_face(
+                ch["anchor"], seed=seed, out_stem=f"char-{char_id}", on_submit=on_submit,
+            )
+            # generate_face writes to assets/avatars/ — move into the cast folder.
+            dest = characters.IMAGES_DIR / Path(png).name
+            Path(png).replace(dest)
+            characters.update_character(char_id, face_image=str(dest))
+            _update(job_id, status="done", progress=100, detail="", video_path=str(dest),
+                    image_url=f"/assets-files/characters/{dest.name}")
+        except JobCancelled:
+            pass
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.post("/characters/{char_id}/generate-sheet")
+def character_sheet_endpoint(char_id: str):
+    """Render the character's turnaround reference sheet (front close-up +
+    full-body views) from their anchor — unlocks Brand Lock identity carry."""
+    ch = characters.get_character(char_id)
+    if ch is None:
+        raise HTTPException(404, f"unknown character_id {char_id}")
+    job_id = _new_job("generate", f"sheet-{ch['name']}")
+
+    def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+        try:
+            _update(job_id, status="generating", progress=15,
+                    detail="rendering character sheet (1-frame Wan, 20 steps)")
+            seed = (int(uuid.uuid4().hex[:6], 16) % 900000) + 1
+            characters.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            png = pipeline.generate_sheet(
+                f"one character: {ch['anchor']}", seed=seed,
+                out_stem=f"char-{char_id}-sheet", on_submit=on_submit,
+            )
+            dest = characters.IMAGES_DIR / Path(png).name
+            Path(png).replace(dest)
+            characters.update_character(char_id, sheet_image=str(dest))
+            _update(job_id, status="done", progress=100, detail="", video_path=str(dest),
+                    image_url=f"/assets-files/characters/{dest.name}")
+        except JobCancelled:
+            pass
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
 
 
 @app.get("/stills")

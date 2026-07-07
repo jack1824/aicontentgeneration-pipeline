@@ -6,8 +6,233 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { api, AvatarProfile, Voice } from "@/lib/api";
+import { api, AvatarProfile, Character, Voice } from "@/lib/api";
 import VoicePicker from "@/components/VoicePicker";
+
+// ---- The cast: anchor-first characters (client ask: consistency across ads).
+// A character's anchor is pasted VERBATIM into every shot it's cast in; the
+// optional face unlocks avatar modes, the optional sheet unlocks Brand Lock.
+function CastSection({ voices }: { voices: Voice[] }) {
+  const [chars, setChars] = useState<Character[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [name, setName] = useState("");
+  const [anchor, setAnchor] = useState("");
+  const [voiceId, setVoiceId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // one pod render at a time per section: charId + which asset is cooking
+  const [gen, setGen] = useState<{ id: string; kind: "face" | "sheet" } | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+  }, []);
+
+  const load = () =>
+    api
+      .characters()
+      .then((d) => setChars(d.characters))
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoaded(true));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const create = async () => {
+    if (name.trim().length === 0 || anchor.trim().length < 10 || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.createCharacter({
+        name: name.trim(),
+        anchor: anchor.trim(),
+        ...(voiceId ? { voice_id: voiceId } : {}),
+      });
+      setName("");
+      setAnchor("");
+      setVoiceId("");
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (c: Character) => {
+    if (!window.confirm(`Delete character "${c.name}"? Rendered ads stay in the Library.`)) return;
+    try {
+      await api.deleteCharacter(c.id);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const generate = async (c: Character, kind: "face" | "sheet") => {
+    if (gen) return;
+    setGen({ id: c.id, kind });
+    setError(null);
+    try {
+      const { job_id } =
+        kind === "face"
+          ? await api.generateCharacterFace(c.id)
+          : await api.generateCharacterSheet(c.id);
+      pollRef.current = setInterval(async () => {
+        try {
+          const j = await api.job(job_id);
+          if (["done", "error", "cancelled"].includes(j.status)) {
+            if (pollRef.current) clearInterval(pollRef.current);
+            setGen(null);
+            if (j.status !== "done") setError(j.error ?? `${kind} generation failed`);
+            await load();
+          }
+        } catch (e) {
+          if (String(e).includes("404")) {
+            if (pollRef.current) clearInterval(pollRef.current);
+            setGen(null);
+            setError("render lost — the backend restarted. Try again.");
+          }
+        }
+      }, 5000);
+    } catch (e) {
+      setGen(null);
+      setError(String(e));
+    }
+  };
+
+  return (
+    <section className="flex flex-col gap-4 border-t border-white/5 pt-8">
+      <header>
+        <h2 className="font-display text-lg font-bold">The cast</h2>
+        <p className="mt-1 max-w-2xl text-sm text-text-secondary">
+          A character is a saved description — age, face, hair, exact clothing — pasted
+          word-for-word into every shot you cast them in. Same person in every ad, every
+          mode. Add a generated face for avatar takes, a sheet for Brand Lock.
+        </p>
+      </header>
+
+      {error && <p className="text-xs text-accent">{error}</p>}
+
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,20rem)_1fr]">
+        {/* create form */}
+        <div className="card-raised flex h-fit flex-col gap-4 rounded-card p-5">
+          <span className="label-cap">New character</span>
+          <div className="flex flex-col gap-1.5">
+            <span className="label-cap">Name</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={48}
+              placeholder="Dr. Ramesh, Meera didi, …"
+              className="input-well rounded-btn px-3 py-2 text-sm"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="label-cap">Anchor — how every shot describes them</span>
+            <textarea
+              value={anchor}
+              onChange={(e) => setAnchor(e.target.value)}
+              rows={3}
+              maxLength={400}
+              placeholder="~20 words: “an Indian dentist in his late thirties with short black hair and tired kind eyes, wearing a white doctor's coat over a light blue shirt”"
+              className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
+            />
+            <p className="text-[10px] text-text-muted">
+              this exact text repeats in every shot — that repetition IS the consistency
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="label-cap">Voice (optional)</span>
+            <VoicePicker voices={voices} value={voiceId} onChange={setVoiceId} />
+          </div>
+          <button
+            onClick={create}
+            disabled={name.trim().length === 0 || anchor.trim().length < 10 || busy}
+            className={`rounded-btn px-4 py-2.5 text-sm font-semibold text-white transition-opacity ${
+              name.trim() && anchor.trim().length >= 10 && !busy
+                ? "hero-glow"
+                : "cursor-not-allowed bg-surface-2 opacity-50"
+            }`}
+          >
+            {busy ? "saving…" : "Save character"}
+          </button>
+        </div>
+
+        {/* saved cast */}
+        <div className="flex flex-col gap-3">
+          <span className="label-cap">
+            Saved characters {loaded && chars.length > 0 && `· ${chars.length}`}
+          </span>
+          {loaded && chars.length === 0 && (
+            <div className="card-raised rounded-card p-6 text-center text-sm text-text-muted">
+              No characters yet. Save one on the left — then cast them in any ad with one
+              tap in Create.
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {chars.map((c) => (
+              <div key={c.id} className="card-raised group flex gap-3 rounded-card p-3">
+                <div className="relative size-20 shrink-0 overflow-hidden rounded-lg bg-surface-2">
+                  {c.image_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- backend-proxied preview
+                    <img src={api.assetUrl(c.image_url)} alt={c.name} className="size-full object-cover" />
+                  ) : (
+                    <div className="flex size-full items-center justify-center text-2xl text-text-muted">
+                      {c.name.slice(0, 1)}
+                    </div>
+                  )}
+                </div>
+                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="truncate text-sm font-semibold">{c.name}</p>
+                    <button
+                      onClick={() => remove(c)}
+                      aria-label={`Delete character ${c.name}`}
+                      className="rounded-btn px-1.5 text-xs text-text-muted opacity-0 transition-opacity hover:text-white group-hover:opacity-100"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <p className="line-clamp-2 text-[11px] leading-relaxed text-text-secondary">{c.anchor}</p>
+                  <div className="mt-auto flex flex-wrap gap-1.5">
+                    <button
+                      onClick={() => generate(c, "face")}
+                      disabled={!!gen}
+                      className="seg rounded-btn px-2 py-1 text-[10px] disabled:opacity-40"
+                    >
+                      {gen?.id === c.id && gen.kind === "face"
+                        ? "rendering…"
+                        : c.face_image
+                          ? "↻ face"
+                          : "✨ Face"}
+                    </button>
+                    <button
+                      onClick={() => generate(c, "sheet")}
+                      disabled={!!gen}
+                      className="seg rounded-btn px-2 py-1 text-[10px] disabled:opacity-40"
+                    >
+                      {gen?.id === c.id && gen.kind === "sheet"
+                        ? "rendering…"
+                        : c.sheet_image
+                          ? "↻ sheet"
+                          : "🧩 Sheet"}
+                    </button>
+                    <Link
+                      href={`/create?mode=cinematic&cast=${c.id}`}
+                      className="seg rounded-btn px-2 py-1 text-[10px] hover:text-text-primary"
+                    >
+                      🎬 Cast in ad
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 function VoiceChip({ voices, voiceId }: { voices: Voice[]; voiceId: string }) {
   const [playing, setPlaying] = useState(false);
@@ -373,6 +598,8 @@ export default function AvatarsPage() {
           </div>
         </section>
       </div>
+
+      <CastSection voices={voices} />
     </div>
   );
 }
