@@ -5,7 +5,7 @@ export type Shot = { prompt: string; negative_prompt?: string };
 
 // One timeline entry of a sequence job (the 60s mixed-pipeline ad).
 export type SequenceSegment = {
-  pipeline: "overlay" | "lipsync" | "product";
+  pipeline: "overlay" | "lipsync" | "product" | "cinematic";
   prompt: string;
   negative_prompt?: string;
   script?: string;

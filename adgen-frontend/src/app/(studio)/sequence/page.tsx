@@ -30,7 +30,8 @@ type SegmentDraft = {
 const SEGMENT_TYPES: { key: SegmentDraft["pipeline"]; label: string; time: string; hint: string }[] = [
   { key: "lipsync", label: "🗣 Avatar speaks", time: "~14s", hint: "hook / CTA — script drives the mouth" },
   { key: "product", label: "🧴 Product shot", time: "~5s", hint: "animates your product photo" },
-  { key: "overlay", label: "🎬 B-roll scene", time: "~5s", hint: "text-to-video lifestyle shot" },
+  { key: "cinematic", label: "🎥 B-roll · LTX", time: "~5s", hint: "cinematic shot with its own sound" },
+  { key: "overlay", label: "🎬 B-roll · Wan", time: "~5s", hint: "documentary-texture lifestyle shot" },
 ];
 
 const emptySegment = (pipeline: SegmentDraft["pipeline"]): SegmentDraft => ({

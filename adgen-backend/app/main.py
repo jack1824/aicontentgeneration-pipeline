@@ -137,7 +137,7 @@ class DuoTurn(BaseModel):
 
 class Segment(BaseModel):
     """One timeline entry of a sequence job (file 15's 60s mixed-pipeline ad)."""
-    pipeline: Literal["overlay", "lipsync", "product"]
+    pipeline: Literal["overlay", "lipsync", "product", "cinematic"]
     prompt: str
     negative_prompt: str | None = None
     script: str | None = None            # this segment's script slice (lipsync: required)

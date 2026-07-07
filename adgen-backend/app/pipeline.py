@@ -377,9 +377,11 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
     each with its own script slice, assembled into ONE video.
 
     Per segment:
-      - overlay : one t2v clip (~5s); optional script slice -> per-segment voiceover
-      - product : one i2v clip from segment `image`; optional script slice -> voiceover
-      - lipsync : S2V take (~14.4s, audio embedded); script + image REQUIRED
+      - overlay  : one Wan t2v clip (~5s); optional script slice -> per-segment voiceover
+      - cinematic: one LTX-2.3 clip (~5s @25fps, NATIVE audio); optional script slice
+                   -> voiceover ducks the native ambience (music lane = the clip itself)
+      - product  : one i2v clip from segment `image`; optional script slice -> voiceover
+      - lipsync  : S2V take (~14.4s, audio embedded); script + image REQUIRED
 
     All segments render at the job's width/height @16fps, then concat_reencode() joins
     the mixed sources (silent parts get a real silent track). Optional music bed last.
@@ -419,11 +421,18 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
 
     processed: list[str] = []
     n = len(segments)
+    prev_engine: str | None = None
     for i, seg in enumerate(segments):
         pct = 5 + int(80 * i / n)
         pipeline_kind = seg["pipeline"]
         report("generating", pct, f"segment {i + 1}/{n} ({pipeline_kind})")
         seg_stem = f"{name}-seg{i + 1}"
+        # Mixed engines on one GPU: evict the other family's weights at each
+        # switch (LTX 22B + Wan 14B don't fit side by side on the A40).
+        engine = "ltx" if pipeline_kind == "cinematic" else "wan"
+        if prev_engine is not None and engine != prev_engine:
+            comfy.free_memory(pod)
+        prev_engine = engine
 
         common: dict = {"seed": base_seed + i * 3}
         if seg.get("negative_prompt"):
@@ -461,6 +470,40 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
             # The segment clip stays in the Library — lock its lip-synced voice
             # just like the final, or /revoice could desync its mouth.
             Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
+        elif pipeline_kind == "cinematic":
+            # LTX-2.3 b-roll: ~5s @25fps WITH native audio. Renders half-size then
+            # 2x latent-upsamples, so the injected dims are the target // 2.
+            inputs = {
+                "prompt": seg["prompt"],
+                "seed": base_seed + i * 3,
+                "seed_refine": base_seed + 1000 + i,
+                "width": max(2, (req.get("width") or 1280) // 2),
+                "height": max(2, (req.get("height") or 720) // 2),
+                "filename_prefix": f"video/adgen_seq_{seg_stem}",
+            }
+            if seg.get("negative_prompt"):
+                inputs["negative_prompt"] = seg["negative_prompt"]
+            clip = comfy.comfy_generate(
+                pod, comfy.load_workflow("ltx2_av"), inputs, LTX2_MAPPING,
+                out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
+                on_submit=on_submit,
+            )
+            if seg.get("script"):
+                narration = synthesize_voice(
+                    seg["script"],
+                    voice_id=seg.get("voice_id") or req.get("voice_id"),
+                    language=req.get("language", "hi"),
+                    output_path=str(SEQ_AUDIO_DIR / f"{seg_stem}-narration.mp3"),
+                )
+                silent = clip
+                # The clip's own soundtrack becomes the ducked bed under the VO —
+                # same trick as cinematic mode's assembly.
+                clip = ffmpeg.replace_audio(
+                    clip, narration, music=clip, music_gain=0.25,
+                    out=str(SEQ_VIDEO_DIR / f"{seg_stem}-voiced.mp4"),
+                    on_warning=lambda w, i=i: report("generating", pct, f"segment {i + 1}: {w}"),
+                )
+                Path(silent).unlink(missing_ok=True)
         else:
             inputs = {"prompt": seg["prompt"], **common}
             if fast:
