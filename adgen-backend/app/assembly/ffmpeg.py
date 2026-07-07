@@ -404,7 +404,15 @@ def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
             f"pad={canon_w}:{canon_h}:(ow-iw)/2:(oh-ih)/2,fps={canon_fps:g},setsar=1[v{i}]"
         )
         a_src = f"[{null_index[i]}:a]" if i in null_index else f"[{i}:a]"
-        parts.append(f"{a_src}aresample=44100,aformat=channel_layouts=stereo[a{i}]")
+        # Pin every audio lane to its clip's VIDEO duration: concat joins the
+        # lanes independently, so an audio stream that runs short (LTX files
+        # are often ~1s shy) slides every later clip's sound early and leaves
+        # a silent hole before each cut (found via the end-card fade test).
+        d = max(probed[i]["duration"], 0.1)
+        parts.append(
+            f"{a_src}aresample=44100,aformat=channel_layouts=stereo,"
+            f"apad=whole_dur={d:.3f},atrim=duration={d:.3f}[a{i}]"
+        )
         lanes += [f"[v{i}]", f"[a{i}]"]
     fc = ";".join(parts) + f";{''.join(lanes)}concat=n={len(clips)}:v=1:a=1[v][a]"
 
