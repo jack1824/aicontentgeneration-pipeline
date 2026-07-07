@@ -307,6 +307,10 @@ def generate_endpoint(req: GenerateRequest):
             # updates: abort the worker at the next stage/clip boundary.
             if JOBS.get(job_id, {}).get("status") == "cancelled":
                 raise JobCancelled()
+            # ⚠-prefixed details are actionable warnings — persist them in the
+            # accumulating list so later progress updates can't erase them.
+            if detail.startswith("⚠"):
+                _warn(job_id, detail.lstrip("⚠ "))
             _update(job_id, status=status, progress=pct, detail=detail)
 
         def on_submit(prompt_id: str) -> None:

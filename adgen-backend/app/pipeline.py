@@ -453,6 +453,14 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                 language=req.get("language", "hi"),
                 output_path=str(SEQ_AUDIO_DIR / f"{seg_stem}-narration.mp3"),
             )
+            # The S2V take is FIXED (~14.4s): a script that underfills it leaves
+            # the speaker mouthing silence for the rest (protein-ad postmortem —
+            # Hinglish reads ~2x faster than pure Hindi, word counts mislead).
+            ndur = ffmpeg.probe(narration)["duration"]
+            if ndur < 10.5:
+                report("generating", pct,
+                       f"⚠ segment {i + 1}: script fills only {ndur:.0f}s of the ~14s "
+                       f"take — the speaker will fall silent; add ~{int((13 - ndur) * 2.9)} words")
             inputs = {
                 "prompt": seg["prompt"],
                 "ref_image": upload_once(seg["image"]),
@@ -1169,6 +1177,12 @@ def _generate_lipsync(req: dict, name: str, report, on_submit=None) -> str:
         language=req.get("language", "hi"),
         output_path=str(S2V_AUDIO_DIR / f"{name}-narration.mp3"),
     )
+    # Fixed ~14.4s take: an underfilled script = silent lip-flapping for the rest.
+    ndur = ffmpeg.probe(narration)["duration"]
+    if ndur < 10.5:
+        report("tts", 6,
+               f"⚠ script fills only {ndur:.0f}s of the ~14s take — the speaker "
+               f"will fall silent; add ~{int((13 - ndur) * 2.9)} words")
 
     # 2. UPLOAD narration + reference image to the pod's input dir
     report("uploading", 8, "narration + reference image -> pod")

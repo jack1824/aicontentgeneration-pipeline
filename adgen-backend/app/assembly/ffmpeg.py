@@ -112,6 +112,23 @@ def silence_map(path: str, noise_db: int = -45, min_s: float = 0.3) -> dict:
     for i, s in enumerate(starts):
         e = ends[i] if i < len(ends) else dur  # unclosed run -> EOF
         silences.append({"start": max(0.0, s), "end": min(max(0.0, e), dur)})
+    # An audio STREAM that simply ENDS before the video (S2V take with a short
+    # script) has no silent samples for silencedetect to find — treat the
+    # missing span as silence (protein-ad postmortem).
+    try:
+        sproc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=duration", "-of", "json", path],
+            capture_output=True, text=True,
+        )
+        adur = float(json.loads(sproc.stdout)["streams"][0].get("duration") or dur)
+    except (KeyError, IndexError, ValueError, json.JSONDecodeError):
+        adur = dur
+    if adur < dur - 0.25:
+        if silences and silences[-1]["end"] >= adur - 0.05:
+            silences[-1]["end"] = dur  # extend a trailing run to true EOF
+        else:
+            silences.append({"start": adur, "end": dur})
     return {"duration": dur, "silences": silences}
 
 
