@@ -428,8 +428,12 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
         report("generating", pct, f"segment {i + 1}/{n} ({pipeline_kind})")
         seg_stem = f"{name}-seg{i + 1}"
         # Mixed engines on one GPU: evict the other family's weights at each
-        # switch (LTX 22B + Wan 14B don't fit side by side on the A40).
-        engine = "ltx" if pipeline_kind == "cinematic" else "wan"
+        # switch (LTX 22B + Wan 14B don't fit side by side on the A40; the
+        # ingredients checkpoint also differs from cinematic's dev checkpoint).
+        if pipeline_kind == "cinematic":
+            engine = "ltx-ing" if seg.get("image") else "ltx-av"
+        else:
+            engine = "wan"
         if prev_engine is not None and engine != prev_engine:
             comfy.free_memory(pod)
         prev_engine = engine
@@ -471,20 +475,41 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
             # just like the final, or /revoice could desync its mouth.
             Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
         elif pipeline_kind == "cinematic":
-            # LTX-2.3 b-roll: ~5s @25fps WITH native audio. Renders half-size then
-            # 2x latent-upsamples, so the injected dims are the target // 2.
-            inputs = {
-                "prompt": seg["prompt"],
-                "seed": base_seed + i * 3,
-                "seed_refine": base_seed + 1000 + i,
-                "width": max(2, (req.get("width") or 1280) // 2),
-                "height": max(2, (req.get("height") or 720) // 2),
-                "filename_prefix": f"video/adgen_seq_{seg_stem}",
-            }
+            if seg.get("image"):
+                # Brand-locked b-roll: the segment's product/reference photo rides
+                # the Ingredients graph — the REAL product appears IN the scene,
+                # identity held (the model can't hallucinate a different jar).
+                sheet_name = upload_once(seg["image"])
+                desc = seg.get("image_description") or "the product in the reference photo"
+                w = req.get("width") or 768
+                h = req.get("height") or 448
+                inputs = {
+                    "prompt": f"Reference sheet: {desc}\n\nGenerated video: {seg['prompt']}",
+                    "sheet_image": sheet_name,
+                    "sheet_width": w, "sheet_height": h,
+                    "width": w, "height": h,
+                    "length": ING_FRAMES, "sheet_frames": ING_FRAMES,
+                    "audio_frames": ING_FRAMES,
+                    "seed": base_seed + i * 3,
+                    "filename_prefix": f"video/adgen_seq_{seg_stem}",
+                }
+                wf, mapping = comfy.load_workflow("ltx2_ingredients"), INGREDIENTS_MAPPING
+            else:
+                # LTX-2.3 b-roll: ~5s @25fps WITH native audio. Renders half-size
+                # then 2x latent-upsamples, so the injected dims are target // 2.
+                inputs = {
+                    "prompt": seg["prompt"],
+                    "seed": base_seed + i * 3,
+                    "seed_refine": base_seed + 1000 + i,
+                    "width": max(2, (req.get("width") or 1280) // 2),
+                    "height": max(2, (req.get("height") or 720) // 2),
+                    "filename_prefix": f"video/adgen_seq_{seg_stem}",
+                }
+                wf, mapping = comfy.load_workflow("ltx2_av"), LTX2_MAPPING
             if seg.get("negative_prompt"):
                 inputs["negative_prompt"] = seg["negative_prompt"]
             clip = comfy.comfy_generate(
-                pod, comfy.load_workflow("ltx2_av"), inputs, LTX2_MAPPING,
+                pod, wf, inputs, mapping,
                 out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
                 on_submit=on_submit,
             )

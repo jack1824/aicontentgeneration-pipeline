@@ -76,7 +76,7 @@ function StrokeIcon({ d, className = "size-5" }: { d: string; className?: string
 // patterns instead of guessing. Every entry shows box-by-box what to type:
 // positive, negative, narration, voice — and what the studio fills in for you.
 const STD_NEG =
-  "cartoon, 3D render, CGI, plastic skin, deformed face, extra fingers, readable text, subtitles, captions, watermark, jerky motion, blurry, low quality";
+  "cartoon, 3D render, CGI, plastic skin, deformed face, extra fingers, mismatched hands, swapped objects, morphing props, readable text, subtitles, captions, watermark, jerky motion, blurry, low quality";
 
 const PROMPTBOOK: {
   title: string;
@@ -219,6 +219,26 @@ const PROMPTBOOK: {
       { label: "Brand", text: "Social Adz" },
       { label: "Tagline", text: "Reach More. Grow More." },
       { label: "Offer / CTA", text: "Link mein jaao — Abhi" },
+    ],
+  },
+  {
+    title: "Props & hands — the mirror trap",
+    badge: "every mode with people",
+    trick:
+      "Video models mirror left and right mid-motion — name a side and the shaker jumps hands. Never write 'right hand'. One prop, one owner, one continuous action per shot. A recurring prop gets its own verbatim anchor, exactly like a character.",
+    boxes: [
+      {
+        label: "Wrong — invites the swap",
+        text: "He holds the shaker in his right hand and shakes it while gripping the bench with his left.",
+      },
+      {
+        label: "Right — one prop, one action, no sides",
+        text: "He raises the matte black shaker with a steel mixing ball, shakes it twice and drinks, exhaling hard. The same matte black shaker with a steel mixing ball stands on the bench in every later shot.",
+      },
+      {
+        label: "Negative prompt additions",
+        text: "mismatched hands, swapped objects, morphing props",
+      },
     ],
   },
   {

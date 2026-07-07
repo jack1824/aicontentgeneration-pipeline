@@ -10,6 +10,7 @@ export type SequenceSegment = {
   negative_prompt?: string;
   script?: string;
   image?: string;
+  image_description?: string; // cinematic+image: what the photo shows (Brand Lock b-roll)
   voice_id?: string; // per-segment voice (dialogue: speaker A vs B)
   avatar_id?: string; // saved avatar profile — backend fills image + voice_id
 };
@@ -168,12 +169,19 @@ export type PlanRequest = {
 
 export type PlanApproach = {
   title: string;
-  pipeline: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "multitalk";
+  pipeline: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "sequence" | "multitalk";
   available: boolean;
   audio_strategy: string;
   why: string;
   narration_script: string;
   shots: Shot[];
+  // sequence proposals: the mixed timeline (each segment carries its script slice)
+  segments?: {
+    pipeline: "overlay" | "cinematic" | "product" | "lipsync";
+    prompt: string;
+    negative_prompt?: string;
+    script?: string;
+  }[];
   needs_from_user: string[];
 };
 

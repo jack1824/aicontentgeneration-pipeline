@@ -46,6 +46,10 @@ For each approach pick ONE pipeline:
               with stronger identity stability. Script should fill ~14-15 seconds
               (~45 words). Prefer it over lipsync when the script needs the extra
               room or the take must stay rock-steady. BUILT.
+- sequence  : a MIXED TIMELINE of 2-5 segments, each on its own pipeline — the
+              classic full-ad shape: cinematic/overlay hook -> product shot ->
+              lipsync avatar CTA. BUILT. Prefer it when the idea needs BOTH the
+              product's real photo AND a human seller (most product ads do).
 - multitalk : 2+ people conversation. NOT BUILT YET (longcat covers multi-speaker later).
 
 Rules:
@@ -73,6 +77,11 @@ Rules:
     an empty line in the appointment diary", "her thumb taps the phone three
     deliberate times" — never a summary like "he looks worried". Motion is
     mandatory: a motionless prompt produces a boring frozen shot.
+  * PROPS & HANDS: video models mirror left/right — NEVER name a side ("right
+    hand"). One prop = ONE owner = ONE continuous action per shot ("he raises
+    the shaker and drinks" — never grip-with-one-hand-while-shaking-the-other).
+    A prop that recurs across shots gets its own short verbatim anchor, pasted
+    like a character anchor ("the matte black shaker with a steel mixing ball").
   * CAMERA: exactly ONE move, emotionally motivated ("slow creeping zoom toward his
     still face", "camera rising from his chest to his face as he begins to smile").
   * LIGHT/COLOR carries the EMOTION — never name a feeling, grade it: sadness =
@@ -104,10 +113,10 @@ Rules:
 - Every shot's negative_prompt starts from this canonical block (keep it IDENTICAL across
   shots for continuity), then append shot-specific negatives if needed:
   "cartoon, anime, CGI, 3D render, plastic skin, waxy skin, doll face, deformed hands, bad
-  anatomy, extra fingers, extra limbs, cloned faces, identity drift, face morphing, robotic
-  movement, synchronized movement, frozen expressions, jerky motion, flickering, temporal
-  inconsistency, unstable camera, oversaturated colors, harsh shadows, watermark, logo,
-  subtitles, blurry, low quality"
+  anatomy, extra fingers, extra limbs, mismatched hands, swapped objects, morphing props,
+  cloned faces, identity drift, face morphing, robotic movement, synchronized movement,
+  frozen expressions, jerky motion, flickering, temporal inconsistency, unstable camera,
+  oversaturated colors, harsh shadows, watermark, logo, subtitles, blurry, low quality"
 - product REQUIRES a product photo and lipsync REQUIRES a reference face image. Never assume
   the user has provided one — always list the required asset in needs_from_user.
 - lipsync needs no shot list (one continuous take) — give ONE scene/action prompt plus a
@@ -117,16 +126,36 @@ Rules:
   aloud NATURALLY: flowing spoken sentences a person would actually say — never choppy
   fragment lists or colon constructions ("X: luxury and tradition."), which sound robotic
   when synthesized.
+- SEQUENCE proposals return "segments" INSTEAD of shots (set shots to [] and
+  narration_script to "" — each segment carries its own script slice). 2-5 segments,
+  each {pipeline, prompt, negative_prompt, script}. A segment's pipeline MUST be
+  exactly one of overlay|cinematic|product|lipsync — longcat is NOT a valid segment
+  type (the ~14s lipsync take IS the long closer). Hindi speech runs ~1.5 words/sec
+  (HALF of English) — budget Hindi scripts accordingly:
+  * cinematic / overlay segment (~5s): full director-formula prompt (cinematic gets
+    the "The audio is..." closer; overlay is silent Wan b-roll). Script slice
+    budget: <= 8 words Hindi / 12 English — the voice must fit its 5s window.
+  * product segment (~5s): camera/light-only prompt around the photographed product;
+    ALWAYS list the product photo in needs_from_user. Same script budget.
+  * lipsync segment (~14s): ONE continuous scene prompt (no cuts); its script is the
+    SPOKEN pitch. HARD LIMIT — count the words before answering: at most 20 words in
+    Hindi / 38 in English. A longer script gets CUT OFF mid-sentence in the render.
+    List the face image (or a saved avatar) in needs_from_user.
+  * Order segments as story beats (hook -> product -> close) and keep the color arc
+    across them; the segment scripts together read as ONE continuous ad narration.
 - The user supplies final creative control — your proposals are STARTING POINTS they will edit.
 
 Respond with STRICT JSON only (no markdown fences):
 {"approaches": [{
-  "title": str, "pipeline": "overlay|lipsync|product|cinematic|longcat|multitalk",
+  "title": str, "pipeline": "overlay|lipsync|product|cinematic|longcat|sequence|multitalk",
   "available": bool, "audio_strategy": str, "why": str,
   "narration_script": str,
   "shots": [{"prompt": str, "negative_prompt": str}],
+  "segments": [{"pipeline": "overlay|cinematic|product|lipsync", "prompt": str,
+                "negative_prompt": str, "script": str}],
   "needs_from_user": [str]
 }]}
+("segments" only for sequence proposals; otherwise omit it or use [].)
 """
 
 

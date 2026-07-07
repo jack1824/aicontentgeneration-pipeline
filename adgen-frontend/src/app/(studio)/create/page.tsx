@@ -500,6 +500,36 @@ function CreateStudio() {
   }, [jobId]);
 
   const adopt = (a: PlanApproach) => {
+    if (a.pipeline === "sequence" && a.segments?.length) {
+      // Mixed-timeline proposal: hand the segments to the Sequence page (its
+      // sessionStorage keys) and go there — Create's single-mode editor can't
+      // hold a timeline.
+      try {
+        sessionStorage.setItem(
+          "adgen-seq-segments",
+          JSON.stringify(
+            a.segments.map((s) => ({
+              // Gemini sometimes drifts to non-segment pipelines (longcat) —
+              // coerce talking-head types to lipsync, anything else to b-roll.
+              pipeline: ["overlay", "cinematic", "product", "lipsync"].includes(s.pipeline)
+                ? s.pipeline
+                : (s.pipeline as string) === "longcat"
+                  ? "lipsync"
+                  : "cinematic",
+              prompt: s.prompt ?? "",
+              negative_prompt: s.negative_prompt ?? "",
+              script: s.script ?? "",
+              image: null,
+            })),
+          ),
+        );
+        sessionStorage.setItem("adgen-seq-lang", JSON.stringify(language));
+      } catch {
+        /* storage blocked — the Sequence page just starts empty */
+      }
+      window.location.href = "/sequence";
+      return;
+    }
     if (a.pipeline === "product" || a.pipeline === "lipsync" || a.pipeline === "overlay" || a.pipeline === "cinematic" || a.pipeline === "longcat") {
       const targetMode: Mode = a.pipeline;
       // Honor the planner's engine: overlay plans carry Wan-tuned prompts (no

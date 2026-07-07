@@ -142,6 +142,9 @@ class Segment(BaseModel):
     negative_prompt: str | None = None
     script: str | None = None            # this segment's script slice (lipsync: required)
     image: str | None = None             # product photo / reference face for this segment
+                                         # (cinematic + image = brand-locked b-roll:
+                                         #  the real product appears IN the scene)
+    image_description: str | None = None  # cinematic+image: what the photo shows
     voice_id: str | None = None          # per-segment voice (dialogue ads: A vs B);
                                          # falls back to the job-level voice_id
     avatar_id: str | None = None         # saved avatar profile — fills image + voice_id

@@ -25,6 +25,7 @@ type SegmentDraft = {
   negative_prompt: string;
   script: string;
   image: Uploaded | null;
+  image_description?: string; // cinematic+image: what the photo shows (Brand Lock b-roll)
 };
 
 const SEGMENT_TYPES: { key: SegmentDraft["pipeline"]; label: string; time: string; hint: string }[] = [
@@ -166,6 +167,9 @@ export default function SequencePage() {
           ...(s.negative_prompt.trim() ? { negative_prompt: s.negative_prompt.trim() } : {}),
           ...(s.script.trim() ? { script: s.script.trim() } : {}),
           ...(s.image ? { image: s.image.path } : {}),
+          ...(s.pipeline === "cinematic" && s.image && s.image_description?.trim()
+            ? { image_description: s.image_description.trim() }
+            : {}),
         })),
         language,
         quality: p.quality,
@@ -251,8 +255,10 @@ export default function SequencePage() {
                 className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
               />
               {s.script.trim() && (() => {
-                // ~3 words/second budget; slices longer than the segment get cut off.
-                const est = Math.ceil(s.script.trim().split(/\s+/).length / 3);
+                // Speech-rate budget: Hindi runs ~1.5 words/sec (measured on the
+                // sa01 pilot), English ~3 — slices longer than the window get cut.
+                const wps = language === "hi" ? 1.5 : 3;
+                const est = Math.ceil(s.script.trim().split(/\s+/).length / wps);
                 const budget = s.pipeline === "lipsync" ? 14 : 5;
                 const over = est > budget;
                 return (
@@ -264,11 +270,25 @@ export default function SequencePage() {
               })()}
               {s.pipeline !== "overlay" && (
                 <Dropzone
-                  label={s.pipeline === "lipsync" ? "Face image · required" : "Product photo · required"}
+                  label={
+                    s.pipeline === "lipsync"
+                      ? "Face image · required"
+                      : s.pipeline === "cinematic"
+                        ? "Product photo · optional (locks the REAL product into the scene)"
+                        : "Product photo · required"
+                  }
                   accept="image/png,image/jpeg,image/webp"
                   kind="image"
                   value={s.image}
                   onChange={(v) => patch(i, { image: v })}
+                />
+              )}
+              {s.pipeline === "cinematic" && s.image && (
+                <input
+                  value={s.image_description ?? ""}
+                  onChange={(e) => patch(i, { image_description: e.target.value })}
+                  placeholder="What the photo shows — e.g. “a black whey protein jar with a red band and gold lettering”"
+                  className="input-well w-full rounded-btn p-2.5 text-xs placeholder:text-text-muted"
                 />
               )}
             </div>

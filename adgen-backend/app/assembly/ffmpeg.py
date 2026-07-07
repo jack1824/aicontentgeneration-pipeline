@@ -504,12 +504,17 @@ def end_card(
         try:
             concat_reencode([video, card], out=joined)
             # The card's lane is pure silence — without a fade the soundtrack
-            # stops DEAD at the cut (client: "no voice" frames). Fade the mix
-            # out over the last 0.7s of the video so it lands on the card softly.
-            vdur = info["duration"]
-            fade_st = max(0.0, vdur - 0.7)
+            # stops DEAD at the cut (client: "no voice" frames). The fade is
+            # anchored to END exactly at the last audible moment (review catch:
+            # a fixed vdur-0.7 fade ate the final spoken word when speech ran
+            # right up to the cut) — it only shapes the natural decay, never
+            # earlier content, and a video with a silent tail gets the same
+            # gentle landing at its own last sound.
+            audio_end = detect_audio_end(video) if info["has_audio"] else 0.0
+            fade_d = 0.35
+            fade_st = max(0.0, audio_end - fade_d)
             _run(["ffmpeg", "-y", "-i", joined,
-                  "-af", f"afade=t=out:st={fade_st:.3f}:d=0.7",
+                  "-af", f"afade=t=out:st={fade_st:.3f}:d={fade_d:.2f}",
                   "-c:v", "copy", "-c:a", "aac", out])
             return out
         finally:
