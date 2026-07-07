@@ -67,7 +67,7 @@ def _new_job(kind: str, name: str | None = None) -> str:
     """Register a job with the metadata the queue view needs."""
     job_id = uuid.uuid4().hex[:12]
     JOBS[job_id] = {"status": "queued", "progress": 0, "detail": "",
-                    "video_path": None, "error": None,
+                    "video_path": None, "error": None, "warnings": [],
                     "kind": kind, "name": name, "created": time.time()}
     return job_id
 
@@ -78,6 +78,35 @@ def _update(job_id: str, **fields) -> None:
     job = JOBS.get(job_id)
     if job and job["status"] != "cancelled":
         job.update(**fields)
+
+
+def _warn(job_id: str, msg: str) -> None:
+    """Append to the job's warnings list — unlike `detail`, warnings accumulate,
+    so a later progress update can't silently erase a 'this cut has a problem'."""
+    job = JOBS.get(job_id)
+    if job and job["status"] != "cancelled":
+        job.setdefault("warnings", []).append(msg)
+
+
+def _attach_sync(job_id: str, video_path: str, ok_tail_s: float = 1.0) -> None:
+    """Post-assembly ground truth: silence-analyze the final and flag anything a
+    client would hear as 'no voice' (mid-video gaps, long silent tails). Stores
+    the full report on the job as `sync`. Analysis must never fail the render.
+    ok_tail_s: tail silence that's by design (an end card's read time) isn't flagged."""
+    try:
+        rep = ffmpeg.sync_report(video_path)
+    except Exception:
+        return
+    job = JOBS.get(job_id)
+    if job is not None:
+        job["sync"] = rep
+    if rep.get("silent"):
+        _warn(job_id, "no audible audio anywhere in the final")
+        return
+    for g in rep.get("gaps", []):
+        _warn(job_id, f"silent gap {g['start']}–{g['end']}s ({g['len']}s)")
+    if rep.get("tail", 0) > ok_tail_s:
+        _warn(job_id, f"video runs {rep['tail']}s past the last sound — Library → ✂ Fix timing")
 
 
 def _voice_locked(path: Path) -> bool:
@@ -275,6 +304,7 @@ def generate_endpoint(req: GenerateRequest):
                     source_fps=25.0 if req.mode in ("cinematic", "ingredients") else 16.0,
                     on_submit=on_submit,
                 )
+            _attach_sync(job_id, final)
             _update(job_id, status="done", progress=100, detail="", video_path=final)
         except JobCancelled:
             pass  # job already shows 'cancelled'; nothing to report
@@ -460,7 +490,8 @@ def revoice_endpoint(req: RevoiceRequest):
                 out = src.with_name(f"{src.stem}-revoiced{k}.mp4")
                 k += 1
             final = ffmpeg.replace_audio(str(src), narration, music=req.music, out=str(out),
-                                         on_warning=lambda w: _update(job_id, detail=w))
+                                         on_warning=lambda w: _warn(job_id, w))
+            _attach_sync(job_id, final)
             _update(job_id, status="done", progress=100, video_path=final)
         except Exception as e:
             _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
@@ -563,12 +594,30 @@ def endcard_endpoint(req: EndCardRequest):
             sidecar = src.with_suffix(".meta.json")
             if sidecar.exists():  # a carded avatar stays voice-locked
                 Path(final).with_suffix(".meta.json").write_text(sidecar.read_text())
+            # The card's silent read-time is by design — don't flag it as dead air.
+            _attach_sync(job_id, final, ok_tail_s=req.seconds + 1.0)
             _update(job_id, status="done", progress=100, detail="", video_path=final)
         except Exception as e:
             _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
 
     threading.Thread(target=run, daemon=True).start()
     return {"job_id": job_id}
+
+
+class SyncReportRequest(BaseModel):
+    """Where does the sound live in this video? Client-facing gap analysis —
+    lead-in, mid-video silences, dead tail — without rendering anything."""
+    video_path: str
+
+
+@app.post("/sync-report")
+def sync_report_endpoint(req: SyncReportRequest):
+    src = Path(req.video_path)
+    if not src.exists():
+        raise HTTPException(404, f"video not found: {req.video_path}")
+    if not _under_outputs(src):
+        raise HTTPException(422, "only videos under outputs/ can be analyzed")
+    return ffmpeg.sync_report(str(src))
 
 
 class ReassembleRequest(BaseModel):
@@ -629,6 +678,7 @@ def reassemble_endpoint(req: ReassembleRequest):
                     joined, narration, music=req.music, out=final_path,
                     narration_delay_ms=req.narration_delay_ms,
                     narration_gain=req.narration_gain, music_gain=req.music_gain,
+                    on_warning=lambda w: _warn(job_id, w),
                 )
                 Path(joined).unlink(missing_ok=True)
             elif req.music:
@@ -643,6 +693,7 @@ def reassemble_endpoint(req: ReassembleRequest):
                 Path(final).with_suffix(".meta.json").write_text(
                     json.dumps({"voice_lock": True})
                 )
+            _attach_sync(job_id, final)
             _update(job_id, status="done", progress=100, detail="", video_path=final)
         except Exception as e:
             _update(job_id, status="error", error=f"{type(e).__name__}: {e}")

@@ -61,6 +61,20 @@ export type Job = {
   name?: string | null;
   queue_position?: number;
   image_url?: string | null; // face-gen jobs: preview URL of the rendered still
+  warnings?: string[]; // accumulating assembly warnings (gaps, tails, overruns)
+  sync?: SyncReport; // auto silence analysis of the finished video
+};
+
+// Where the sound lives in a video: audible span, silent lead-in/tail, and any
+// mid-video gaps a client would hear as "no voice".
+export type SyncReport = {
+  duration: number;
+  voice_start: number;
+  voice_end: number;
+  lead_in: number;
+  tail: number;
+  gaps: { start: number; end: number; len: number }[];
+  silent: boolean;
 };
 
 export type QueueItem = {
@@ -269,6 +283,12 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
+    }).then(jsonOrThrow),
+  syncReport: (video_path: string): Promise<SyncReport> =>
+    fetch(`${BASE}/sync-report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video_path }),
     }).then(jsonOrThrow),
   endCard: (req: EndCardRequest): Promise<{ job_id: string }> =>
     fetch(`${BASE}/endcard`, {

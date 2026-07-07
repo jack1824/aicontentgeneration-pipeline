@@ -27,11 +27,13 @@ MUSIC_DUCK_VOLUME = 0.15
 # Audio-video fit: fixed-length video + variable-length narration never match by luck.
 # Short narration -> trim the video to end a beat after the voice (kills the dead tail).
 # Long narration -> speed it up imperceptibly (<=12%) so it fits instead of being cut.
-# The trim is CAPPED: it exists to remove a small dead tail, never to shorten the ad —
-# a 10s render with a 4s script keeps its full 10s of visuals (music/ambient runway).
+# The trim is CAPPED so a fit can't gut an ad's visuals — but the cap is generous
+# (client feedback 2026-07-07: silent tails read as bugs, so dead air loses to
+# shorter cuts by default; tails past the cap stay in and get flagged in the
+# sync report instead).
 FIT_TAIL_S = 0.45
 FIT_MAX_TEMPO = 1.12
-FIT_MAX_TRIM_S = 1.5
+FIT_MAX_TRIM_S = 4.0
 
 
 def _fit_narration(
@@ -72,6 +74,9 @@ def _narr_filter(delay_ms: int, gain: float = 1.0, tempo: float | None = None) -
     the effective start offset stays what the caller asked for.
     """
     parts = []
+    # Soft 120ms entry on the raw narration BEFORE any delay/tempo — the VO no
+    # longer pops in abruptly after the silent lead-in (client: "no voice" frames).
+    parts.append("afade=t=in:st=0:d=0.12")
     eff_delay = delay_ms
     has_tempo = bool(tempo and tempo > 1.001)
     if has_tempo:
@@ -85,24 +90,72 @@ def _narr_filter(delay_ms: int, gain: float = 1.0, tempo: float | None = None) -
     return "[1:a]" + ",".join(parts) + "[narr]"
 
 
-def detect_audio_end(path: str) -> float:
-    """Last audible moment in a file: trailing-silence start via silencedetect,
-    falling back to the full duration when there is no trailing silence."""
+def silence_map(path: str, noise_db: int = -45, min_s: float = 0.3) -> dict:
+    """Every silent stretch in a file's audio, via silencedetect.
+
+    Returns {"duration": s, "silences": [{"start", "end"}, ...]} in order; an
+    unclosed trailing interval is closed at the file's end. A file with no audio
+    stream at all reports one interval covering its whole duration.
+    """
+    info = probe(path)
+    dur = info["duration"]
+    if not info["has_audio"]:
+        return {"duration": dur, "silences": [{"start": 0.0, "end": dur}]}
     proc = subprocess.run(
-        ["ffmpeg", "-i", path, "-af", "silencedetect=noise=-45dB:d=0.3", "-f", "null", "-"],
+        ["ffmpeg", "-i", path, "-af",
+         f"silencedetect=noise={noise_db}dB:d={min_s}", "-f", "null", "-"],
         capture_output=True, text=True,
     )
-    dur = probe(path)["duration"]
-    starts = [float(x) for x in re.findall(r"silence_start: ([0-9.]+)", proc.stderr)]
-    ends = [float(x) for x in re.findall(r"silence_end: ([0-9.]+)", proc.stderr)]
-    if starts:
-        last_start = starts[-1]
-        # Trailing silence = the last interval is unclosed OR its end sits at EOF
-        # (silencedetect closes a run-to-end interval AT the file's end).
-        matching_end = next((e for e in reversed(ends) if e > last_start), None)
-        if matching_end is None or matching_end >= dur - 0.25:
-            return last_start
-    return dur
+    starts = [float(x) for x in re.findall(r"silence_start: (-?[0-9.]+)", proc.stderr)]
+    ends = [float(x) for x in re.findall(r"silence_end: (-?[0-9.]+)", proc.stderr)]
+    silences = []
+    for i, s in enumerate(starts):
+        e = ends[i] if i < len(ends) else dur  # unclosed run -> EOF
+        silences.append({"start": max(0.0, s), "end": min(max(0.0, e), dur)})
+    return {"duration": dur, "silences": silences}
+
+
+def detect_audio_end(path: str) -> float:
+    """Last audible moment in a file: trailing-silence start via silence_map,
+    falling back to the full duration when there is no trailing silence."""
+    m = silence_map(path)
+    if m["silences"]:
+        last = m["silences"][-1]
+        # Trailing silence = the last interval runs to (within 0.25s of) EOF.
+        if last["end"] >= m["duration"] - 0.25:
+            return last["start"]
+    return m["duration"]
+
+
+def sync_report(path: str, gap_min_s: float = 0.8) -> dict:
+    """Where the sound lives — the client-facing 'why is this part quiet' answer.
+
+    lead_in: silence before the first sound; tail: silence after the last sound;
+    gaps: mid-video silences >= gap_min_s. voice_start/voice_end bound the audible
+    span. `silent` flags a file with no audible audio at all.
+    """
+    m = silence_map(path)
+    dur, sil = m["duration"], m["silences"]
+    lead_in = tail = 0.0
+    gaps = []
+    for iv in sil:
+        s, e = iv["start"], iv["end"]
+        if s <= 0.05:
+            lead_in = e
+        if e >= dur - 0.25 and s > 0.05:
+            tail = dur - s
+        elif s > 0.05 and e < dur - 0.25 and e - s >= gap_min_s:
+            gaps.append({"start": round(s, 2), "end": round(e, 2), "len": round(e - s, 2)})
+    silent = bool(sil) and lead_in >= dur - 0.25
+    return {
+        "duration": round(dur, 2),
+        "voice_start": round(lead_in, 2),
+        "voice_end": round(dur - tail, 2),
+        "lead_in": round(lead_in, 2),
+        "tail": round(tail, 2),
+        "gaps": gaps,
+        "silent": silent,
+    }
 
 
 def trim_end(video: str, end_s: float, out: str) -> str:
@@ -447,10 +500,21 @@ def end_card(
         _run(["ffmpeg", "-y", "-f", "lavfi",
               "-i", f"color=c={END_CARD_BG}:s={w}x{h}:d={seconds:.2f}:r={fps:.3f}",
               "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", card])
+        joined = _stitched_path(out).replace(".stitched.", ".joined-card.")
         try:
-            return concat_reencode([video, card], out=out)
+            concat_reencode([video, card], out=joined)
+            # The card's lane is pure silence — without a fade the soundtrack
+            # stops DEAD at the cut (client: "no voice" frames). Fade the mix
+            # out over the last 0.7s of the video so it lands on the card softly.
+            vdur = info["duration"]
+            fade_st = max(0.0, vdur - 0.7)
+            _run(["ffmpeg", "-y", "-i", joined,
+                  "-af", f"afade=t=out:st={fade_st:.3f}:d=0.7",
+                  "-c:v", "copy", "-c:a", "aac", out])
+            return out
         finally:
             Path(card).unlink(missing_ok=True)
+            Path(joined).unlink(missing_ok=True)
     finally:
         for t in tmp_files:
             Path(t).unlink(missing_ok=True)

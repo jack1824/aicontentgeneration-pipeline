@@ -5,7 +5,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, Job, OutputItem, PIPELINE_LABELS, StillItem, Voice } from "@/lib/api";
+import { api, Job, OutputItem, PIPELINE_LABELS, StillItem, SyncReport, Voice } from "@/lib/api";
 import VideoCard from "@/components/VideoCard";
 import VoicePicker from "@/components/VoicePicker";
 
@@ -144,6 +144,21 @@ function Lightbox({
   };
 
   const redubbing = rdJob && !["done", "error"].includes(rdJob.status);
+
+  // ---- Sync check (silence analysis: lead-in, gaps, dead tail) ----
+  const [sync, setSync] = useState<SyncReport | null>(null);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const runSync = async () => {
+    setSyncBusy(true);
+    setError(null);
+    try {
+      setSync(await api.syncReport(item.path));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSyncBusy(false);
+    }
+  };
 
   // ---- Fix timing (trim dead tail / manual end cut) ----
   const [tailS, setTailS] = useState(0.45);
@@ -329,6 +344,49 @@ function Lightbox({
             )}
           </div>
         )}
+
+        {/* ---- Sync check: where the sound lives — gaps a client would hear ---- */}
+        <div className="flex flex-col gap-2 rounded-btn bg-surface-2/50 p-3">
+          <div className="flex items-center justify-between">
+            <span className="label-cap">🔎 Sync check</span>
+            <button
+              onClick={runSync}
+              disabled={syncBusy}
+              className="seg rounded-btn px-3 py-1.5 text-[11px] disabled:opacity-40"
+            >
+              {syncBusy ? "Listening…" : sync ? "Re-check" : "Check audio gaps"}
+            </button>
+          </div>
+          {sync &&
+            (sync.silent ? (
+              <p className="text-xs text-accent">
+                No audible audio anywhere in this video.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-1 text-xs text-text-secondary">
+                <p>
+                  Voice/sound spans <b className="text-text-primary">{sync.voice_start}s – {sync.voice_end}s</b> of{" "}
+                  {sync.duration}s.
+                </p>
+                {sync.gaps.length > 0 ? (
+                  sync.gaps.map((g) => (
+                    <p key={g.start} className="text-accent">
+                      ⚠ silent gap {g.start}s – {g.end}s ({g.len}s)
+                    </p>
+                  ))
+                ) : (
+                  <p>No mid-video gaps.</p>
+                )}
+                {sync.tail > 1.0 ? (
+                  <p className="text-accent">
+                    ⚠ {sync.tail}s of silence at the end — use ✂ Fix timing below
+                  </p>
+                ) : (
+                  <p>Ends {sync.tail}s after the last sound — clean.</p>
+                )}
+              </div>
+            ))}
+        </div>
 
         {/* ---- Fix timing: end the video with its audio, not after it ---- */}
         <div className="flex flex-col gap-2 rounded-btn bg-surface-2/50 p-3">
