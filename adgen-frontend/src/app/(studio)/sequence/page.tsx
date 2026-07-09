@@ -53,6 +53,8 @@ export default function SequencePage() {
   const [voiceId, setVoiceId] = usePersistentState("adgen-seq-voice", "");
   const [music, setMusic] = usePersistentState<Uploaded | null>("adgen-seq-music", null);
   const [preset, setPreset] = usePersistentState<PresetKey>("adgen-seq-preset", "preview");
+  // Shot QC gate override; null = follow the preset (quality→on, fast→off).
+  const [qcGate, setQcGate] = usePersistentState<boolean | null>("adgen-seq-qc", null);
   const [aspect, setAspect] = usePersistentState<AspectKey>("adgen-seq-aspect", "9:16");
   const [name, setName] = usePersistentState("adgen-seq-name", "");
 
@@ -175,6 +177,7 @@ export default function SequencePage() {
         quality: p.quality,
         ...("steps" in p ? { steps: p.steps } : {}),
         postprocess: p.postprocess,
+        ...(qcGate !== null ? { qc: qcGate } : {}),
         ...ASPECTS[aspect],
         ...(name ? { name } : {}),
         ...(voiceId ? { voice_id: voiceId } : {}),
@@ -350,6 +353,18 @@ export default function SequencePage() {
                 </button>
               ))}
             </div>
+            {/* Shot QC gate — non-lipsync segments are vision-reviewed and bad
+                takes re-roll automatically. ON by default for every preset
+                (fast must not degrade — user rule). */}
+            <label className="flex items-center gap-2 text-xs text-text-muted cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={qcGate ?? true}
+                onChange={(e) => setQcGate(e.target.checked)}
+                className="accent-(--accent-grad-from)"
+              />
+              🛡 Shot QC — auto re-roll bad takes
+            </label>
           </div>
 
           <div className="flex flex-col gap-2">

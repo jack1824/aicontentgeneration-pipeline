@@ -65,6 +65,7 @@ export type GenerateRequest = {
   sheet_description?: string; // ingredients: what the sheet's panels contain
   source_video?: string; // redub: existing render whose lips to re-render
   postprocess?: boolean;
+  qc?: boolean; // shot QC gate (vision review + auto re-roll); default: on for quality, off for fast
 };
 
 export type Job = {

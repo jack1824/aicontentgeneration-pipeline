@@ -83,7 +83,11 @@ Rules:
     A prop that recurs across shots gets its own short verbatim anchor, pasted
     like a character anchor ("the matte black shaker with a steel mixing ball").
   * CAMERA: exactly ONE move, emotionally motivated ("slow creeping zoom toward his
-    still face", "camera rising from his chest to his face as he begins to smile").
+    still face", "camera rising from his chest to his face as he begins to smile") —
+    AND always name the END FRAMING where the move settles ("...settling into a
+    medium shot, holding chest-up"). An unbounded push-in keeps pushing for the
+    whole clip and collapses into an ugly extreme close-up by the last second;
+    never end a shot tighter than a close-up unless the beat demands it.
   * LIGHT/COLOR carries the EMOTION — never name a feeling, grade it: sadness =
     "desaturated cold blue-grey tones, heavy silence"; dread = "lit from below, cold
     shadows"; hope = "sudden warm golden light floods the room"; success = "warm
@@ -109,13 +113,21 @@ Rules:
   spoken line inside the shot prompt in quotes — 'he says warmly in Hindi: "..."' —
   add "His lips move naturally with the words", keep lines to ~8-10 words per shot,
   and leave that ad's narration_script empty. Two characters may exchange short
-  lines in ONE shot; each gets a distinct voice.
+  lines in ONE shot; each gets a distinct voice. WRITE spoken Hindi lines in
+  DEVANAGARI script (ये ज़मीन...) — Latin-script Hinglish inside quotes often
+  renders a silent mouth (protein-ad postmortem vs the farmer ads that spoke).
+- STYLE GROUNDING: open every shot with a CONCRETE genre anchor the model has a
+  visual distribution for — "Realistic documentary footage", "photojournalism",
+  "handheld news footage", "35mm film" — never an abstract vibe like "cinematic
+  advertising style" alone (the farmer/dentist winners all grounded documentary
+  realism first, then layered light and grade on top).
 - Every shot's negative_prompt starts from this canonical block (keep it IDENTICAL across
   shots for continuity), then append shot-specific negatives if needed:
   "cartoon, anime, CGI, 3D render, plastic skin, waxy skin, doll face, deformed hands, bad
   anatomy, extra fingers, extra limbs, mismatched hands, swapped objects, morphing props,
   cloned faces, identity drift, face morphing, robotic movement, synchronized movement,
   frozen expressions, jerky motion, flickering, temporal inconsistency, unstable camera,
+  static camera, frozen background, stiff walk, sliding feet,
   oversaturated colors, harsh shadows, watermark, logo, subtitles, blurry, low quality"
 - product REQUIRES a product photo and lipsync REQUIRES a reference face image. Never assume
   the user has provided one — always list the required asset in needs_from_user.

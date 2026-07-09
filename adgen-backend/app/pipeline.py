@@ -9,6 +9,7 @@ Output layout (user's rule: exactly TWO flat folders, matching names, no per-job
     outputs/audio/<name>-narration.mp3
 """
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,7 @@ import httpx
 OUTPUT_VIDEO_DIR = Path("outputs/video")
 OUTPUT_AUDIO_DIR = Path("outputs/audio")
 
+from app import qc
 from app.assembly import ffmpeg
 from app.config import COMFY_POD_URLS
 from app.providers import comfy
@@ -71,6 +73,70 @@ def inject_cast(prompt: str, anchors: list[str]) -> str:
         return prompt
     block = " ".join(a.strip().rstrip(".") + "." for a in anchors if a.strip())
     return f"Featuring {block}\n\n{prompt}"
+
+
+def _qc_on(req: dict) -> bool:
+    """QC gate default: ON for every render, FAST included — user rule 2026-07-09:
+    "when i say fast, make sure quality doesn't degrade". The review costs seconds
+    and a FAST re-roll only minutes, so even previews never ship a defective take.
+    Explicit req["qc"]=false is the only off-switch."""
+    q = req.get("qc")
+    return True if q is None else bool(q)
+
+
+# Seed offset between takes: prime and far from the +i / +i*3 shot spacing, so a
+# re-rolled take can never collide with a neighbouring shot's seed.
+_TAKE_SEED_STEP = 9973
+
+
+def _render_takes(render, out_path: str, *, label: str, context: str,
+                  report, pct: int, enabled: bool, records: list[dict]):
+    """QC take-loop around one clip render (Phase 1: selection, not luck).
+
+    `render(out_path, seed_bump)` performs the actual pod render. Take 1 keeps
+    the canonical path; failing QC re-rolls with bumped seeds up to QC_MAX_TAKES,
+    then the best-scoring take is promoted to the canonical path. QC failures
+    surface as ⚠ progress details (the API layer persists those as warnings)."""
+    if not enabled:
+        return render(out_path, 0)
+    # Rank by (ok, score): a PASSING take must beat every failing one no matter
+    # the scores — score alone let a sharp-but-defective take outscore a clean
+    # re-roll and ship (review finding, 2026-07-09). The tuple also makes the
+    # vision-outage regime (flat local-only score) safely comparable.
+    best: tuple[bool, float, str, dict] | None = None
+    try:
+        for take in range(1, qc.QC_MAX_TAKES + 1):
+            path = out_path if take == 1 else out_path.replace(".mp4", f"-take{take}.mp4")
+            path = render(path, (take - 1) * _TAKE_SEED_STEP)
+            rec = qc.review_clip(path, context)
+            rec.update(take=take, shot=label, shipped=False)
+            records.append(rec)
+            if take == 1 and rec["vision"] is None:
+                report("generating", pct,
+                       f"⚠ {label}: vision QC unavailable (Gemini) — only local freeze/blur checks ran")
+            if best is None or (rec["ok"], rec["score"]) > (best[0], best[1]):
+                best = (rec["ok"], rec["score"], path, rec)
+            if rec["ok"]:
+                break
+            if take < qc.QC_MAX_TAKES:
+                report("generating", pct,
+                       f"⚠ {label}: QC failed take {take} ({'; '.join(rec['issues'])}) — re-rolling seed")
+            else:
+                report("generating", pct,
+                       f"⚠ {label}: no take passed QC after {qc.QC_MAX_TAKES} tries — "
+                       f"shipping best (score {best[1]:.1f}: {'; '.join(best[3]['issues'])})")
+        if best[2] != out_path:
+            os.replace(best[2], out_path)
+        # The sidecar must name the file that actually shipped — take files are
+        # renamed/deleted below, so stale take names would point at nothing.
+        best[3]["shipped"] = True
+        best[3]["clip"] = Path(out_path).name
+    finally:
+        # Runs on success, cancel (JobCancelled from report) and pod errors alike:
+        # losing takes must never leak into the flat Library folders.
+        for take in range(2, qc.QC_MAX_TAKES + 1):
+            Path(out_path.replace(".mp4", f"-take{take}.mp4")).unlink(missing_ok=True)
+    return out_path
 
 
 def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
@@ -163,6 +229,7 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
     shots = req["shots"]
     base_seed = req.get("seed") or DEFAULT_BASE_SEED
     clips: list[str] = []
+    qc_records: list[dict] = []
     for i, shot in enumerate(shots):
         pct = 10 + int(75 * i / len(shots))
         report("generating", pct, f"clip {i + 1}/{len(shots)} (several min each)")
@@ -177,13 +244,16 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
             # Lightning LoRA 4-step preset (file 06). Previews/iteration only —
             # finals should stay on the default QUALITY (20-step) path.
             inputs["lightning_lora"] = True
-        clips.append(
-            comfy.comfy_generate(
-                pod, wf, inputs, WAN_T2V_MAPPING,
-                out_path=str(OUTPUT_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
-                on_submit=on_submit,
-            )
-        )
+
+        def render(out, bump, inputs=inputs):
+            inp = {k: (v + bump if k.startswith("seed") else v) for k, v in inputs.items()}
+            return comfy.comfy_generate(pod, wf, inp, WAN_T2V_MAPPING,
+                                        out_path=out, on_submit=on_submit)
+        clips.append(_render_takes(
+            render, str(OUTPUT_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
+            label=f"clip {i + 1}", context=shot["prompt"], report=report, pct=pct,
+            enabled=_qc_on(req), records=qc_records,
+        ))
 
     # 3. ASSEMBLE (FFmpeg on this host)
     report("assembling", 90, "stitch + overlay")
@@ -199,6 +269,7 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
 
     # The API layer owns the terminal 'done' (it sets video_path atomically with it —
     # a 'done' from here would race pollers into a video-less done state).
+    qc.write_sidecar(final, qc_records)
     report("assembling", 99, "export ready")
     return final
 
@@ -420,6 +491,9 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
         return uploaded[path]
 
     processed: list[str] = []
+    qc_records: list[dict] = []  # per-take QC verdicts; lipsync segments are exempt
+    # (an S2V take is fixed-length, voice-embedded and expensive — re-rolling it
+    # re-rolls the performance; the underfill guard already covers its failure mode)
     n = len(segments)
     prev_engine: str | None = None
     for i, seg in enumerate(segments):
@@ -478,6 +552,10 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                 pod, comfy.load_workflow("wan_s2v"), inputs, WAN_S2V_MAPPING,
                 out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
                 on_submit=on_submit,
+                # QUALITY S2V (20 steps, CFG 6, 3 windows, ~14s take) runs past the
+                # default 30min ceiling — the protein-ab postmortem: the render was
+                # healthy, only the client gave up.
+                timeout=3600.0 if not fast else comfy.DEFAULT_TIMEOUT,
             )
             # The segment clip stays in the Library — lock its lip-synced voice
             # just like the final, or /revoice could desync its mouth.
@@ -516,10 +594,17 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                 wf, mapping = comfy.load_workflow("ltx2_av"), LTX2_MAPPING
             if seg.get("negative_prompt"):
                 inputs["negative_prompt"] = seg["negative_prompt"]
-            clip = comfy.comfy_generate(
-                pod, wf, inputs, mapping,
-                out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
-                on_submit=on_submit,
+
+            def render(out, bump, inputs=inputs, wf=wf, mapping=mapping):
+                inp = {k: (v + bump if k.startswith("seed") else v) for k, v in inputs.items()}
+                return comfy.comfy_generate(pod, wf, inp, mapping,
+                                            out_path=out, on_submit=on_submit)
+            # QC runs on the SILENT clip — a re-roll must happen before the
+            # voiceover mux, and the judge doesn't need audio.
+            clip = _render_takes(
+                render, str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
+                label=f"segment {i + 1}", context=seg["prompt"], report=report,
+                pct=pct, enabled=_qc_on(req), records=qc_records,
             )
             if seg.get("script"):
                 narration = synthesize_voice(
@@ -546,10 +631,15 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                 wf, mapping = comfy.load_workflow("wan_i2v"), WAN_I2V_MAPPING
             else:  # overlay (t2v b-roll)
                 wf, mapping = comfy.load_workflow("wan_t2v"), WAN_T2V_MAPPING
-            clip = comfy.comfy_generate(
-                pod, wf, inputs, mapping,
-                out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
-                on_submit=on_submit,
+
+            def render(out, bump, inputs=inputs, wf=wf, mapping=mapping):
+                inp = {k: (v + bump if k.startswith("seed") else v) for k, v in inputs.items()}
+                return comfy.comfy_generate(pod, wf, inp, mapping,
+                                            out_path=out, on_submit=on_submit)
+            clip = _render_takes(
+                render, str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
+                label=f"segment {i + 1}", context=seg["prompt"], report=report,
+                pct=pct, enabled=_qc_on(req), records=qc_records,
             )
             if seg.get("script"):
                 # Per-segment voiceover (AUDIO-AFTER) so the slice stays in its window.
@@ -584,6 +674,7 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
         # replaces these sidecars.
         Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
 
+    qc.write_sidecar(final, qc_records)
     report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final
 
@@ -627,6 +718,7 @@ def _generate_product(req: dict, name: str, report, on_submit=None) -> str:
     shots = req["shots"]
     base_seed = req.get("seed") or DEFAULT_BASE_SEED
     clips: list[str] = []
+    qc_records: list[dict] = []
     for i, shot in enumerate(shots):
         pct = 12 + int(72 * i / len(shots))
         report("generating", pct, f"clip {i + 1}/{len(shots)}")
@@ -640,13 +732,16 @@ def _generate_product(req: dict, name: str, report, on_submit=None) -> str:
             inputs["height"] = req["height"]
         if req.get("quality") == "fast":
             inputs["lightning_lora"] = True  # this export's FAST branch is wired correctly
-        clips.append(
-            comfy.comfy_generate(
-                pod, wf, inputs, WAN_I2V_MAPPING,
-                out_path=str(I2V_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
-                on_submit=on_submit,
-            )
-        )
+
+        def render(out, bump, inputs=inputs):
+            inp = {k: (v + bump if k.startswith("seed") else v) for k, v in inputs.items()}
+            return comfy.comfy_generate(pod, wf, inp, WAN_I2V_MAPPING,
+                                        out_path=out, on_submit=on_submit)
+        clips.append(_render_takes(
+            render, str(I2V_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
+            label=f"clip {i + 1}", context=shot["prompt"], report=report, pct=pct,
+            enabled=_qc_on(req), records=qc_records,
+        ))
 
     # 4. ASSEMBLE — silent clips; overlay narration if provided (AUDIO-AFTER)
     report("assembling", 90, "stitch + overlay")
@@ -659,6 +754,7 @@ def _generate_product(req: dict, name: str, report, on_submit=None) -> str:
     else:
         final = ffmpeg.stitch(clips, out=final)
 
+    qc.write_sidecar(final, qc_records)
     report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final
 
@@ -709,6 +805,7 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
     final_w = req.get("width") or 1280
     final_h = req.get("height") or 720
     clips: list[str] = []
+    qc_records: list[dict] = []
     for i, shot in enumerate(shots):
         pct = 10 + int(75 * i / len(shots))
         report("generating", pct, f"cinematic clip {i + 1}/{len(shots)} (~5s @25fps + audio)")
@@ -722,13 +819,16 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
         }
         if shot.get("negative_prompt"):
             inputs["negative_prompt"] = shot["negative_prompt"]
-        clips.append(
-            comfy.comfy_generate(
-                pod, wf, inputs, LTX2_MAPPING,
-                out_path=str(LTX_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
-                on_submit=on_submit,
-            )
-        )
+
+        def render(out, bump, inputs=inputs):
+            inp = {k: (v + bump if k.startswith("seed") else v) for k, v in inputs.items()}
+            return comfy.comfy_generate(pod, wf, inp, LTX2_MAPPING,
+                                        out_path=out, on_submit=on_submit)
+        clips.append(_render_takes(
+            render, str(LTX_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
+            label=f"cinematic clip {i + 1}", context=shot["prompt"], report=report,
+            pct=pct, enabled=_qc_on(req), records=qc_records,
+        ))
 
     # 3. ASSEMBLE — clips carry native audio; keep it in every path.
     report("assembling", 90, "joining cinematic clips")
@@ -752,6 +852,7 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
         # Stream-copy concat KEEPS each clip's native audio — nothing else needed.
         final = ffmpeg.stitch(clips, out=final)
 
+    qc.write_sidecar(final, qc_records)
     report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final
 
@@ -802,6 +903,7 @@ def _generate_ingredients(req: dict, name: str, report, on_submit=None) -> str:
     w = req.get("width") or 768
     h = req.get("height") or 448
     clips: list[str] = []
+    qc_records: list[dict] = []
     for i, shot in enumerate(shots):
         pct = 12 + int(72 * i / len(shots))
         report("generating", pct, f"brand-locked clip {i + 1}/{len(shots)} (~5s + audio)")
@@ -817,13 +919,16 @@ def _generate_ingredients(req: dict, name: str, report, on_submit=None) -> str:
         }
         if shot.get("negative_prompt"):
             inputs["negative_prompt"] = shot["negative_prompt"]
-        clips.append(
-            comfy.comfy_generate(
-                pod, wf, inputs, INGREDIENTS_MAPPING,
-                out_path=str(ING_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
-                on_submit=on_submit,
-            )
-        )
+
+        def render(out, bump, inputs=inputs):
+            inp = {k: (v + bump if k.startswith("seed") else v) for k, v in inputs.items()}
+            return comfy.comfy_generate(pod, wf, inp, INGREDIENTS_MAPPING,
+                                        out_path=out, on_submit=on_submit)
+        clips.append(_render_takes(
+            render, str(ING_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
+            label=f"brand-locked clip {i + 1}", context=shot["prompt"], report=report,
+            pct=pct, enabled=_qc_on(req), records=qc_records,
+        ))
 
     # Assembly mirrors cinematic: clips carry native audio in every path.
     report("assembling", 90, "joining brand-locked clips")
@@ -844,10 +949,15 @@ def _generate_ingredients(req: dict, name: str, report, on_submit=None) -> str:
     else:
         final = ffmpeg.stitch(clips, out=final)
 
+    qc.write_sidecar(final, qc_records)
     report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final
 
 
+# NOTE: longcat/duo/redub/lipsync stay OUTSIDE the QC gate by design — their
+# takes are fixed-length with the voice performance embedded, so a re-roll
+# re-rolls the performance itself; their failure modes have dedicated guards
+# (underfill warning, window count from narration length).
 def _generate_longcat(req: dict, name: str, report, on_submit=None) -> str:
     """mode="longcat": LongCat-Video-Avatar 1.5 — AUDIO-FIRST talking avatar like
     lipsync, but the LongCat windowed extender (3x 93-frame windows, 13-frame
@@ -1217,6 +1327,8 @@ def _generate_lipsync(req: dict, name: str, report, on_submit=None) -> str:
         pod, wf, inputs, WAN_S2V_MAPPING,
         out_path=str(S2V_VIDEO_DIR / f"{name}-clip1.mp4"),
         on_submit=on_submit,
+        # QUALITY S2V outruns the default 30min ceiling (protein-ab postmortem).
+        timeout=3600.0 if req.get("quality") != "fast" else comfy.DEFAULT_TIMEOUT,
     )
 
     # 4. ASSEMBLE — audio is already inside the clip; optionally add a music bed

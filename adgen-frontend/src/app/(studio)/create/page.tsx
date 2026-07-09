@@ -367,6 +367,8 @@ function CreateStudio() {
   const oneSpeed = reqMode === "cinematic" || mode === "ingredients";
   const effPreset: PresetKey = oneSpeed && preset === "master" ? "moderate" : preset;
   const [aspect, setAspect] = usePersistentState<AspectKey>("adgen-create-aspect", "9:16", keep);
+  // Shot QC gate override; null = follow the preset (quality→on, fast→off).
+  const [qcGate, setQcGate] = usePersistentState<boolean | null>("adgen-create-qc", null, keep);
   const [name, setName] = usePersistentState("adgen-create-name", "", keep);
   const [planned, setPlanned] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -580,6 +582,7 @@ function CreateStudio() {
       quality: p.quality,
       ...("steps" in p ? { steps: p.steps } : {}),
       postprocess: p.postprocess,
+      ...(qcGate !== null ? { qc: qcGate } : {}),
       ...(mode === "ingredients"
         ? ING_ASPECTS[aspect]
         : reqMode === "cinematic"
@@ -1094,6 +1097,18 @@ function CreateStudio() {
             <p className="text-[11px] text-text-muted">
               {PRESET_HINTS[effPreset]} · {TIME_HINTS[reqMode][effPreset]}
             </p>
+            {/* Shot QC gate — every clip is reviewed (sharpness, anatomy, props,
+                brand text, freezes) and bad takes re-roll automatically. ON by
+                default for every preset (fast must not degrade — user rule). */}
+            <label className="flex items-center gap-2 text-xs text-text-muted cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={qcGate ?? true}
+                onChange={(e) => setQcGate(e.target.checked)}
+                className="accent-(--accent-grad-from)"
+              />
+              🛡 Shot QC — auto re-roll bad takes (up to 3 tries per shot)
+            </label>
           </div>
 
           <div className="flex flex-col gap-2">

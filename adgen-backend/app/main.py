@@ -175,6 +175,9 @@ class GenerateRequest(BaseModel):
     source_video: str | None = None         # redub: existing render whose lips to re-render
     postprocess: bool = False            # True = run the post chain after assembly (one-call
                                          # Enhanced/Master presets; adds a "post" stage)
+    qc: bool | None = None               # shot QC gate (vision review + auto re-roll).
+                                         # None = ON for every render incl. FAST (user rule:
+                                         # fast must not degrade); false is the only off-switch
     width: int | None = Field(default=None, ge=64, le=1920, multiple_of=16)
     height: int | None = Field(default=None, ge=64, le=1920, multiple_of=16)
     # ^ frame size override (e.g. 432x768 = 9:16 vertical for reels); default = workflow's own
@@ -331,15 +334,31 @@ def generate_endpoint(req: GenerateRequest):
                     restore = any(s.pipeline == "lipsync" for s in (req.segments or []))
                 else:
                     restore = req.mode != "product"
+                # RIFE's output fps MUST come from the file itself: the old
+                # mode-based guess retimed a 25fps LTX final assumed to be 16fps
+                # into 1.56x slow motion (ltx-master postmortem, 2026-07-09 audit).
+                pre_info = ffmpeg.probe(final)
+                src_fps = pre_info["fps"] if pre_info["fps"] > 1 else (
+                    25.0 if req.mode in ("cinematic", "ingredients") else 16.0)
+                pre_post = final
                 final = postprocess.postprocess_video(
                     final,
                     restore_face=restore,
                     resolution=min(1088, 2 * min(req.width or 640, req.height or 640)),
-                    # LTX renders 25fps (RIFE 2x -> 50); Wan-era clips are 16 -> 32.
-                    # Getting this wrong retimes the output into slow motion.
-                    source_fps=25.0 if req.mode in ("cinematic", "ingredients") else 16.0,
+                    source_fps=src_fps,
                     on_submit=on_submit,
                 )
+                # Belt-and-braces: the chain must never change wall-clock length.
+                # If it did, ship the un-posted final instead of a slow-mo file —
+                # and delete the rejected -post file so the Library never lists it.
+                post_dur = ffmpeg.probe(final)["duration"]
+                if abs(post_dur - pre_info["duration"]) > 0.3:
+                    _warn(job_id, f"post chain changed duration "
+                          f"{pre_info['duration']:.2f}s -> {post_dur:.2f}s — "
+                          f"kept the un-enhanced final")
+                    Path(final).unlink(missing_ok=True)
+                    Path(final).with_suffix(".meta.json").unlink(missing_ok=True)
+                    final = pre_post
             _attach_sync(job_id, final)
             _update(job_id, status="done", progress=100, detail="", video_path=final)
         except JobCancelled:

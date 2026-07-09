@@ -383,22 +383,38 @@ def replace_audio(
 
 
 def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
-    """Concat clips from MIXED workflows (sequence mode: t2v + i2v + S2V segments).
+    """Concat clips from MIXED workflows (sequence mode: t2v + i2v + S2V + LTX segments).
 
     Re-encodes video (mixed sources rarely share exact encoder params) and guarantees
     every segment contributes an audio track — silent clips get anullsrc for their
-    duration so the concat filter's audio lane never breaks. All clips must share
-    resolution and fps (sequence mode renders every segment at the job's WxH @16fps).
+    duration so the concat filter's audio lane never breaks.
+
+    CONFORM PASS (Phase 2 of the 2026-07-09 quality audit):
+      - canon fps = the FASTEST lane (was: first clip), so a 25fps LTX timeline
+        can never down-throttle and a 16fps-first ordering can't dup-frame the rest;
+      - lanes slower than canon get MOTION-COMPENSATED retiming (minterpolate),
+        not dup frames — the audit measured 35-48% duplicated frames on every
+        Wan span inside mixed sequences (a visible 2-1-2 stutter), 0% on gold.
+        Verified on the protein ad: moving Wan span 35.3% dups -> 2.0%.
+    NOT here (tried and reverted 2026-07-09): per-lane brightness/saturation
+    matching toward the lane median — cross-scene stats can't tell engine color
+    cast from intentional lighting (it tried to brighten a moody hook toward a
+    bright product macro). Engine-tone unification belongs to the Phase-3
+    finishing pass, keyed by ENGINE, not by scene statistics.
     """
     if not clips:
         raise ValueError("concat_reencode() needs at least one clip.")
     probed = [probe(c) for c in clips]
 
-    # First clip is canon: every lane is scaled/padded/retimed to it, so a 9:16 raw
-    # clip, a 1:1 clip and a 32fps enhanced file can share one timeline.
+    # First clip is canon for GEOMETRY only (scale/pad keeps any aspect working).
     canon_w = probed[0]["width"] or 640
     canon_h = probed[0]["height"] or 640
-    canon_fps = probed[0]["fps"] or 16.0
+    # Canon fps = fastest NATIVE lane, capped at 30: a remixed 32/50fps -post
+    # file must not drag every raw lane through minterpolate (CPU-minutes) —
+    # its RIFE-invented frames decimate harmlessly instead (review finding).
+    fps_vals = [(p["fps"] or 16.0) for p in probed]
+    native = [f for f in fps_vals if f <= 30.5]
+    canon_fps = max(native) if native else 25.0
 
     cmd: list[str] = ["ffmpeg", "-y"]
     for c in clips:
@@ -416,9 +432,17 @@ def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
     parts: list[str] = []
     lanes: list[str] = []
     for i in range(len(clips)):
+        lane_fps = probed[i]["fps"] or 16.0
+        if lane_fps < canon_fps - 0.5:
+            # Motion-compensated 16->25 (etc.): real in-between frames instead of
+            # the dup-frame pulldown the plain fps filter produces.
+            retime = (f"minterpolate=fps={canon_fps:g}:mi_mode=mci:mc_mode=aobmc:"
+                      f"me_mode=bidir:vsbmc=1")
+        else:
+            retime = f"fps={canon_fps:g}"
         parts.append(
             f"[{i}:v]scale={canon_w}:{canon_h}:force_original_aspect_ratio=decrease,"
-            f"pad={canon_w}:{canon_h}:(ow-iw)/2:(oh-ih)/2,fps={canon_fps:g},setsar=1[v{i}]"
+            f"pad={canon_w}:{canon_h}:(ow-iw)/2:(oh-ih)/2,{retime},setsar=1[v{i}]"
         )
         a_src = f"[{null_index[i]}:a]" if i in null_index else f"[{i}:a]"
         # Pin every audio lane to its clip's VIDEO duration: concat joins the
