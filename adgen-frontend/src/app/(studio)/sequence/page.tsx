@@ -63,6 +63,69 @@ export default function SequencePage() {
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // The Brain in sequence mode: one idea -> a planned segment timeline.
+  const [brainIdea, setBrainIdea] = useState("");
+  const [planning, setPlanning] = useState(false);
+  const [planNote, setPlanNote] = useState<string | null>(null);
+
+  const planTimeline = async () => {
+    const idea = brainIdea.trim();
+    if (!idea || planning) return;
+    setPlanning(true);
+    setPlanNote(null);
+    try {
+      const res = await api.plan({
+        idea: `${idea} — plan this as a SEQUENCE (mixed timeline).`,
+        language,
+        format: aspect,
+        duration_s: 30,
+        avoid: [],
+        cast_ids: [],
+      });
+      const seq =
+        res.approaches.find((a) => a.pipeline === "sequence" && a.segments?.length) ??
+        res.approaches.find((a) => a.segments?.length);
+      if (seq?.segments?.length) {
+        setSegments(
+          seq.segments.map((s) => ({
+            // The planner may drift to types the timeline doesn't take —
+            // coerce like the Create-page handoff does.
+            pipeline: (["overlay", "cinematic", "product", "lipsync"] as const).includes(
+              s.pipeline as never,
+            )
+              ? s.pipeline
+              : "cinematic",
+            prompt: s.prompt ?? "",
+            negative_prompt: s.negative_prompt ?? "",
+            script: s.script ?? "",
+            image: null,
+          })),
+        );
+        setPlanNote(
+          `🧠 "${seq.title}" — ${seq.segments.length} segments planned. Product/avatar segments still need their photos below.`,
+        );
+      } else {
+        // The brain answered with single-pipeline approaches — adapt shot lists.
+        const alt = res.approaches.find((a) => a.shots.length);
+        if (!alt) throw new Error("no usable approach returned");
+        setSegments(
+          alt.shots.map((sh) => ({
+            pipeline: alt.pipeline === "overlay" ? ("overlay" as const) : ("cinematic" as const),
+            prompt: sh.prompt,
+            negative_prompt: sh.negative_prompt ?? "",
+            script: "",
+            image: null,
+          })),
+        );
+        setPlanNote(`🧠 adapted "${alt.title}" into ${alt.shots.length} b-roll segments — add scripts per segment.`);
+      }
+    } catch (e) {
+      setPlanNote(`brain unavailable: ${String(e).slice(0, 120)}`);
+    } finally {
+      setPlanning(false);
+    }
+  };
+
   useEffect(() => {
     api.voices().then((d) => setVoices(d.voices)).catch(() => {});
   }, []);
@@ -201,6 +264,33 @@ export default function SequencePage() {
           compose a long ad from mixed segments — hook, product, proof, CTA
         </p>
       </header>
+
+      {/* ---- The Brain, in sequence mode: one idea in, a full segment timeline
+           out. The planner picks the right engine per beat (its measured
+           doctrine: LTX atmosphere, Wan character action, real-photo product,
+           lipsync speech) and writes director-formula prompts + script slices. */}
+      <div className="card-raised flex flex-col gap-2 rounded-card p-4 sm:p-5">
+        <span className="label-cap">🧠 Let the brain plan your timeline</span>
+        <div className="flex items-center gap-2">
+          <input
+            value={brainIdea}
+            onChange={(e) => setBrainIdea(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) planTimeline();
+            }}
+            placeholder="e.g. 30s ad for a whey protein brand, Hindi, gym energy, avatar CTA…"
+            className="input-well min-w-0 flex-1 rounded-btn p-3 text-sm placeholder:text-text-muted"
+          />
+          <button
+            onClick={planTimeline}
+            disabled={!brainIdea.trim() || planning}
+            className="hero-glow shrink-0 rounded-btn px-4 py-3 text-sm font-semibold text-white disabled:opacity-40 disabled:shadow-none"
+          >
+            {planning ? "planning…" : "Plan segments"}
+          </button>
+        </div>
+        {planNote && <p className="text-xs text-text-muted">{planNote}</p>}
+      </div>
 
       <div className="grid items-start gap-6 lg:grid-cols-[1fr_360px]">
         {/* ---- Timeline ---- */}
