@@ -150,6 +150,21 @@ export type StillItem = {
   modified: number;
 };
 
+export type RecipeSegment = {
+  segment: number;
+  role: string; // client-facing role ("Cinematic B-roll", "Speaking Avatar"...)
+  model: string; // technical name for the tooltip ("LTX-2.3", "Wan 2.2 t2v"...)
+  takes: number;
+  shipped_take: number;
+};
+
+export type Recipe = {
+  segments: RecipeSegment[];
+  voice: string | null;
+  qc_events: number;
+  qc_judges: string;
+};
+
 export type OutputItem = {
   path: string;
   url: string;
@@ -159,6 +174,7 @@ export type OutputItem = {
   voice_lock?: boolean; // speech is lip-synced — revoicing would desync the mouth
   size_bytes: number;
   modified: number;
+  recipe?: Recipe; // multi-model chips: which engine made each span + QC story
 };
 
 export type PlanRequest = {
@@ -316,6 +332,30 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ video_path }),
+    }).then(jsonOrThrow),
+  // Dynamic intake: the brain asks idea-specific follow-up questions.
+  planQuestions: (idea: string, language = "en"): Promise<{
+    questions: { key: string; ask: string; placeholder: string; chips: string[] }[];
+  }> =>
+    fetch(`${BASE}/plan-questions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idea, language }),
+    }).then(jsonOrThrow),
+  // Composited brand layer: burned captions + real-product end card (no pod).
+  brandPass: (req: {
+    video_path: string;
+    captions?: { start: number; end: number; text: string; position?: "top" | "bottom" | "center"; accent?: boolean }[];
+    brand?: string;
+    tagline?: string;
+    offer?: string;
+    product_image?: string;
+    card_seconds?: number;
+  }): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/brand-pass`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
     }).then(jsonOrThrow),
   // Stills-first: derive per-shot keyframes from the SAME character/product
   // references, approve them, then animate each as a `product` segment.

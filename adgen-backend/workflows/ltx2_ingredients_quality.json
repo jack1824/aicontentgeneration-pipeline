@@ -2,7 +2,7 @@
   "1": {
     "class_type": "CheckpointLoaderSimple",
     "inputs": {
-      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors"
     }
   },
   "2": {
@@ -187,9 +187,9 @@
         0
       ],
       "seed": 42,
-      "steps": 8,
-      "cfg": 1.0,
-      "sampler_name": "euler_ancestral",
+      "steps": 30,
+      "cfg": 3.5,
+      "sampler_name": "euler_ancestral_cfg_pp",
       "scheduler": "linear_quadratic",
       "denoise": 1.0
     }

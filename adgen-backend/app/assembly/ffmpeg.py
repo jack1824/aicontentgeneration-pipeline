@@ -502,6 +502,48 @@ def _font() -> str:
     raise RuntimeError("no usable font found for end-card drawtext")
 
 
+def burn_captions(video: str, captions: list[dict], out: str = "captioned.mp4") -> str:
+    """Burn timed caption/super overlays into a video (the muted-viewer layer).
+
+    captions: [{start, end, text, position?: "top"|"bottom"|"center", accent?: bool}]
+    Brand, claims and CTA live in REAL overlay pixels — never generated ones
+    (ad-agent panel, 2026-07-11: 70%+ of Reels play muted; VO-only branding
+    scores 2/10). Text rides drawtext textfile= (Devanagari-safe); positions
+    sit inside 9:16 safe zones (clear of platform UI at top/bottom edges).
+    Keep lines short — drawtext does not wrap (use \\n for manual breaks)."""
+    if not captions:
+        return video
+    info = probe(video)
+    h = info["height"] or 1280
+    font = _font()
+    tmp_files: list[str] = []
+    draws: list[str] = []
+    try:
+        for c in captions:
+            tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                             encoding="utf-8")
+            tf.write(str(c["text"]).strip())
+            tf.close()
+            tmp_files.append(tf.name)
+            pos = c.get("position", "bottom")
+            y = {"top": "0.10*h", "center": "(h-text_h)/2"}.get(pos, "0.80*h-text_h")
+            color = END_CARD_ACCENT if c.get("accent") else "white"
+            draws.append(
+                f"drawtext=fontfile='{font}':textfile='{tf.name}'"
+                f":enable='between(t,{float(c['start']):.2f},{float(c['end']):.2f})'"
+                f":fontcolor={color}:fontsize={h // 20}"
+                f":box=1:boxcolor=black@0.45:boxborderw={h // 90}"
+                f":x=(w-text_w)/2:y={y}:line_spacing={h // 90}"
+            )
+        _run(["ffmpeg", "-y", "-i", video, "-vf", ",".join(draws),
+              "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+              "-pix_fmt", "yuv420p", "-c:a", "copy", out])
+        return out
+    finally:
+        for t in tmp_files:
+            Path(t).unlink(missing_ok=True)
+
+
 def end_card(
     video: str,
     brand: str,
@@ -509,6 +551,7 @@ def end_card(
     offer: str | None = None,
     seconds: float = 2.5,
     out: str = "carded.mp4",
+    product_image: str | None = None,
 ) -> str:
     """Append a branded end card (brand / tagline / offer) to a video.
 
@@ -523,12 +566,22 @@ def end_card(
     fps = info["fps"] or 16.0
     font = _font()
 
-    # (text, fontsize, color, y-fraction) — brand dominates, offer pops in coral.
-    rows = [(brand.strip(), h // 10, "white", 0.42)]
-    if tagline and tagline.strip():
-        rows.append((tagline.strip(), h // 24, "0xb9b9c0", 0.56))
-    if offer and offer.strip():
-        rows.append((offer.strip(), h // 18, END_CARD_ACCENT, 0.68))
+    # With a REAL product photo on the card (ad-agent panel fix: the closing
+    # pack shot must be actual pixels — generated labels garble), the photo
+    # owns the upper half and the text rows shift down to make room.
+    if product_image:
+        rows = [(brand.strip(), h // 12, "white", 0.62)]
+        if tagline and tagline.strip():
+            rows.append((tagline.strip(), h // 26, "0xb9b9c0", 0.72))
+        if offer and offer.strip():
+            rows.append((offer.strip(), h // 18, END_CARD_ACCENT, 0.80))
+    else:
+        # (text, fontsize, color, y-fraction) — brand dominates, offer pops in coral.
+        rows = [(brand.strip(), h // 10, "white", 0.42)]
+        if tagline and tagline.strip():
+            rows.append((tagline.strip(), h // 24, "0xb9b9c0", 0.56))
+        if offer and offer.strip():
+            rows.append((offer.strip(), h // 18, END_CARD_ACCENT, 0.68))
 
     tmp_files: list[str] = []
     draws: list[str] = []
@@ -544,11 +597,20 @@ def end_card(
                 f":fontcolor={color}:fontsize={int(size)}"
                 f":x=(w-text_w)/2:y={yfrac:.2f}*h"
             )
-        vf = ",".join(draws) + ",fade=t=in:st=0:d=0.35"
         card = _stitched_path(out).replace(".stitched.", ".card.")
-        _run(["ffmpeg", "-y", "-f", "lavfi",
-              "-i", f"color=c={END_CARD_BG}:s={w}x{h}:d={seconds:.2f}:r={fps:.3f}",
-              "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", card])
+        if product_image:
+            fc = (f"[1:v]scale={int(w * 0.55)}:-1[img];"
+                  f"[0:v][img]overlay=(W-w)/2:{int(h * 0.10)}[bg];"
+                  f"[bg]{','.join(draws)},fade=t=in:st=0:d=0.35[v]")
+            _run(["ffmpeg", "-y", "-f", "lavfi",
+                  "-i", f"color=c={END_CARD_BG}:s={w}x{h}:d={seconds:.2f}:r={fps:.3f}",
+                  "-i", product_image, "-filter_complex", fc, "-map", "[v]",
+                  "-c:v", "libx264", "-pix_fmt", "yuv420p", card])
+        else:
+            vf = ",".join(draws) + ",fade=t=in:st=0:d=0.35"
+            _run(["ffmpeg", "-y", "-f", "lavfi",
+                  "-i", f"color=c={END_CARD_BG}:s={w}x{h}:d={seconds:.2f}:r={fps:.3f}",
+                  "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", card])
         joined = _stitched_path(out).replace(".stitched.", ".joined-card.")
         try:
             concat_reencode([video, card], out=joined)

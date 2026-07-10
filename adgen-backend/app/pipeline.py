@@ -92,6 +92,38 @@ def inject_cast(prompt: str, anchors: list[str]) -> str:
     return f"Featuring {block}\n\n{prompt}"
 
 
+# Role-first labels for the Library's recipe chips (clients care what a model
+# DID, not what it's called — technical names ride along for the tooltip).
+_ENGINE_LABELS = {
+    "cinematic": ("Cinematic B-roll", "LTX-2.3"),
+    "overlay": ("Character Studio", "Wan 2.2 t2v"),
+    "product": ("Product Motion", "Wan 2.2 i2v"),
+    "lipsync": ("Speaking Avatar", "Wan 2.2 S2V"),
+}
+
+
+def _write_recipe(final: str, segments: list[dict], qc_records: list[dict],
+                  voiced: bool) -> None:
+    """{name}-recipe.json next to the final: which engine made each span, and
+    the QC story — the Library's multi-model chips read this."""
+    segs = []
+    for i, seg in enumerate(segments):
+        role, model = _ENGINE_LABELS.get(seg.get("pipeline", ""), (seg.get("pipeline", "?"), "?"))
+        if seg.get("pipeline") == "cinematic" and seg.get("image"):
+            role, model = "Brand Lock", "LTX-2.3 IC-LoRA"
+        takes = [r for r in qc_records if r.get("shot") == f"segment {i + 1}"]
+        segs.append({"segment": i + 1, "role": role, "model": model,
+                     "takes": max((r.get("take", 1) for r in takes), default=1),
+                     "shipped_take": next((r.get("take") for r in takes if r.get("shipped")), 1)})
+    p = Path(final)
+    (p.parent / (p.stem.replace("-final", "") + "-recipe.json")).write_text(json.dumps({
+        "segments": segs,
+        "voice": "ElevenLabs" if voiced else None,
+        "qc_events": sum(1 for r in qc_records if not r.get("ok")),
+        "qc_judges": "Gemini + Groq vision",
+    }, indent=1))
+
+
 def _qc_on(req: dict) -> bool:
     """QC gate default: ON for every render, FAST included — user rule 2026-07-09:
     "when i say fast, make sure quality doesn't degrade". The review costs seconds
@@ -143,16 +175,23 @@ def _render_takes(render, out_path: str, *, label: str, context: str,
                        f"⚠ {label}: no take passed QC after {qc.QC_MAX_TAKES} tries — "
                        f"shipping best (score {best[1]:.1f}: {'; '.join(best[3]['issues'])})")
         if best[2] != out_path:
+            # EVERY take stays user-accessible in the Library (user rule
+            # 2026-07-11: "user must have access to them" — frame-picking and
+            # audio-remix use non-shipped takes too). The displaced take 1
+            # moves to its -take1 name instead of being overwritten; losers
+            # keep their -takeN names and list as clips in /outputs.
+            take1_home = out_path.replace(".mp4", "-take1.mp4")
+            Path(out_path).replace(take1_home)
             os.replace(best[2], out_path)
-        # The sidecar must name the file that actually shipped — take files are
-        # renamed/deleted below, so stale take names would point at nothing.
+            for r in records:
+                if r.get("shot") == label and r.get("take") == 1:
+                    r["clip"] = Path(take1_home).name
+        # The sidecar names the file each take lives at NOW: the winner at the
+        # canonical path, losers at their -takeN.mp4 names.
         best[3]["shipped"] = True
         best[3]["clip"] = Path(out_path).name
     finally:
-        # Runs on success, cancel (JobCancelled from report) and pod errors alike:
-        # losing takes must never leak into the flat Library folders.
-        for take in range(2, qc.QC_MAX_TAKES + 1):
-            Path(out_path.replace(".mp4", f"-take{take}.mp4")).unlink(missing_ok=True)
+        pass  # takes are deliberately KEPT — see the user-access rule above
     return out_path
 
 
@@ -603,7 +642,11 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                     "seed": base_seed + i * 3,
                     "filename_prefix": f"video/adgen_seq_{seg_stem}",
                 }
-                wf, mapping = comfy.load_workflow("ltx2_ingredients"), INGREDIENTS_MAPPING
+                # QUALITY finals ride the dev-checkpoint variant (real CFG 3.5 /
+                # 30 steps — negatives work, IC-LoRA never competes with a
+                # distilled LoRA); FAST keeps the 8-step distilled graph.
+                ing_wf = "ltx2_ingredients" if fast else "ltx2_ingredients_quality"
+                wf, mapping = comfy.load_workflow(ing_wf), INGREDIENTS_MAPPING
             else:
                 # LTX-2.3 b-roll: ~5s @25fps WITH native audio. Renders half-size
                 # then 2x latent-upsamples, so the injected dims are target // 2.
@@ -700,6 +743,8 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
         Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
 
     qc.write_sidecar(final, qc_records)
+    _write_recipe(final, segments, qc_records,
+                  voiced=any(s.get("script") for s in segments))
     report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final
 
@@ -920,7 +965,9 @@ def _generate_ingredients(req: dict, name: str, report, on_submit=None) -> str:
     sheet_name = comfy.upload_file(pod, sheet)
 
     comfy.free_memory(pod)  # its checkpoint differs from cinematic's — make room
-    wf = comfy.load_workflow("ltx2_ingredients")
+    # QUALITY finals use the dev-checkpoint variant (see sequence branch note).
+    wf = comfy.load_workflow(
+        "ltx2_ingredients" if req.get("quality") == "fast" else "ltx2_ingredients_quality")
     shots = req["shots"]
     base_seed = req.get("seed") or DEFAULT_BASE_SEED
     # PINNED to the trained bucket (see ING_TRAINED_* constants) — request dims

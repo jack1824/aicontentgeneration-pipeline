@@ -74,6 +74,16 @@ WAN_I2V_MAPPING = {
     "cfg": ("129:126", "value"),             # QUALITY CFG (default 3.5)
 }
 
+# workflows/wan_flf2v.json — first+last frame conditioning (authored 2026-07-10
+# from wan_i2v.json: WanImageToVideo -> WanFirstLastFrameToVideo + a second
+# LoadImage "98" for the end frame). Pins BOTH endpoints of a clip: continuity
+# joins (last frame of clip N = first frame of clip N+1) and end-cards whose
+# final frame is a REAL composited packshot. Same knobs as i2v otherwise.
+WAN_FLF2V_MAPPING = {
+    **WAN_I2V_MAPPING,
+    "end_image": ("98", "image"),            # LoadImage — UPLOADED end-frame filename
+}
+
 # FLIPPED 2026-07-10 (audit): the JSON defaults are now the QUALITY config
 # (steps 20 / CFG 6.0 / LoRA bypassed — node 54 wired straight to UNET "37"),
 # so a code path that forgets to patch fails SAFE at final quality. FAST is the

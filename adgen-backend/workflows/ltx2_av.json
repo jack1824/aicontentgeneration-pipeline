@@ -164,7 +164,7 @@
     "class_type": "CFGGuider",
     "inputs": {
       "model": [
-        "232",
+        "900",
         0
       ],
       "positive": [
@@ -282,7 +282,7 @@
     "class_type": "CFGGuider",
     "inputs": {
       "model": [
-        "232",
+        "900",
         0
       ],
       "positive": [
@@ -402,6 +402,21 @@
       "filename_prefix": "video/adgen_ltx2",
       "format": "auto",
       "codec": "auto"
+    }
+  },
+  "900": {
+    "class_type": "NAGuidance",
+    "inputs": {
+      "model": [
+        "232",
+        0
+      ],
+      "nag_scale": 5.0,
+      "nag_alpha": 0.5,
+      "nag_tau": 1.5
+    },
+    "_meta": {
+      "title": "NAG (negatives at cfg 1)"
     }
   }
 }

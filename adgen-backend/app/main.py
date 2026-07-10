@@ -201,6 +201,21 @@ class PlanRequest(BaseModel):
     cast_ids: list[str] = Field(default_factory=list, max_length=4)
 
 
+class PlanQuestionsRequest(BaseModel):
+    idea: str = Field(min_length=2)
+    language: str = "en"
+
+
+@app.post("/plan-questions")
+def plan_questions_endpoint(req: PlanQuestionsRequest):
+    """Dynamic intake: the brain asks idea-specific follow-ups (replaces the
+    hardcoded audience/vibe questions). Rides the full LLM ladder incl. Groq."""
+    try:
+        return llm.plan_questions(req.idea, language=req.language)
+    except llm.PlanError as e:
+        raise HTTPException(502, str(e))
+
+
 @app.post("/plan")
 def plan_endpoint(req: PlanRequest):
     cast = []
@@ -661,6 +676,73 @@ def endcard_endpoint(req: EndCardRequest):
                 Path(final).with_suffix(".meta.json").write_text(sidecar.read_text())
             # The card's silent read-time is by design — don't flag it as dead air.
             _attach_sync(job_id, final, ok_tail_s=req.seconds + 1.0)
+            _update(job_id, status="done", progress=100, detail="", video_path=final)
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+class Caption(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    text: str = Field(min_length=1, max_length=120)
+    position: Literal["top", "bottom", "center"] = "bottom"
+    accent: bool = False
+
+
+class BrandPassRequest(BaseModel):
+    """The composited brand layer (ad-agent panel, 2026-07-11): burned captions/
+    supers for the muted majority + an end card carrying the REAL product photo.
+    All overlay pixels, zero regeneration — the 'generated motion + composited
+    brand' architecture. Local FFmpeg only, no pod."""
+    video_path: str
+    captions: list[Caption] = Field(default_factory=list, max_length=12)
+    brand: str | None = None             # end card brand line; None = no end card
+    tagline: str | None = None
+    offer: str | None = None             # CTA line (accent color)
+    product_image: str | None = None     # REAL pack shot composited on the card
+    card_seconds: float = Field(default=2.0, ge=1.0, le=5.0)
+
+
+@app.post("/brand-pass")
+def brand_pass_endpoint(req: BrandPassRequest):
+    src = Path(req.video_path)
+    if not src.exists():
+        raise HTTPException(404, f"video not found: {req.video_path}")
+    if not _under_outputs(src):
+        raise HTTPException(422, "only videos under outputs/ can be branded")
+    if req.product_image and not Path(req.product_image).exists():
+        raise HTTPException(404, f"product_image not found: {req.product_image}")
+    job_id = _new_job("brandpass", src.stem)
+
+    def run() -> None:
+        try:
+            work = str(src)
+            if req.captions:
+                _update(job_id, status="assembling", progress=25, detail="burning captions")
+                work = ffmpeg.burn_captions(
+                    work, [c.model_dump() for c in req.captions],
+                    out=str(src.with_name(f"{src.stem}-captioned.mp4")))
+            final = work
+            if req.brand:
+                _update(job_id, status="assembling", progress=60, detail="product end card")
+                final = ffmpeg.end_card(
+                    work, req.brand, tagline=req.tagline, offer=req.offer,
+                    seconds=req.card_seconds, product_image=req.product_image,
+                    out=str(src.with_name(f"{src.stem}-branded.mp4")))
+                if work != str(src):
+                    Path(work).unlink(missing_ok=True)  # captioned intermediate
+            sidecar = src.with_suffix(".meta.json")
+            if sidecar.exists():  # voice-lock survives the overlay pass
+                Path(final).with_suffix(".meta.json").write_text(sidecar.read_text())
+            recipe = src.parent / (src.stem.replace("-final", "") + "-recipe.json")
+            if recipe.exists():  # chips survive too
+                bp = Path(final)
+                (bp.parent / (bp.stem.replace("-final", "") + "-recipe.json")).write_text(
+                    recipe.read_text())
+            _attach_sync(job_id, final, ok_tail_s=(req.card_seconds + 1.0) if req.brand else 1.0)
             _update(job_id, status="done", progress=100, detail="", video_path=final)
         except Exception as e:
             _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
@@ -1190,7 +1272,7 @@ def list_outputs():
             continue  # a running job deleted it between rglob and stat — skip, don't 500
         rel = p.relative_to("outputs")
         parts = rel.parts
-        items.append({
+        item = {
             "path": str(p),
             "url": f"/files/{rel.as_posix()}",
             "name": p.name,
@@ -1201,7 +1283,17 @@ def list_outputs():
             "voice_lock": _voice_locked(p),
             "size_bytes": st.st_size,
             "modified": int(st.st_mtime),
-        })
+        }
+        # Multi-model recipe chips: finals carry the {name}-recipe.json sidecar
+        # (which engine made each span + the QC story) when the pipeline wrote one.
+        if item["kind"] != "clip":
+            rp = p.parent / (p.stem.replace("-final", "").replace("-post", "") + "-recipe.json")
+            if rp.exists():
+                try:
+                    item["recipe"] = json.loads(rp.read_text())
+                except (OSError, json.JSONDecodeError):
+                    pass
+        items.append(item)
     items.sort(key=lambda i: i["modified"], reverse=True)
     return {"outputs": items}
 

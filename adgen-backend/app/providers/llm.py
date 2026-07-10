@@ -8,6 +8,7 @@ The LLM plans and routes — it NEVER generates video or audio. It proposes 1-3 
 approaches (pipeline + audio strategy + shot outline) for the user to choose from.
 """
 import json
+import os
 import re
 import time
 
@@ -21,6 +22,14 @@ GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
+
+# Third rung of the ladder: Groq-hosted Llama (independent vendor, independent
+# quota) — the brain keeps planning even when BOTH Gemini pools are dry.
+GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip().strip("\"'“”")
+if GROQ_API_KEY and not GROQ_API_KEY.startswith("gsk_"):
+    GROQ_API_KEY = ""  # non-Groq paste — ignore
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Archetype -> pipeline routing (docs file 03). Only overlay + lipsync are BUILT today;
 # the planner may still propose the others but must mark them unavailable.
@@ -170,6 +179,20 @@ Rules:
     List the face image (or a saved avatar) in needs_from_user.
   * Order segments as story beats (hook -> product -> close) and keep the color arc
     across them; the segment scripts together read as ONE continuous ad narration.
+  * RIGHT MODEL PER BEAT (measured on real renders, 2026-07-11 — follow exactly):
+    - atmosphere / mood / texture beats with NO recognizable face -> cinematic (LTX:
+      strongest light and native sound, zero identity dice).
+    - character ACTION beats -> overlay (Wan). A recurring character's shots must
+      ALL stay on the same pipeline — two engines will never draw the same face.
+    - product/pack-shot beats -> product with the client's REAL photo. Generated
+      pixels CANNOT hold label typography (every attempt garbles into gibberish);
+      if no photo exists, keep any jar/pack ANONYMOUS and out of focus and say so
+      in the prompt — the brand then lives in narration and the caption layer.
+    - a character both SEEN ACTING and SPEAKING -> put the speech in the lipsync
+      segment and reuse the SAME reference face; never ask a t2v segment to match
+      a lipsync segment's face by description alone.
+  * The first face or physical-strain moment must land inside the FIRST 2 SECONDS
+    of the ad (muted-feed hook rule) — never open on an empty room.
 - The user supplies final creative control — your proposals are STARTING POINTS they will edit.
 
 Respond with STRICT JSON only (no markdown fences):
@@ -229,15 +252,35 @@ class PlanError(RuntimeError):
     pass
 
 
+def _groq_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
+    """Groq/Llama JSON-mode call — the independent-vendor rung of the ladder."""
+    r = httpx.post(GROQ_URL,
+                   headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                   json={"model": GROQ_MODEL,
+                         "temperature": temperature,
+                         "response_format": {"type": "json_object"},
+                         "messages": [
+                             {"role": "system", "content": system_prompt
+                              + "\nRespond with a single JSON object only."},
+                             {"role": "user", "content": user_msg},
+                         ]},
+                   timeout=120)
+    r.raise_for_status()
+    return json.loads(r.json()["choices"][0]["message"]["content"])
+
+
 def _gemini_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
-    """One structured-JSON Gemini call with the platform's healing strategy:
+    """One structured-JSON call with the platform's healing strategy:
       503/500 (overloaded)  -> short backoff, retry same model
       429 (free-tier quota) -> WAIT the delay Google names (fast retries burn
                                MORE quota in the same window), retry; if still
                                exhausted, fall back to flash-lite — free-tier
                                quotas are per model, so its pool is separate.
+      Both Gemini pools dry -> Groq-hosted Llama (separate vendor entirely).
     """
     if not GEMINI_API_KEY:
+        if GROQ_API_KEY:
+            return _groq_json(system_prompt, user_msg, temperature)
         raise PlanError(
             "GEMINI_API_KEY is not set. Add it to adgen-backend/.env "
             "(aistudio.google.com -> Get API key; see file 14)."
@@ -267,6 +310,12 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
             code = e.response.status_code
             last_err = f"Gemini plan failed ({code}): {e.response.text[:800]}"
             if i == len(attempts) - 1 or code not in (429, 500, 503):
+                if GROQ_API_KEY:  # separate vendor — the ladder's last rung
+                    try:
+                        return _groq_json(system_prompt, user_msg, temperature)
+                    except (httpx.HTTPError, KeyError, IndexError,
+                            json.JSONDecodeError):
+                        pass
                 raise PlanError(last_err) from None
             if code == 429:
                 m = re.search(r"retry in ([0-9.]+)s", e.response.text)
@@ -285,6 +334,46 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
         return json.loads(text)
     except (KeyError, IndexError, json.JSONDecodeError) as e:
         raise PlanError(f"Gemini returned an unparseable plan: {e}") from None
+
+
+QUESTIONS_PROMPT = """\
+You are the intake brain of an AI ad studio for Indian SMBs (English + Hindi).
+The user just said what they're advertising. Ask ONLY the follow-up questions whose
+answers would genuinely CHANGE the ad you'd plan — the way a sharp creative director
+probes a new client. Never ask generic filler; make every question specific to THIS
+product/business, and make the chip options concrete guesses for THIS case (localized,
+Indian-market real). Good axes to consider (pick what matters, skip what doesn't):
+who it must reach, the one claim/offer to push, tone/vibe, whether they have a real
+product photo or presenter face to feature, festival/season timing, price positioning.
+
+Return STRICT JSON:
+{"questions": [{"key": "<snake_slug>", "ask": "<the question, short, friendly>",
+  "placeholder": "<example answer text>", "chips": ["<3-5 tappable options>"]}]}
+2 to 4 questions, in the order you'd ask them. Write in the user's language."""
+
+
+def plan_questions(idea: str, language: str = "en") -> dict:
+    """Dynamic intake: the brain reads the user's idea and asks the follow-ups a
+    creative director would — replaces the hardcoded audience/vibe questions."""
+    out = _gemini_json(
+        QUESTIONS_PROMPT,
+        f"Language: {language}\nThe user is advertising: {idea.strip()}",
+        temperature=0.7,
+    )
+    qs = out.get("questions") or []
+    clean = []
+    for q in qs[:4]:
+        if not (q.get("ask") or "").strip():
+            continue
+        clean.append({
+            "key": str(q.get("key") or f"q{len(clean) + 1}")[:40],
+            "ask": str(q["ask"])[:160],
+            "placeholder": str(q.get("placeholder") or "")[:120],
+            "chips": [str(c)[:40] for c in (q.get("chips") or [])[:5]],
+        })
+    if not clean:
+        raise PlanError("intake brain returned no usable questions")
+    return {"questions": clean}
 
 
 def plan(idea: str, language: str = "en", ad_format: str = "9:16",

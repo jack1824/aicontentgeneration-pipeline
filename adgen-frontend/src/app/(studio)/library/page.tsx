@@ -314,6 +314,42 @@ function Lightbox({
 
         <video controls autoPlay className="max-h-[60vh] w-full rounded-xl bg-black" src={api.fileUrl(item)} />
 
+        {/* Multi-model recipe chips — role-first (clients care what an engine
+            DID); technical model names live in the hover tooltip. */}
+        {item.recipe && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {Object.entries(
+              item.recipe.segments.reduce<Record<string, { n: number; model: string }>>(
+                (acc, s) => {
+                  acc[s.role] = { n: (acc[s.role]?.n ?? 0) + 1, model: s.model };
+                  return acc;
+                },
+                {},
+              ),
+            ).map(([role, { n, model }]) => (
+              <span
+                key={role}
+                title={model}
+                className="rounded-full border border-white/10 bg-surface-2 px-2.5 py-1 text-[11px] text-text-muted"
+              >
+                {role}
+                {n > 1 ? ` ×${n}` : ""}
+              </span>
+            ))}
+            {item.recipe.voice && (
+              <span title="ElevenLabs TTS" className="rounded-full border border-white/10 bg-surface-2 px-2.5 py-1 text-[11px] text-text-muted">
+                🎙 {item.recipe.voice}
+              </span>
+            )}
+            <span
+              title={`Every take reviewed by ${item.recipe.qc_judges}; failing takes re-rolled automatically`}
+              className="rounded-full border border-white/10 bg-surface-2 px-2.5 py-1 text-[11px] text-text-muted"
+            >
+              🛡 QC{item.recipe.qc_events ? ` · ${item.recipe.qc_events} caught` : " passed"}
+            </span>
+          </div>
+        )}
+
         <div className="flex items-center gap-2">
           <a
             href={api.fileUrl(item)}

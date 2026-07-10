@@ -30,6 +30,15 @@ QC_MAX_TAKES = max(1, int(os.getenv("QC_MAX_TAKES", "3")))
 # QC can run on its own key/quota so per-take vision calls never starve the
 # planner (same Gemini free-tier pools). Falls back to the shared key.
 QC_GEMINI_API_KEY = os.getenv("QC_GEMINI_API_KEY") or GEMINI_API_KEY
+
+# Second judge: Groq-hosted Llama-4 vision (OpenAI-compatible API, separate
+# vendor = truly independent quota). Used only when the Gemini pass fails —
+# the gate must never go blind just because one vendor throttles us.
+GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip().strip("\"'“”")
+if GROQ_API_KEY and not GROQ_API_KEY.startswith("gsk_"):
+    GROQ_API_KEY = ""  # a non-Groq paste (e.g. an AIza Google key) — ignore it
+_GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 # A freeze under this long can be a deliberate hold; over it reads as a glitch
 # (the dentist audit found a 1.2s dead-frame span a viewer reads as buffering).
 FREEZE_FAIL_S = 0.8
@@ -158,53 +167,95 @@ def _frames_b64(path: str, n: int = 3) -> list[str]:
     return out
 
 
-def vision_review(path: str, context: str) -> dict | None:
-    """One rubric-scored Gemini pass over 3 frames. Returns None on ANY failure —
-    the gate must degrade, never block a render on a judge outage.
+def _normalize_verdict(v: dict) -> dict:
+    return {
+        "sharpness": int(v.get("sharpness", 3)),
+        "anatomy_ok": bool(v.get("anatomy_ok", True)),
+        "props_ok": bool(v.get("props_ok", True)),
+        "matches_brief": bool(v.get("matches_brief", True)),
+        "brand_legible": str(v.get("brand_legible", "n/a")).lower(),
+        "exposure_ok": bool(v.get("exposure_ok", True)),
+        "has_face": bool(v.get("has_face", False)),
+        "has_brand_text": bool(v.get("has_brand_text", False)),
+        "issue": str(v.get("issue", ""))[:200],
+    }
 
-    Quota manners: on 429 we degrade IMMEDIATELY (no sleep-and-retry, no
-    fallback-model hop) — QC runs per take and must never drain the planner's
-    quota ladder while a render thread sits blocked (review finding)."""
-    if not QC_GEMINI_API_KEY:
+
+def _groq_review(frames: list[str], context: str) -> dict | None:
+    """Fallback judge: Llama-4 vision on Groq, same rubric, JSON mode."""
+    if not GROQ_API_KEY:
+        return None
+    try:
+        r = httpx.post(_GROQ_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={"model": _GROQ_MODEL,
+                  "response_format": {"type": "json_object"},
+                  "messages": [
+                      {"role": "system", "content": _RUBRIC.format(context=context[:600] or "(no brief)")},
+                      {"role": "user", "content": [
+                          {"type": "text", "text": "Frames from the take, in order:"},
+                          *({"type": "image_url",
+                             "image_url": {"url": f"data:image/jpeg;base64,{b}"}}
+                            for b in frames),
+                      ]},
+                  ]},
+            timeout=60)
+        r.raise_for_status()
+        v = json.loads(r.json()["choices"][0]["message"]["content"])
+        out = _normalize_verdict(v)
+        out["judge"] = "groq"
+        return out
+    except Exception:
+        return None
+
+
+def vision_review(path: str, context: str) -> dict | None:
+    """One rubric-scored vision pass over 3 frames: Gemini first, Groq-hosted
+    Llama-4 as the independent-vendor fallback. Returns None only when BOTH
+    fail — the gate must degrade, never block a render on a judge outage.
+
+    Quota manners: on Gemini 429 we skip to Groq IMMEDIATELY (no sleep-and-
+    retry, no fallback-model hop) — QC runs per take and must never drain the
+    planner's quota ladder while a render thread sits blocked."""
+    if not QC_GEMINI_API_KEY and not GROQ_API_KEY:
         return None
     try:
         frames = _frames_b64(path)
-        body = {
-            "system_instruction": {"parts": [{"text": _RUBRIC.format(context=context[:600] or "(no brief)")}]},
-            "contents": [{"role": "user", "parts": [
-                {"text": "Frames from the take, in order:"},
-                *({"inline_data": {"mime_type": "image/jpeg", "data": b}} for b in frames),
-            ]}],
-            "generationConfig": {"temperature": 0.1, "response_mime_type": "application/json"},
-        }
-        for i in range(3):
-            try:
-                r = httpx.post(_URL.format(model=_VISION_MODEL),
-                               headers={"x-goog-api-key": QC_GEMINI_API_KEY},
-                               json=body, timeout=90)
-                r.raise_for_status()
-                break
-            except httpx.HTTPStatusError as e:
-                if i == 2 or e.response.status_code not in (500, 503):
-                    return None  # 429/4xx/exhausted: degrade to local checks now
-                time.sleep(2 * (i + 1))
-        text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        v = json.loads(text)
-        return {
-            "sharpness": int(v.get("sharpness", 3)),
-            "anatomy_ok": bool(v.get("anatomy_ok", True)),
-            "props_ok": bool(v.get("props_ok", True)),
-            "matches_brief": bool(v.get("matches_brief", True)),
-            "brand_legible": str(v.get("brand_legible", "n/a")).lower(),
-            "exposure_ok": bool(v.get("exposure_ok", True)),
-            "has_face": bool(v.get("has_face", False)),
-            "has_brand_text": bool(v.get("has_brand_text", False)),
-            "issue": str(v.get("issue", ""))[:200],
-        }
     except Exception:
-        return None
+        return None  # unreadable clip — no judge can help
+    if QC_GEMINI_API_KEY:
+        try:
+            body = {
+                "system_instruction": {"parts": [{"text": _RUBRIC.format(context=context[:600] or "(no brief)")}]},
+                "contents": [{"role": "user", "parts": [
+                    {"text": "Frames from the take, in order:"},
+                    *({"inline_data": {"mime_type": "image/jpeg", "data": b}} for b in frames),
+                ]}],
+                "generationConfig": {"temperature": 0.1, "response_mime_type": "application/json"},
+            }
+            r = None
+            for i in range(3):
+                try:
+                    r = httpx.post(_URL.format(model=_VISION_MODEL),
+                                   headers={"x-goog-api-key": QC_GEMINI_API_KEY},
+                                   json=body, timeout=90)
+                    r.raise_for_status()
+                    break
+                except httpx.HTTPStatusError as e:
+                    r = None
+                    if i == 2 or e.response.status_code not in (500, 503):
+                        break  # 429/4xx: fall through to the Groq judge now
+                    time.sleep(2 * (i + 1))
+            if r is not None:
+                text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+                out = _normalize_verdict(json.loads(text))
+                out["judge"] = "gemini"
+                return out
+        except Exception:
+            pass
+    return _groq_review(frames, context)
 
 
 def review_clip(path: str, context: str = "") -> dict:
