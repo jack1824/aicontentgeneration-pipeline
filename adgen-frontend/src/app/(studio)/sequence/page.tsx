@@ -55,6 +55,13 @@ export default function SequencePage() {
   const [preset, setPreset] = usePersistentState<PresetKey>("adgen-seq-preset", "preview");
   // Shot QC gate override; null = follow the preset (quality→on, fast→off).
   const [qcGate, setQcGate] = usePersistentState<boolean | null>("adgen-seq-qc", null);
+  // Plain LTX b-roll (cinematic WITHOUT a photo) has ONE sampling speed — a
+  // Wan-style 👑 Master would be a lie for an all-plain-LTX timeline (same
+  // guard as the Create page). Brand Lock segments (cinematic + photo) DO have
+  // a real quality tier (30-step dev-checkpoint variant), so they keep Master.
+  const oneSpeed =
+    segments.length > 0 && segments.every((s) => s.pipeline === "cinematic" && !s.image);
+  const effPreset: PresetKey = oneSpeed && preset === "master" ? "moderate" : preset;
   const [aspect, setAspect] = usePersistentState<AspectKey>("adgen-seq-aspect", "9:16");
   const [name, setName] = usePersistentState("adgen-seq-name", "");
 
@@ -222,7 +229,7 @@ export default function SequencePage() {
     setError(null);
     setJob(null);
     setJobId(null);
-    const p = PRESETS[preset];
+    const p = PRESETS[effPreset];
     try {
       const { job_id } = await api.generate({
         mode: "sequence",
@@ -433,13 +440,13 @@ export default function SequencePage() {
           <div className="flex flex-col gap-2">
             <span className="label-cap">Render preset</span>
             <div className="flex gap-1">
-              {(Object.keys(PRESETS) as PresetKey[]).map((k) => (
+              {((oneSpeed ? ["preview", "moderate"] : Object.keys(PRESETS)) as PresetKey[]).map((k) => (
                 <button
                   key={k}
                   onClick={() => setPreset(k)}
-                  className={`flex-1 rounded-btn px-2 py-2 text-xs ${preset === k ? "seg-on" : "seg"}`}
+                  className={`flex-1 rounded-btn px-2 py-2 text-xs ${effPreset === k ? "seg-on" : "seg"}`}
                 >
-                  {PRESETS[k].label}
+                  {oneSpeed && k === "moderate" ? "✨ Polished" : PRESETS[k].label}
                 </button>
               ))}
             </div>
