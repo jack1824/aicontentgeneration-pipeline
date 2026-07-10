@@ -21,6 +21,12 @@ WAN_T2V_MAPPING = {
                                              # values were fixed locally (2026-07-03): steps 4 /
                                              # split 2 / CFG 1.0. NOTE: the graph in the ComfyUI UI
                                              # still has the old values — re-apply if re-exported.
+    # QUALITY-path knobs (2026-07-10 audit): split_steps = how many of `steps`
+    # run on the HIGH-noise expert; the remainder run LOW-noise, which is where
+    # identity/detail is preserved — fewer high steps = less identity drift.
+    "steps": ("128:114", "value"),           # QUALITY steps (default 20)
+    "split_steps": ("128:115", "value"),     # high->low expert handoff (default 10)
+    "cfg": ("128:116", "value"),             # QUALITY CFG (default 3.5)
 }
 
 # workflows/wan_s2v.json — Wan 2.2 14B S2V talking avatar (exported 2026-07-03, native template).
@@ -60,16 +66,23 @@ WAN_I2V_MAPPING = {
     "duration": ("129:161", "value"),        # seconds; length = floor(d*fps+1)
     "fps": ("129:162", "value"),
     "lightning_lora": ("129:131", "value"),  # bool switch; True = FAST 4-step (correctly wired)
+    # QUALITY-path knobs (2026-07-10 audit) — same identity-preserving split
+    # semantics as t2v; the product pipeline's start-image adherence benefits
+    # from biasing steps toward the LOW-noise expert (lower split_steps).
+    "steps": ("129:128", "value"),           # QUALITY steps (default 20)
+    "split_steps": ("129:127", "value"),     # high->low expert handoff (default 10)
+    "cfg": ("129:126", "value"),             # QUALITY CFG (default 3.5)
 }
 
-# As exported, the template defaults are the FAST config: steps 4 / CFG 1 / Lightning LoRA ("107")
-# in the model chain. QUALITY (file 06: S2V wants 20 steps / CFG 6.0 / LoRA BYPASSED — the LoRA
-# visibly degrades S2V) is applied as an API-side patch: bump steps/cfg and rewire node 54's model
-# input straight to the UNETLoader ("37"), skipping the LoRA node entirely.
-WAN_S2V_QUALITY_INPUTS = {
-    "steps": 20,
-    "cfg": 6.0,
-    "model_source": ["37", 0],               # bypass LoRA node "107" -> UNET "37" directly
+# FLIPPED 2026-07-10 (audit): the JSON defaults are now the QUALITY config
+# (steps 20 / CFG 6.0 / LoRA bypassed — node 54 wired straight to UNET "37"),
+# so a code path that forgets to patch fails SAFE at final quality. FAST is the
+# explicit API-side patch: 4 steps / CFG 1 and node 54 rewired through the
+# Lightning LoRA ("107") — which visibly degrades S2V, previews only.
+WAN_S2V_FAST_INPUTS = {
+    "steps": 4,
+    "cfg": 1.0,
+    "model_source": ["107", 0],              # route through Lightning LoRA for speed
 }
 
 # workflows/ltx2_av.json — LTX-2.3 22B text-to-video WITH native synchronized audio
@@ -87,8 +100,17 @@ LTX2_MAPPING = {
     "width": ("228", "width"),               # BASE-pass latent size — pass final//2
     "height": ("228", "height"),
     "length": ("228", "length"),             # video frames = fps*seconds + 1 (126 = 5s@25)
-    "audio_frames": ("214", "frames_number"),  # audio latent frames ≈ 19.2*seconds + 1 (97 = 5s)
+    # audio_frames is VIDEO frames (the node derives audio latent length from it
+    # + frame_rate) — ALWAYS inject the same value as `length`. The old '97 = 5s'
+    # formula was reverse-engineered from a wrong default that shorted every
+    # LTX clip's audio by ~1.2s (2026-07-10 audit; JSON default now 126).
+    "audio_frames": ("214", "frames_number"),
     "lora_strength": ("232", "strength_model"),
+    # NOTE: negative_prompt above is INERT on this graph today — both stages run
+    # cfg=1.0 (distilled) and there is no NAG node; needs a pod re-export to bite.
+    "cfg": ("231", "cfg"),                   # base-stage CFG (default 1.0, distilled)
+    "cfg_refine": ("213", "cfg"),            # refine-stage CFG
+    "refine_strength": ("230", "strength"),  # refine conditioning strength
     "filename_prefix": ("75", "filename_prefix"),
 }
 
@@ -113,9 +135,16 @@ INGREDIENTS_MAPPING = {
     "height": ("12", "height"),
     "length": ("12", "length"),
     "audio_frames": ("13", "frames_number"),  # LTXVEmptyLatentAudio (= length here)
-    "lora_strength": ("4", "strength_model"),  # IC-LoRA weight (1.0; tune to 1.4)
+    "lora_strength": ("4", "strength_model"),  # IC-LoRA weight (default now 1.4 per model card)
     "seed": ("16", "seed"),
     "steps": ("16", "steps"),
+    # 2026-07-10 audit adds. negative_prompt is INERT at the default cfg 1.0
+    # (no NAG node) — a pod re-export must add NAG or a non-distilled quality
+    # tier (dev checkpoint, 30 steps, guidance 3.5-4.0) for negatives to bite.
+    "cfg": ("16", "cfg"),
+    "sampler_name": ("16", "sampler_name"),
+    "scheduler": ("16", "scheduler"),
+    "guide_strength": ("14", "strength"),    # LTXVAddGuide sheet-adherence weight (1.0)
     "filename_prefix": ("22", "filename_prefix"),
 }
 
@@ -142,6 +171,14 @@ LIPDUB_MAPPING = {
     "out_fps": ("72", "fps"),                # float fps (output mux)
     "seed": ("47", "noise_seed"),
     "seed_refine": ("65", "noise_seed"),
+    # 2026-07-10 audit adds (negative_prompt is INERT at cfg 1.0 without NAG —
+    # same caveat as ingredients). Sigmas strings are the only steps control.
+    "sigmas_base": ("48", "sigmas"),         # stage-1 manual sigmas (8-step string)
+    "sigmas_refine": ("66", "sigmas"),       # stage-2 manual sigmas (3-step string)
+    "cfg": ("45", "cfg"),
+    "cfg_refine": ("64", "cfg"),
+    "distilled_strength": ("2", "strength_model"),  # distilled LoRA (0.5)
+    "iclora_strength": ("3", "strength_model"),     # LipDub IC-LoRA weight
     "filename_prefix": ("73", "filename_prefix"),
 }
 
@@ -162,7 +199,14 @@ LONGCAT_MAPPING = {
     "seed_extend1": ("327", "seed"),         # window-2 sampler
     "seed_extend2": ("456", "seed"),         # window-3 sampler
     "steps": ("325", "steps"),               # WanVideoSchedulerv2 (longcat_distill_euler, 12)
-    "cfg": ("427", "value"),                 # shared cfg FloatConstant (1.0)
+    "cfg": ("427", "value"),                 # shared cfg FloatConstant (1.0). NOTE: at cfg 1
+                                             # the negative_prompt is INERT (distilled path).
+    # 2026-07-10 audit adds — lipsync-intensity knobs; audio_cfg_scale runs as a
+    # SEPARATE audio-CFG pass, so it works even on this cfg=1 distilled path.
+    "audio_scale": ("194", "audio_scale"),
+    "audio_cfg_scale": ("194", "audio_cfg_scale"),
+    "lora_strength": ("138", "strength"),    # LongCat distill LoRA (0.9 = Kijai default)
+    "shift": ("325", "shift"),               # distill schedule shift (12)
     "filename_prefix": ("453", "filename_prefix"),
 }
 

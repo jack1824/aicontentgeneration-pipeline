@@ -27,7 +27,7 @@
         0
       ],
       "lora_name": "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors",
-      "strength_model": 1.0
+      "strength_model": 1.4
     }
   },
   "5": {
@@ -70,7 +70,7 @@
         "7",
         0
       ],
-      "frame_rate": 25.0
+      "frame_rate": 24
     }
   },
   "9": {
@@ -119,7 +119,7 @@
         0
       ],
       "frames_number": 121,
-      "frame_rate": 25,
+      "frame_rate": 24,
       "batch_size": 1
     }
   },
@@ -261,7 +261,7 @@
         "20",
         0
       ],
-      "fps": 25.0
+      "fps": 24.0
     }
   },
   "22": {

@@ -78,6 +78,8 @@ export type Job = {
   name?: string | null;
   queue_position?: number;
   image_url?: string | null; // face-gen jobs: preview URL of the rendered still
+  keyframes?: string[]; // keyframe jobs: preview URLs of the derived stills
+  keyframe_paths?: string[]; // keyframe jobs: server paths (feed to sequence segments)
   warnings?: string[]; // accumulating assembly warnings (gaps, tails, overruns)
   sync?: SyncReport; // auto silence analysis of the finished video
 };
@@ -314,6 +316,19 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ video_path }),
+    }).then(jsonOrThrow),
+  // Stills-first: derive per-shot keyframes from the SAME character/product
+  // references, approve them, then animate each as a `product` segment.
+  generateKeyframes: (req: {
+    scenes: string[];
+    character_image?: string;
+    product_image?: string;
+    name: string;
+  }): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/keyframes/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
     }).then(jsonOrThrow),
   endCard: (req: EndCardRequest): Promise<{ job_id: string }> =>
     fetch(`${BASE}/endcard`, {

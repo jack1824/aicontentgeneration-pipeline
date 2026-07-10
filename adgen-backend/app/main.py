@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import avatars, characters, pipeline, postprocess
+from app import avatars, characters, keyframes, pipeline, postprocess
 from app.assembly import ffmpeg
 from app.config import COMFY_POD_URLS, ELEVENLABS_API_KEY
 from app.providers import llm
@@ -405,12 +405,22 @@ def postprocess_endpoint(req: PostprocessRequest):
         try:
             _update(job_id, status="postprocess", progress=10,
                     detail="CodeFormer -> SeedVR2 -> RIFE")
+            pre_dur = ffmpeg.probe(req.video_path)["duration"]
             out = postprocess.postprocess_video(
                 req.video_path, restore_face=req.restore_face,
                 resolution=resolution, source_fps=source_fps,
                 multiplier=req.multiplier, fidelity=req.fidelity,
                 on_submit=on_submit,
             )
+            # Same belt-and-braces as /generate: a duration change means the fps
+            # math went wrong (slow-mo) — never hand back a retimed file.
+            post_dur = ffmpeg.probe(out)["duration"]
+            if abs(post_dur - pre_dur) > 0.3:
+                Path(out).unlink(missing_ok=True)
+                Path(out).with_suffix(".meta.json").unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"post chain changed duration {pre_dur:.2f}s -> {post_dur:.2f}s "
+                    f"(bad source_fps?) — discarded the retimed output")
             _update(job_id, status="done", progress=100, detail="", video_path=out)
         except Exception as e:
             _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
@@ -858,6 +868,47 @@ def generate_scene_endpoint(req: SceneGenRequest):
             )
             _update(job_id, status="done", progress=100, detail="", video_path=png,
                     image_url=f"/assets-files/stills/{Path(png).name}")
+        except JobCancelled:
+            pass
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+class KeyframeSetRequest(BaseModel):
+    """Stills-first stage: derive one keyframe per scene from the SAME character
+    still and/or product photo (Gemini image edit) — approve the stills, then
+    animate each as a sequence `product` segment. Pod-free; needs image quota."""
+    scenes: list[str] = Field(min_length=1, max_length=12)
+    character_image: str | None = None   # canonical character still (local path)
+    product_image: str | None = None     # canonical product photo (local path)
+    name: str = Field(pattern=r"^[a-zA-Z0-9._-]+$")
+
+
+@app.post("/keyframes/generate")
+def generate_keyframes_endpoint(req: KeyframeSetRequest):
+    if not req.character_image and not req.product_image:
+        raise HTTPException(422, "keyframes need character_image and/or product_image")
+    for label, p in (("character_image", req.character_image),
+                     ("product_image", req.product_image)):
+        if p and not Path(p).exists():
+            raise HTTPException(404, f"{label} not found: {p}")
+    job_id = _new_job("keyframes", req.name)
+
+    def run() -> None:
+        def on_progress(status: str, pct: int, detail: str) -> None:
+            if JOBS.get(job_id, {}).get("status") == "cancelled":
+                raise JobCancelled()
+            _update(job_id, status=status, progress=pct, detail=detail)
+        try:
+            paths = keyframes.derive_set(
+                req.scenes, req.name, req.character_image, req.product_image,
+                on_progress=on_progress)
+            _update(job_id, status="done", progress=100, detail="",
+                    keyframes=[f"/assets-files/keyframes/{Path(p).name}" for p in paths],
+                    keyframe_paths=paths)
         except JobCancelled:
             pass
         except Exception as e:

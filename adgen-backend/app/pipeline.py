@@ -31,11 +31,20 @@ from app.workflow_mappings import (
     LTX2_MAPPING,
     WAN_I2V_MAPPING,
     WAN_S2V_MAPPING,
-    WAN_S2V_QUALITY_INPUTS,
+    WAN_S2V_FAST_INPUTS,
     WAN_T2V_MAPPING,
 )
 
 DEFAULT_BASE_SEED = 1000
+
+# Appended to every image-anchored (i2v) prompt — the start image is the source
+# of truth and the motion prompt must not invite re-imagination (2026-07-10
+# consistency research: style/identity words in i2v prompts cause drift; the
+# preservation instruction measurably reduces it).
+I2V_PRESERVE = (
+    " Preserve the exact same subject, face, clothing, label details, colors, "
+    "lighting and background as the start image throughout the entire shot."
+)
 
 # Per-pipeline output homes (user rule: separate folders per pipeline so nothing mixes up).
 S2V_VIDEO_DIR = Path("outputs/wans2v/video")
@@ -51,13 +60,21 @@ LONGCAT_AUDIO_DIR = Path("outputs/longcat/audio")
 ING_VIDEO_DIR = Path("outputs/ingredients/video")
 ING_AUDIO_DIR = Path("outputs/ingredients/audio")
 
-# Ingredients (IC-LoRA) constants: trained bucket is 768x448 / 121 frames; the
-# pod template runs 25fps. 121 frames @25fps ≈ 4.84s per clip, native audio.
-ING_FPS = 25
+# Ingredients (IC-LoRA) constants — the model card's ONLY trained regime
+# (2026-07-10 consistency research): 768x448, 121 frames, 24fps, LoRA 1.4.
+# Requests at other sizes go OUT OF DISTRIBUTION (documented failure modes:
+# sheet panel structure leaking into output, reference ignored) — the graph is
+# therefore PINNED to this bucket and assembly scales/pads into the ad frame.
+ING_FPS = 24
 ING_FRAMES = 121
+ING_TRAINED_W = 768
+ING_TRAINED_H = 448
+ING_LORA_STRENGTH = 1.4
 
-# LTX-2.3 constants (workflows/ltx2_av.json): 25fps clips, ~5s each; the audio
-# latent runs at ~19.2 frames/s (97 frames = 5s in the official template).
+# LTX-2.3 constants (workflows/ltx2_av.json): 25fps clips, ~5s each. The audio
+# latent node takes VIDEO frames (same value as `length`) — the old "97 = 5s"
+# belief was a wrong graph default that shorted every clip's audio ~1.2s
+# (2026-07-10 audit; the JSON now defaults both to 126).
 LTX_FPS = 25
 LTX_CLIP_SECONDS = 5
 
@@ -544,8 +561,10 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                 "seed_extend2": base_seed + i * 3 + 2,
                 **{k: v for k, v in common.items() if k != "seed"},
             }
-            if not fast:
-                inputs.update(WAN_S2V_QUALITY_INPUTS)
+            if fast:
+                # Graph defaults are QUALITY since 2026-07-10 (fail-safe); FAST
+                # is the explicit downgrade patch for previews.
+                inputs.update(WAN_S2V_FAST_INPUTS)
             if req.get("steps"):
                 inputs["steps"] = req["steps"]
             clip = comfy.comfy_generate(
@@ -567,8 +586,12 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                 # identity held (the model can't hallucinate a different jar).
                 sheet_name = upload_once(seg["image"])
                 desc = seg.get("image_description") or "the product in the reference photo"
-                w = req.get("width") or 768
-                h = req.get("height") or 448
+                # PINNED to the IC-LoRA's ONLY trained bucket (768x448/121f/24fps,
+                # strength 1.4 per the model card) — the brandlock postmortem ran
+                # request dims (720x1280) through it and got the documented
+                # out-of-distribution failures (panel leakage, ignored sheet).
+                # Assembly scales/pads the landscape clip into the ad's frame.
+                w, h = ING_TRAINED_W, ING_TRAINED_H
                 inputs = {
                     "prompt": f"Reference sheet: {desc}\n\nGenerated video: {seg['prompt']}",
                     "sheet_image": sheet_name,
@@ -576,6 +599,7 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                     "width": w, "height": h,
                     "length": ING_FRAMES, "sheet_frames": ING_FRAMES,
                     "audio_frames": ING_FRAMES,
+                    "lora_strength": ING_LORA_STRENGTH,
                     "seed": base_seed + i * 3,
                     "filename_prefix": f"video/adgen_seq_{seg_stem}",
                 }
@@ -627,6 +651,7 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
             if fast:
                 inputs["lightning_lora"] = True
             if pipeline_kind == "product":
+                inputs["prompt"] = seg["prompt"] + I2V_PRESERVE
                 inputs["start_image"] = upload_once(seg["image"])
                 wf, mapping = comfy.load_workflow("wan_i2v"), WAN_I2V_MAPPING
             else:  # overlay (t2v b-roll)
@@ -722,7 +747,7 @@ def _generate_product(req: dict, name: str, report, on_submit=None) -> str:
     for i, shot in enumerate(shots):
         pct = 12 + int(72 * i / len(shots))
         report("generating", pct, f"clip {i + 1}/{len(shots)}")
-        inputs = {"prompt": shot["prompt"], "start_image": image_name,
+        inputs = {"prompt": shot["prompt"] + I2V_PRESERVE, "start_image": image_name,
                   "seed": base_seed + i}
         if shot.get("negative_prompt"):
             inputs["negative_prompt"] = shot["negative_prompt"]
@@ -898,10 +923,10 @@ def _generate_ingredients(req: dict, name: str, report, on_submit=None) -> str:
     wf = comfy.load_workflow("ltx2_ingredients")
     shots = req["shots"]
     base_seed = req.get("seed") or DEFAULT_BASE_SEED
-    # Trained bucket is 768x448-class sizes; the sheet is scaled to the SAME
-    # frame as the output (reference downscale factor 1).
-    w = req.get("width") or 768
-    h = req.get("height") or 448
+    # PINNED to the trained bucket (see ING_TRAINED_* constants) — request dims
+    # used to override this, sending 720x1280 out of distribution (brandlock
+    # postmortem). The sheet is scaled to the SAME frame as the output.
+    w, h = ING_TRAINED_W, ING_TRAINED_H
     clips: list[str] = []
     qc_records: list[dict] = []
     for i, shot in enumerate(shots):
@@ -914,6 +939,7 @@ def _generate_ingredients(req: dict, name: str, report, on_submit=None) -> str:
             "width": w, "height": h,
             "length": ING_FRAMES, "sheet_frames": ING_FRAMES,
             "audio_frames": ING_FRAMES,
+            "lora_strength": ING_LORA_STRENGTH,
             "seed": base_seed + i,
             "filename_prefix": f"video/adgen_ingredients_{name}",
         }
@@ -1261,7 +1287,7 @@ def _generate_lipsync(req: dict, name: str, report, on_submit=None) -> str:
       - the output video comes back WITH the narration already muxed in (CreateVideo node),
         so assembly is just an optional music bed — no overlay.
       - the export's defaults are the FAST config (4 steps / CFG 1 / Lightning LoRA). QUALITY
-        applies WAN_S2V_QUALITY_INPUTS (20 / 6.0 / LoRA bypassed) per file 06 — the LoRA
+        graph defaults are QUALITY (20 / 6.0 / LoRA bypassed); FAST patches down — the LoRA
         visibly degrades S2V, so finals must run quality.
     """
     if not req.get("script"):
@@ -1316,8 +1342,8 @@ def _generate_lipsync(req: dict, name: str, report, on_submit=None) -> str:
         inputs["width"] = req["width"]
     if req.get("height"):
         inputs["height"] = req["height"]
-    if req.get("quality") != "fast":
-        inputs.update(WAN_S2V_QUALITY_INPUTS)  # 20 steps / CFG 6.0 / LoRA bypassed
+    if req.get("quality") == "fast":
+        inputs.update(WAN_S2V_FAST_INPUTS)     # explicit preview downgrade (defaults = QUALITY)
     if req.get("steps"):
         inputs["steps"] = req["steps"]         # explicit user override wins over presets
 

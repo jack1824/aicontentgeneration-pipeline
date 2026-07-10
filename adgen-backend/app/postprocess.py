@@ -24,6 +24,8 @@ POSTPROCESS_MAPPING = {
     "fidelity": ("3", "codeformer_fidelity"),  # 0=max restoration, 1=max fidelity (docs 0.5-0.7)
     "upscale_input": ("6", "image"),         # link; ["1",0] skips CodeFormer (product clips)
     "resolution": ("6", "resolution"),       # SeedVR2 target short-side (864 = 2x of 432)
+    "batch": ("6", "batch_size"),            # SeedVR2 temporal window, MUST be 4n+1; small
+                                             # windows flicker (JSON default now 21, was 5)
     "out_fps": ("8", "frame_rate"),          # source fps x RIFE multiplier (16x2 = 32)
     "multiplier": ("7", "multiplier"),       # RIFE interpolation factor
 }

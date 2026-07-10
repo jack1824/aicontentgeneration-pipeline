@@ -69,10 +69,18 @@ Rules:
   STYLE -> SUBJECT -> ACTION -> SCENE -> CAMERA -> LIGHT/COLOR -> AUDIO.
   * STYLE: every prompt opens verbatim "Realistic documentary footage:" (or
     "Realistic documentary close-up:" for insert shots).
-  * SUBJECT: define each recurring character ONCE as a ~20-word anchor (age, face,
-    hair, exact clothing) and paste it WORD-FOR-WORD into every shot it appears in;
-    same for the location anchor. Never paraphrase an anchor — verbatim repetition
-    is what keeps the same actor and set across cuts.
+  * SUBJECT: THREE FROZEN BLOCKS, defined once per ad and pasted BYTE-IDENTICAL into
+    every shot they appear in (consistency lives in verbatim repetition, never in
+    paraphrase): (1) CHARACTER block — ~20-25 words: age, face, hair, and EVERY
+    garment with its color and fabric; (2) SETTING block — the location with 3-4
+    fixed physical details; (3) LOOK block — 2-3 concrete light/color phrases
+    ("warm golden window light against cool steel shadows") reused in every shot
+    so the whole ad grades as one film. Between shots, ONLY the action sentence
+    and the camera preset may change.
+  * WARDROBE-DRIFT NEGATIVES: for each character, append their concrete garment
+    failure modes to that ad's negative block, naming the actual garments from the
+    anchor ("different kurta color, missing turban, added dupatta, changed jewelry,
+    different hoodie") — abstract terms like "inconsistent clothing" do nothing.
   * ACTION: one small physical action that TELLS the story beat — "his finger traces
     an empty line in the appointment diary", "her thumb taps the phone three
     deliberate times" — never a summary like "he looks worried". Motion is
@@ -82,12 +90,19 @@ Rules:
     the shaker and drinks" — never grip-with-one-hand-while-shaking-the-other).
     A prop that recurs across shots gets its own short verbatim anchor, pasted
     like a character anchor ("the matte black shaker with a steel mixing ball").
-  * CAMERA: exactly ONE move, emotionally motivated ("slow creeping zoom toward his
-    still face", "camera rising from his chest to his face as he begins to smile") —
-    AND always name the END FRAMING where the move settles ("...settling into a
-    medium shot, holding chest-up"). An unbounded push-in keeps pushing for the
-    whole clip and collapses into an ugly extreme close-up by the last second;
-    never end a shot tighter than a close-up unless the beat demands it.
+  * CAMERA: pick exactly ONE preset from the CLOSED MENU below and copy it VERBATIM —
+    freeform camera prose is forbidden (it produces unbounded push-ins that collapse
+    into ugly extreme close-ups by the last second):
+      "static locked-off medium shot, holding chest-up"
+      "slow lateral dolly settling into a steady medium shot"
+      "slow push-in from wide, settling at a medium shot and holding there"
+      "slow pull-back opening from medium to wide, subject fully in frame throughout"
+      "quarter orbit settling front-on at medium-close distance and holding"
+      "handheld follow at walking pace, keeping the subject centered at medium"
+      "low-angle static hero shot, waist-up"
+      "top-down static tabletop shot"
+      "crane rise from chest height to a high wide reveal"
+      "rack focus from foreground product to subject at medium, camera static"
   * LIGHT/COLOR carries the EMOTION — never name a feeling, grade it: sadness =
     "desaturated cold blue-grey tones, heavy silence"; dread = "lit from below, cold
     shadows"; hope = "sudden warm golden light floods the room"; success = "warm
