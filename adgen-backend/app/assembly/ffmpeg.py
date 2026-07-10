@@ -515,14 +515,28 @@ def burn_captions(video: str, captions: list[dict], out: str = "captioned.mp4") 
         return video
     info = probe(video)
     h = info["height"] or 1280
+    w = info["width"] or 720
     font = _font()
+    # drawtext has no wrapping: fold long lines to fit the frame width. The
+    # per-char width heuristic (~0.55 x fontsize) holds for Latin+Devanagari
+    # in Arial Unicode at these sizes.
+    max_chars = max(12, int(w / ((h // 20) * 0.55)))
     tmp_files: list[str] = []
     draws: list[str] = []
     try:
         for c in captions:
+            words, lines, cur = str(c["text"]).strip().split(), [], ""
+            for word in words:
+                if cur and len(cur) + 1 + len(word) > max_chars:
+                    lines.append(cur)
+                    cur = word
+                else:
+                    cur = f"{cur} {word}".strip()
+            if cur:
+                lines.append(cur)
             tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
                                              encoding="utf-8")
-            tf.write(str(c["text"]).strip())
+            tf.write("\n".join(lines))
             tf.close()
             tmp_files.append(tf.name)
             pos = c.get("position", "bottom")
@@ -566,22 +580,27 @@ def end_card(
     fps = info["fps"] or 16.0
     font = _font()
 
+    # Text must FIT the frame: drawtext neither wraps nor shrinks, so cap each
+    # row's fontsize by the line length (~0.55 x fontsize per char heuristic).
+    def _fit(size: int, text: str) -> int:
+        return max(h // 40, min(size, int(w * 0.94 / (max(len(text), 1) * 0.55))))
+
     # With a REAL product photo on the card (ad-agent panel fix: the closing
     # pack shot must be actual pixels — generated labels garble), the photo
     # owns the upper half and the text rows shift down to make room.
     if product_image:
-        rows = [(brand.strip(), h // 12, "white", 0.62)]
+        rows = [(brand.strip(), _fit(h // 12, brand), "white", 0.62)]
         if tagline and tagline.strip():
-            rows.append((tagline.strip(), h // 26, "0xb9b9c0", 0.72))
+            rows.append((tagline.strip(), _fit(h // 26, tagline), "0xb9b9c0", 0.72))
         if offer and offer.strip():
-            rows.append((offer.strip(), h // 18, END_CARD_ACCENT, 0.80))
+            rows.append((offer.strip(), _fit(h // 18, offer), END_CARD_ACCENT, 0.80))
     else:
         # (text, fontsize, color, y-fraction) — brand dominates, offer pops in coral.
-        rows = [(brand.strip(), h // 10, "white", 0.42)]
+        rows = [(brand.strip(), _fit(h // 10, brand), "white", 0.42)]
         if tagline and tagline.strip():
-            rows.append((tagline.strip(), h // 24, "0xb9b9c0", 0.56))
+            rows.append((tagline.strip(), _fit(h // 24, tagline), "0xb9b9c0", 0.56))
         if offer and offer.strip():
-            rows.append((offer.strip(), h // 18, END_CARD_ACCENT, 0.68))
+            rows.append((offer.strip(), _fit(h // 18, offer), END_CARD_ACCENT, 0.68))
 
     tmp_files: list[str] = []
     draws: list[str] = []
