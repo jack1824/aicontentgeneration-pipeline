@@ -886,7 +886,7 @@ def render_assets(video: str):
         raise HTTPException(422, "only videos under outputs/ can be opened")
     import re as _re
     prefix = _re.sub(r"-(full-final|final|branded|post|card\d*|joined).*$", "", src.stem)
-    clips = []
+    raw: list[dict] = []
     for p in sorted(src.parent.glob(f"{prefix}-*.mp4")):
         if p == src or "-final" in p.stem or p.stem.endswith("-joined") or p.stem.endswith("-branded"):
             continue
@@ -894,9 +894,36 @@ def render_assets(video: str):
             info = ffmpeg.probe(str(p))
         except Exception:
             continue
-        clips.append({"path": str(p), "url": f"/files/{p.relative_to('outputs').as_posix()}",
-                      "name": p.name, "duration": info["duration"],
-                      "voice_lock": _voice_locked(p)})
+        raw.append({"path": str(p), "url": f"/files/{p.relative_to('outputs').as_posix()}",
+                    "name": p.name, "duration": info["duration"],
+                    "voice_lock": _voice_locked(p)})
+    # Group QC takes as ALTERNATES of their shot (keep-all-takes rule): the
+    # canonical file is what shipped; -takeN siblings are swappable in the
+    # Timeline. Grouping key strips the take suffix (and -voiced, so a silent
+    # kept take groups with its voiced shipped sibling).
+    groups: dict[str, dict] = {}
+    for c in raw:
+        stem = Path(c["path"]).stem
+        key = _re.sub(r"-take\d+$", "", stem).removesuffix("-voiced")
+        g = groups.setdefault(key, {"main": None, "alts": []})
+        if _re.search(r"-take\d+$", stem):
+            m = _re.search(r"-take(\d+)$", stem)
+            g["alts"].append({**c, "take": int(m.group(1))})
+        elif g["main"] is None or stem.endswith("-voiced"):
+            g["main"] = c  # voiced version wins as the canonical representative
+        else:
+            g["alts"].append({**c, "take": 0})
+    clips = []
+    for g in groups.values():
+        main = g["main"] or (g["alts"] and g["alts"][0])
+        if not main:
+            continue
+        main = dict(main)
+        main["alternates"] = sorted(
+            (a for a in g["alts"] if a["path"] != main["path"]),
+            key=lambda a: a.get("take", 0))
+        clips.append(main)
+    clips.sort(key=lambda c: c["name"])
     audio = []
     audio_dir = src.parent.parent / "audio"
     if audio_dir.is_dir():

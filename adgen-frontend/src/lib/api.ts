@@ -335,9 +335,18 @@ export const api = {
       body: JSON.stringify({ video_path }),
     }).then(jsonOrThrow),
   // Timeline editor: a final's editable ingredients (sibling clips + narration).
+  // Each clip may carry `alternates` — the kept QC takes of the same shot,
+  // swappable in the Timeline (keep-all-takes rule).
   renderAssets: (video: string): Promise<{
     video: { path: string; duration: number };
-    clips: { path: string; url: string; name: string; duration: number; voice_lock: boolean }[];
+    clips: {
+      path: string;
+      url: string;
+      name: string;
+      duration: number;
+      voice_lock: boolean;
+      alternates?: { path: string; url: string; name: string; duration: number; take: number }[];
+    }[];
     audio: { path: string; url: string; name: string }[];
   }> => fetch(`${BASE}/render-assets?video=${encodeURIComponent(video)}`).then(jsonOrThrow),
   // Timeline export: frame-accurate trims + join + narration/music. FFmpeg-only.

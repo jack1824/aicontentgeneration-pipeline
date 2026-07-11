@@ -13,6 +13,8 @@ import { api, Job, OutputItem } from "@/lib/api";
 
 const PPS = 44; // track scale: pixels per second
 
+type TAlternate = { path: string; url: string; name: string; duration: number; take: number };
+
 type TClip = {
   path: string;
   url: string;
@@ -21,6 +23,7 @@ type TClip = {
   voice_lock: boolean;
   in_s: number;
   out_s: number; // exclusive end of the used window
+  alternates?: TAlternate[]; // other QC takes of this same shot — swappable
 };
 
 type TAudio = { path: string; url: string; name: string };
@@ -125,6 +128,27 @@ function TimelineStudio() {
     const keep = Math.min(2.2, c.duration);
     const start = Math.max(0, (c.duration - keep) / 2);
     patch(i, { in_s: +start.toFixed(2), out_s: +(start + keep).toFixed(2) });
+  };
+
+  // Swap a shot to one of its kept QC takes (the previous choice joins the
+  // alternates, so switching is always reversible).
+  const useTake = (i: number, alt: TAlternate) => {
+    const c = clips[i];
+    const currentAsAlt: TAlternate = {
+      path: c.path, url: c.url, name: c.name, duration: c.duration, take: -1,
+    };
+    patch(i, {
+      path: alt.path,
+      url: alt.url,
+      name: alt.name,
+      duration: alt.duration,
+      in_s: 0,
+      out_s: alt.duration,
+      alternates: [
+        ...(c.alternates ?? []).filter((a) => a.path !== alt.path),
+        currentAsAlt,
+      ].sort((a, b) => a.take - b.take),
+    });
   };
 
   const addFromPool = (o: OutputItem) =>
@@ -272,6 +296,23 @@ function TimelineStudio() {
                   className="w-full accent-(--accent-grad-to)"
                   aria-label="Trim end"
                 />
+                {/* Take switcher — the kept QC takes of this shot (keep-all-takes) */}
+                {!!c.alternates?.length && (
+                  <div className="mt-1 flex flex-wrap items-center gap-1">
+                    <span className="text-[9px] text-text-muted">takes:</span>
+                    <span className="rounded bg-fuchsia-500/30 px-1.5 py-0.5 text-[9px]">✓ current</span>
+                    {c.alternates.map((a) => (
+                      <button
+                        key={a.path}
+                        onClick={() => useTake(i, a)}
+                        title={a.name}
+                        className="seg rounded px-1.5 py-0.5 text-[9px]"
+                      >
+                        {a.take > 0 ? `take ${a.take}` : "shipped"}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="mt-1 flex items-center justify-between">
                   <div className="flex gap-1">
                     <button onClick={() => move(i, -1)} className="seg rounded px-1.5 py-0.5 text-[10px]" aria-label="Move left">←</button>
