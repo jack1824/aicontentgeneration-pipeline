@@ -193,6 +193,25 @@ Rules:
       a lipsync segment's face by description alone.
   * The first face or physical-strain moment must land inside the FIRST 2 SECONDS
     of the ad (muted-feed hook rule) — never open on an empty room.
+- CINEMATIC RHYTHM (the premium-commercial grammar, from the 2026-07-11 reference
+  study — this pacing is why expensive ads FEEL expensive):
+  * Shot-size alternation: wide establish -> medium -> close-up -> environmental
+    detail insert -> back to wide. Never two same-size shots back to back.
+  * The BREATHE rule: after every 3-4 close/medium shots, cut back to a wide
+    landscape/environment shot to reset the viewer before diving back in.
+  * ONE protagonist carries the whole piece (verbatim anchor in every shot they
+    appear in); the arc is a journey — establish -> immerse -> intimate ->
+    breathe -> transform. The ENVIRONMENT is the final hero: close on a very
+    wide shot where the world dwarfs the character.
+  * Detail inserts are mandatory world-building: macro hands-on-texture shots
+    (earth, fabric, product surface, steam) with very shallow depth of field —
+    at least one per 15s of runtime. They add sensory realism no wide can.
+  * Every shot carries exactly ONE subtle motivated movement (the camera preset
+    menu above) — no static tripod frames, no flashy transitions; straight cuts
+    motivated by movement or composition.
+  * Emotion is UNDERPLAYED: thoughtful, observational faces — never exaggerated
+    acting. Warm golden-hour light and earth tones (sand, brown, orange, muted
+    blue, olive) held across every shot; simple earthy wardrobe.
 - The user supplies final creative control — your proposals are STARTING POINTS they will edit.
 
 Respond with STRICT JSON only (no markdown fences):
