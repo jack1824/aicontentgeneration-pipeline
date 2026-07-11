@@ -915,8 +915,8 @@ def render_assets(video: str):
     for c in raw:
         stem = Path(c["path"]).stem
         key = _re.sub(r"-take\d+$", "", stem).removesuffix("-voiced")
-        # scene number for display, from the -segN / -clipN convention
-        mscene = _re.search(r"-(?:seg|clip)(\d+)", stem)
+        # scene number for display: -sceneN (current), -segN / -clipN (legacy)
+        mscene = _re.search(r"-(?:scene|seg|clip)(\d+)", stem)
         c = {**c, "scene": int(mscene.group(1)) if mscene else None}
         g = groups.setdefault(key, {"main": None, "alts": []})
         m = _re.search(r"-take(\d+)$", stem)

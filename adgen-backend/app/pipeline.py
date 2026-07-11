@@ -556,7 +556,10 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
         pct = 5 + int(80 * i / n)
         pipeline_kind = seg["pipeline"]
         report("generating", pct, f"segment {i + 1}/{n} ({pipeline_kind})")
-        seg_stem = f"{name}-seg{i + 1}"
+        # user-facing naming: files read "myad-scene3-take2.mp4" so scenes are
+        # distinguishable at a glance in the Library/Timeline (old renders keep
+        # their -segN names; render-assets parses both conventions)
+        seg_stem = f"{name}-scene{i + 1}"
         # Mixed engines on one GPU: evict the other family's weights at each
         # switch (LTX 22B + Wan 14B don't fit side by side on the A40; the
         # ingredients checkpoint also differs from cinematic's dev checkpoint).

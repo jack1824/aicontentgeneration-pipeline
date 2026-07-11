@@ -345,7 +345,7 @@ export const api = {
       name: string;
       duration: number;
       voice_lock: boolean;
-      scene?: number | null; // from the -segN/-clipN naming convention
+      scene?: number | null; // from the -sceneN naming convention (-segN/-clipN legacy)
       take?: number; // which QC take this file is (from the -qc.json sidecar)
       alternates?: { path: string; url: string; name: string; duration: number; take: number; scene?: number | null }[];
     }[];
