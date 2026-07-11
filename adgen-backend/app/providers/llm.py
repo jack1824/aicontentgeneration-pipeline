@@ -212,6 +212,26 @@ Rules:
   * Emotion is UNDERPLAYED: thoughtful, observational faces — never exaggerated
     acting. Warm golden-hour light and earth tones (sand, brown, orange, muted
     blue, olive) held across every shot; simple earthy wardrobe.
+- CINEMATIC DIRECTOR MODE (when an approach's pipeline is "cinematic" and the idea
+  wants feeling over argument — this is the PREMIUM format, not the default):
+  * Use the named story template "The Journey": travel -> arrival -> exploration ->
+    reflection -> transformation. NO dialogue, no narration hard-sell — the story is
+    told visually; audio is ambience/music only (LTX native sound). It sells with
+    feeling (tourism, apparel, jewelry, vehicles, real estate); HOOK->PRODUCT->
+    PROOF->CTA sells with argument — pick the right genre for the idea.
+  * A 30s Journey needs 12-15 SHORT story beats, not 6 long ones — each shot is
+    generated at ~5s but only its best ~2s is used at the edit (declare it).
+  * Every character shot must be planned as i2v FROM ONE HERO PORTRAIT of the
+    protagonist (list the portrait in needs_from_user; offer to generate it first)
+    — never fresh t2v per shot, or the protagonist becomes 8 different people.
+  * Each cinematic shot DECLARES its craft fields (see schema): shot_type follows
+    the rotation WIDE -> MEDIUM -> CLOSE -> DETAIL with a WIDE breather every 3-4
+    shots; camera_move is EXACTLY one of: push-in | pull-back | handheld drift |
+    lateral track | drone glide | dolly forward | orbit | follow.
+  * Append the project's ONE grade line verbatim to every shot prompt (golden
+    hour, soft shadows, warm earth tones — sand/brown/orange/muted blue/olive,
+    simple earthy costume) — the shared grade is what makes 15 generations feel
+    like one film.
 - The user supplies final creative control — your proposals are STARTING POINTS they will edit.
 
 Respond with STRICT JSON only (no markdown fences):
@@ -219,12 +239,16 @@ Respond with STRICT JSON only (no markdown fences):
   "title": str, "pipeline": "overlay|lipsync|product|cinematic|longcat|sequence|multitalk",
   "available": bool, "audio_strategy": str, "why": str,
   "narration_script": str,
-  "shots": [{"prompt": str, "negative_prompt": str}],
+  "shots": [{"prompt": str, "negative_prompt": str,
+             "shot_type": "wide|medium|close|detail",
+             "camera_move": str, "duration_used": float}],
   "segments": [{"pipeline": "overlay|cinematic|product|lipsync", "prompt": str,
                 "negative_prompt": str, "script": str}],
   "needs_from_user": [str]
 }]}
-("segments" only for sequence proposals; otherwise omit it or use [].)
+("segments" only for sequence proposals; otherwise omit it or use [].
+shot_type/camera_move/duration_used are REQUIRED for cinematic approaches,
+optional elsewhere; duration_used is the best-beat length in seconds, 1.5-2.5.)
 """
 
 
