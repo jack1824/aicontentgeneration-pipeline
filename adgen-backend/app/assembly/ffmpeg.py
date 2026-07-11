@@ -382,6 +382,17 @@ def replace_audio(
     return out
 
 
+def cut_precise(src: str, start_s: float, dur_s: float, out: str) -> str:
+    """Frame-accurate re-encode cut (stream-copy would snap to keyframes) —
+    the Timeline editor's trim primitive. Extracted from postprocess.py's
+    chunker; audio comes along when present."""
+    _run(["ffmpeg", "-y", "-loglevel", "error",
+          "-ss", f"{max(0.0, start_s):.3f}", "-i", src, "-t", f"{max(0.1, dur_s):.3f}",
+          "-c:v", "libx264", "-crf", "16", "-preset", "fast",
+          "-c:a", "aac", out])
+    return out
+
+
 def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
     """Concat clips from MIXED workflows (sequence mode: t2v + i2v + S2V + LTX segments).
 

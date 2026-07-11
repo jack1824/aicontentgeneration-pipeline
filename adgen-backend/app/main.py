@@ -767,6 +767,148 @@ def sync_report_endpoint(req: SyncReportRequest):
     return ffmpeg.sync_report(str(src))
 
 
+class TimelineClip(BaseModel):
+    path: str
+    in_s: float = Field(default=0.0, ge=0)
+    out_s: float | None = Field(default=None, gt=0)  # None = play to clip end
+
+
+class TimelineNarration(BaseModel):
+    path: str | None = None              # reuse an existing narration file…
+    script: str | None = None            # …or synthesize fresh
+    voice_id: str | None = None
+    language: str = "hi"
+    offset_ms: int = Field(default=0, ge=0, le=20000)
+    gain: float = Field(default=1.0, ge=0.2, le=3.0)
+
+
+class TimelineExportRequest(BaseModel):
+    """Timeline editor export (client problem #3): trim each clip frame-
+    accurately (cut_precise), join with the conform pass, lay narration/music.
+    Every adjustment is FFmpeg-only — never re-renders video."""
+    clips: list[TimelineClip] = Field(min_length=1, max_length=24)
+    narration: TimelineNarration | None = None
+    music: str | None = None
+    music_gain: float = Field(default=0.15, ge=0.0, le=1.0)
+    name: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9._-]+$")
+
+
+@app.post("/timeline/export")
+def timeline_export_endpoint(req: TimelineExportRequest):
+    for c in req.clips:
+        cp = Path(c.path)
+        if not cp.exists():
+            raise HTTPException(404, f"clip not found: {c.path}")
+        if not _under_outputs(cp):
+            raise HTTPException(422, f"only clips under outputs/ can be edited: {c.path}")
+    if req.narration and req.narration.path:
+        np_ = Path(req.narration.path)
+        if not np_.exists():
+            raise HTTPException(404, f"narration not found: {req.narration.path}")
+    if req.music and not Path(req.music).exists():
+        raise HTTPException(404, f"music file not found: {req.music}")
+    wants_narration = bool(req.narration and (req.narration.path or req.narration.script))
+    if wants_narration and any(_voice_locked(Path(c.path)) for c in req.clips):
+        raise HTTPException(
+            422,
+            "This timeline contains lip-synced avatar clips — a new narration "
+            "would desync their mouths. Remove them or drop the narration.",
+        )
+    job_id = _new_job("timeline", req.name)
+
+    def run() -> None:
+        import tempfile
+        try:
+            out_dir = Path("outputs/remix/video")
+            audio_dir = Path("outputs/remix/audio")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            base = req.name or f"timeline-{job_id}"
+            final_path = str(out_dir / f"{base}-final.mp4")
+            with tempfile.TemporaryDirectory(dir=str(out_dir)) as tmp:
+                pieces: list[str] = []
+                for i, c in enumerate(req.clips):
+                    dur = ffmpeg.probe(c.path)["duration"]
+                    out_s = min(c.out_s, dur) if c.out_s else dur
+                    if c.in_s <= 0.05 and out_s >= dur - 0.05:
+                        pieces.append(c.path)  # untrimmed — use as-is
+                        continue
+                    _update(job_id, status="assembling", progress=5 + int(50 * i / len(req.clips)),
+                            detail=f"trimming clip {i + 1}/{len(req.clips)}")
+                    pieces.append(ffmpeg.cut_precise(
+                        c.path, c.in_s, out_s - c.in_s, str(Path(tmp) / f"t{i}.mp4")))
+                _update(job_id, status="assembling", progress=60, detail="joining timeline")
+                joined = ffmpeg.concat_reencode(pieces, out=str(Path(tmp) / "joined.mp4"))
+
+                narration_file: str | None = None
+                if wants_narration and req.narration.script:
+                    _update(job_id, status="tts", progress=70, detail="synthesizing narration")
+                    narration_file = synthesize_voice(
+                        req.narration.script, voice_id=req.narration.voice_id,
+                        language=req.narration.language,
+                        output_path=str(audio_dir / f"{base}-narration.mp3"))
+                elif wants_narration:
+                    narration_file = req.narration.path
+
+                if narration_file:
+                    _update(job_id, status="assembling", progress=85, detail="narration overlay")
+                    final = ffmpeg.replace_audio(
+                        joined, narration_file, music=req.music, out=final_path,
+                        narration_delay_ms=req.narration.offset_ms,
+                        narration_gain=req.narration.gain, music_gain=req.music_gain,
+                        on_warning=lambda w: _warn(job_id, w))
+                elif req.music:
+                    _update(job_id, status="assembling", progress=85, detail="music bed")
+                    final = ffmpeg.stitch_plus_music([joined], music=req.music, out=final_path)
+                else:
+                    Path(joined).replace(final_path)
+                    final = final_path
+            if any(_voice_locked(Path(c.path)) for c in req.clips):
+                Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
+            _attach_sync(job_id, final)
+            _update(job_id, status="done", progress=100, detail="", video_path=final)
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/render-assets")
+def render_assets(video: str):
+    """A final's editable ingredients, by name-prefix convention: its sibling
+    segment/clip files (takes included — the keep-all-takes rule) and matching
+    narration audio. The Timeline editor preloads from here."""
+    src = Path(video)
+    if not src.exists():
+        raise HTTPException(404, f"video not found: {video}")
+    if not _under_outputs(src):
+        raise HTTPException(422, "only videos under outputs/ can be opened")
+    import re as _re
+    prefix = _re.sub(r"-(full-final|final|branded|post|card\d*|joined).*$", "", src.stem)
+    clips = []
+    for p in sorted(src.parent.glob(f"{prefix}-*.mp4")):
+        if p == src or "-final" in p.stem or p.stem.endswith("-joined") or p.stem.endswith("-branded"):
+            continue
+        try:
+            info = ffmpeg.probe(str(p))
+        except Exception:
+            continue
+        clips.append({"path": str(p), "url": f"/files/{p.relative_to('outputs').as_posix()}",
+                      "name": p.name, "duration": info["duration"],
+                      "voice_lock": _voice_locked(p)})
+    audio = []
+    audio_dir = src.parent.parent / "audio"
+    if audio_dir.is_dir():
+        for a in sorted(audio_dir.glob(f"{prefix}-*.mp3")):
+            audio.append({"path": str(a),
+                          "url": f"/files/{a.relative_to('outputs').as_posix()}",
+                          "name": a.name})
+    self_info = ffmpeg.probe(str(src))
+    return {"video": {"path": str(src), "duration": self_info["duration"]},
+            "clips": clips, "audio": audio}
+
+
 class ReassembleRequest(BaseModel):
     """Scene-adjust re-export (file 15): re-join picked clips in a chosen order, with
     optional new narration (voice/volume/offset) and music bed."""
@@ -1258,6 +1400,21 @@ def list_stills():
     return {"stills": items}
 
 
+# (path, mtime) -> seconds; videos are immutable once written, so mtime is a
+# sufficient cache key and the dict never needs eviction at our scale.
+_DURATION_CACHE: dict[tuple[str, float], float] = {}
+
+
+def _cached_duration(path: str, mtime: float) -> float | None:
+    key = (path, mtime)
+    if key not in _DURATION_CACHE:
+        try:
+            _DURATION_CACHE[key] = round(ffmpeg.probe(path)["duration"], 3)
+        except Exception:
+            return None
+    return _DURATION_CACHE[key]
+
+
 @app.get("/outputs")
 def list_outputs():
     """List every generated video for the Library grid (newest first)."""
@@ -1283,6 +1440,9 @@ def list_outputs():
             "voice_lock": _voice_locked(p),
             "size_bytes": st.st_size,
             "modified": int(st.st_mtime),
+            # Timeline needs durations; mtime-keyed cache avoids an ffprobe storm
+            # (first listing warms it, subsequent listings are dict hits).
+            "duration": _cached_duration(str(p), st.st_mtime),
         }
         # Multi-model recipe chips: finals carry the {name}-recipe.json sidecar
         # (which engine made each span + the QC story) when the pipeline wrote one.

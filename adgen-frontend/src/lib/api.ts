@@ -174,6 +174,7 @@ export type OutputItem = {
   voice_lock?: boolean; // speech is lip-synced — revoicing would desync the mouth
   size_bytes: number;
   modified: number;
+  duration?: number | null; // seconds (mtime-cached probe) — the Timeline's ruler
   recipe?: Recipe; // multi-model chips: which engine made each span + QC story
 };
 
@@ -332,6 +333,32 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ video_path }),
+    }).then(jsonOrThrow),
+  // Timeline editor: a final's editable ingredients (sibling clips + narration).
+  renderAssets: (video: string): Promise<{
+    video: { path: string; duration: number };
+    clips: { path: string; url: string; name: string; duration: number; voice_lock: boolean }[];
+    audio: { path: string; url: string; name: string }[];
+  }> => fetch(`${BASE}/render-assets?video=${encodeURIComponent(video)}`).then(jsonOrThrow),
+  // Timeline export: frame-accurate trims + join + narration/music. FFmpeg-only.
+  timelineExport: (req: {
+    clips: { path: string; in_s: number; out_s: number | null }[];
+    narration?: {
+      path?: string;
+      script?: string;
+      voice_id?: string;
+      language?: string;
+      offset_ms?: number;
+      gain?: number;
+    };
+    music?: string;
+    music_gain?: number;
+    name?: string;
+  }): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/timeline/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
     }).then(jsonOrThrow),
   // Dynamic intake: the brain asks idea-specific follow-up questions.
   planQuestions: (idea: string, language = "en"): Promise<{

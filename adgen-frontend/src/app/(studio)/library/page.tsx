@@ -352,6 +352,12 @@ function Lightbox({
 
         <div className="flex items-center gap-2">
           <a
+            href={`/timeline?video=${encodeURIComponent(item.path)}`}
+            className="flex-1 rounded-btn bg-surface-2 px-4 py-2.5 text-center text-xs font-medium text-text-primary hover:bg-surface-2/70"
+          >
+            🎬 Open in Timeline
+          </a>
+          <a
             href={api.fileUrl(item)}
             download={item.name}
             className="flex-1 rounded-btn bg-surface-2 px-4 py-2.5 text-center text-xs font-medium text-text-primary hover:bg-surface-2/70"

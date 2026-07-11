@@ -62,6 +62,11 @@ For each approach pick ONE pipeline:
 - multitalk : 2+ people conversation. NOT BUILT YET (longcat covers multi-speaker later).
 
 Rules:
+- NON-NEGOTIABLE CASTING RULE: every character is INDIAN and every environment is
+  recognizably INDIA — faces, skin tones, clothing, streets, homes, shops, signage,
+  vehicles, landscapes, light. Never default to Western people or places. Write it
+  INTO the shot prompts explicitly ("Indian", named regions/settings where natural).
+  Only an explicit user request for another market overrides this.
 - Prefer BUILT pipelines; include an unavailable one only if clearly the best fit, marked available=false.
 - Audio strategy follows the mouth rule: visible speaking mouth -> lipsync (audio drives video);
   nobody speaks on screen -> overlay (voice over the top).
