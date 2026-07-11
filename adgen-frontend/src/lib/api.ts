@@ -345,7 +345,9 @@ export const api = {
       name: string;
       duration: number;
       voice_lock: boolean;
-      alternates?: { path: string; url: string; name: string; duration: number; take: number }[];
+      scene?: number | null; // from the -segN/-clipN naming convention
+      take?: number; // which QC take this file is (from the -qc.json sidecar)
+      alternates?: { path: string; url: string; name: string; duration: number; take: number; scene?: number | null }[];
     }[];
     audio: { path: string; url: string; name: string }[];
   }> => fetch(`${BASE}/render-assets?video=${encodeURIComponent(video)}`).then(jsonOrThrow),

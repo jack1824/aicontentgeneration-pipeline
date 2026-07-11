@@ -900,22 +900,37 @@ def render_assets(video: str):
     # Group QC takes as ALTERNATES of their shot (keep-all-takes rule): the
     # canonical file is what shipped; -takeN siblings are swappable in the
     # Timeline. Grouping key strips the take suffix (and -voiced, so a silent
-    # kept take groups with its voiced shipped sibling).
+    # kept take groups with its voiced shipped sibling). The QC sidecar tells
+    # us WHICH take number each file is — so the UI can say "Scene 3 · take 2"
+    # instead of leaving the user to decode filenames.
+    take_of: dict[str, int] = {}
+    qc_sidecar = src.parent / (prefix + "-qc.json")
+    if qc_sidecar.exists():
+        try:
+            for rec in json.loads(qc_sidecar.read_text()):
+                take_of[Path(rec.get("clip", "")).stem] = rec.get("take", 0)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
     groups: dict[str, dict] = {}
     for c in raw:
         stem = Path(c["path"]).stem
         key = _re.sub(r"-take\d+$", "", stem).removesuffix("-voiced")
+        # scene number for display, from the -segN / -clipN convention
+        mscene = _re.search(r"-(?:seg|clip)(\d+)", stem)
+        c = {**c, "scene": int(mscene.group(1)) if mscene else None}
         g = groups.setdefault(key, {"main": None, "alts": []})
-        if _re.search(r"-take\d+$", stem):
-            m = _re.search(r"-take(\d+)$", stem)
+        m = _re.search(r"-take(\d+)$", stem)
+        if m:
             g["alts"].append({**c, "take": int(m.group(1))})
         elif g["main"] is None or stem.endswith("-voiced"):
-            g["main"] = c  # voiced version wins as the canonical representative
+            # the shipped file: its take number lives in the sidecar
+            c["take"] = take_of.get(stem) or take_of.get(stem.removesuffix("-voiced")) or 1
+            g["main"] = c
         else:
-            g["alts"].append({**c, "take": 0})
+            g["alts"].append({**c, "take": take_of.get(stem, 0)})
     clips = []
     for g in groups.values():
-        main = g["main"] or (g["alts"] and g["alts"][0])
+        main = g["main"] or (g["alts"] and dict(g["alts"][0]))
         if not main:
             continue
         main = dict(main)
@@ -923,7 +938,7 @@ def render_assets(video: str):
             (a for a in g["alts"] if a["path"] != main["path"]),
             key=lambda a: a.get("take", 0))
         clips.append(main)
-    clips.sort(key=lambda c: c["name"])
+    clips.sort(key=lambda c: (c.get("scene") or 999, c["name"]))
     audio = []
     audio_dir = src.parent.parent / "audio"
     if audio_dir.is_dir():

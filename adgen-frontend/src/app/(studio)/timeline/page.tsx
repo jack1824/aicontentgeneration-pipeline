@@ -23,8 +23,16 @@ type TClip = {
   voice_lock: boolean;
   in_s: number;
   out_s: number; // exclusive end of the used window
+  scene?: number | null; // "Scene N" display label from the seg/clip convention
+  take?: number; // which QC take this file is
   alternates?: TAlternate[]; // other QC takes of this same shot — swappable
 };
+
+// "Scene 3 · take 2" — the human name for a clip block.
+const clipLabel = (c: TClip) =>
+  `${c.scene ? `Scene ${c.scene}` : c.name.replace(/\.mp4$/, "")}${
+    c.take ? ` · take ${c.take}` : ""
+  }`;
 
 type TAudio = { path: string; url: string; name: string };
 
@@ -135,13 +143,14 @@ function TimelineStudio() {
   const useTake = (i: number, alt: TAlternate) => {
     const c = clips[i];
     const currentAsAlt: TAlternate = {
-      path: c.path, url: c.url, name: c.name, duration: c.duration, take: -1,
+      path: c.path, url: c.url, name: c.name, duration: c.duration, take: c.take ?? 0,
     };
     patch(i, {
       path: alt.path,
       url: alt.url,
       name: alt.name,
       duration: alt.duration,
+      take: alt.take,
       in_s: 0,
       out_s: alt.duration,
       alternates: [
@@ -275,8 +284,8 @@ function TimelineStudio() {
                   preload="metadata"
                   className="h-16 w-full rounded object-cover"
                 />
-                <p className="mt-1 truncate text-[10px] text-text-muted" title={c.name}>
-                  {i + 1}. {c.name} {c.voice_lock ? "🔒" : ""}
+                <p className="mt-1 truncate text-[10px] text-text-primary" title={c.name}>
+                  {i + 1}. {clipLabel(c)} {c.voice_lock ? "🔒" : ""}
                 </p>
                 <div className="mt-1 flex items-center gap-1 text-[10px]">
                   <span className="text-text-muted">
@@ -300,7 +309,9 @@ function TimelineStudio() {
                 {!!c.alternates?.length && (
                   <div className="mt-1 flex flex-wrap items-center gap-1">
                     <span className="text-[9px] text-text-muted">takes:</span>
-                    <span className="rounded bg-fuchsia-500/30 px-1.5 py-0.5 text-[9px]">✓ current</span>
+                    <span className="rounded bg-fuchsia-500/30 px-1.5 py-0.5 text-[9px]">
+                      ✓ {c.take ? `take ${c.take}` : "current"}
+                    </span>
                     {c.alternates.map((a) => (
                       <button
                         key={a.path}
