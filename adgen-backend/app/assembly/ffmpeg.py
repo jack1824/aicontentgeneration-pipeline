@@ -393,6 +393,16 @@ def cut_precise(src: str, start_s: float, dur_s: float, out: str) -> str:
     return out
 
 
+def cut_audio(src: str, start_s: float, dur_s: float, out: str) -> str:
+    """Sample-accurate audio trim — the Timeline's voice-block trim primitive
+    (e.g. shave the first 2s of a narration take). Re-encodes so the cut never
+    snaps to a frame boundary."""
+    _run(["ffmpeg", "-y", "-loglevel", "error",
+          "-ss", f"{max(0.0, start_s):.3f}", "-i", src, "-t", f"{max(0.1, dur_s):.3f}",
+          "-vn", "-c:a", "libmp3lame", "-b:a", "192k", out])
+    return out
+
+
 def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
     """Concat clips from MIXED workflows (sequence mode: t2v + i2v + S2V + LTX segments).
 

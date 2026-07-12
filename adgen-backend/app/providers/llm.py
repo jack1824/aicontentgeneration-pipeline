@@ -23,8 +23,17 @@ GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
 
-# Third rung of the ladder: Groq-hosted Llama (independent vendor, independent
-# quota) — the brain keeps planning even when BOTH Gemini pools are dry.
+# Third rung: NVIDIA NIM (OpenAI-compatible, account-wide key, trial credits).
+# Qwen 3.5 is a different model family from the Groq Llama rung — ladder
+# diversity means the rungs don't share one family's blind spots.
+NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip().strip("\"'“”")
+if NVIDIA_API_KEY and not NVIDIA_API_KEY.startswith("nvapi-"):
+    NVIDIA_API_KEY = ""  # non-NVIDIA paste — ignore
+NVIDIA_MODEL = "qwen/qwen3.5-397b-a17b"
+NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+# Fourth rung of the ladder: Groq-hosted Llama (independent vendor, independent
+# quota) — the brain keeps planning even when Gemini AND NVIDIA are dry.
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip().strip("\"'“”")
 if GROQ_API_KEY and not GROQ_API_KEY.startswith("gsk_"):
     GROQ_API_KEY = ""  # non-Groq paste — ignore
@@ -99,6 +108,11 @@ Rules:
     an empty line in the appointment diary", "her thumb taps the phone three
     deliberate times" — never a summary like "he looks worried". Motion is
     mandatory: a motionless prompt produces a boring frozen shot.
+    MICRO-ACTION LAW (2026-07-12 panel review — the single biggest premium gap):
+    every CHARACTER shot must contain one hand-scale verb of ENGAGEMENT with the
+    world — picks up the thread, pushes the curtain aside, lifts the cup, traces
+    the woven border, moves a strand of hair from her face. A character who
+    merely stands/walks/looks is a FAILED shot ("she exists" is not directing).
   * PROPS & HANDS: video models mirror left/right — NEVER name a side ("right
     hand"). One prop = ONE owner = ONE continuous action per shot ("he raises
     the shaker and drinks" — never grip-with-one-hand-while-shaking-the-other).
@@ -138,6 +152,38 @@ Rules:
   agitate -> pattern break -> solution -> result -> CTA mood — and run a color
   script: cold desaturated grades through the problem beats, turning to warm gold
   AT the pattern-break shot and staying warm to the end.
+- LIVING WORLD: every environment or wide shot carries exactly 1-2 background life
+  elements — cloth drying on a line and swaying, thin smoke rising from a chulha,
+  a bicycle passing, two birds lifting off a roof, a dog crossing the lane — the
+  world must feel inhabited, never a sterile empty set. NEVER dense crowds or
+  groups of extras (crowd anatomy breaks on every model; 1-2 elements maximum).
+- BREATHING INSERTS: any ad of 20s or longer includes at least 2 atmospheric
+  non-character inserts — dust motes drifting in a shaft of light, wind moving
+  through crops, cloth swinging, a loom wheel turning, water dripping. These are
+  the pauses that make premium ads feel cinematic; they cost zero identity risk.
+- EMOTIONAL ARC: a character's face must CHANGE across the ad. Assign each
+  character shot an "emotion" (schema field) following a progression — neutral ->
+  curious -> focused -> small success -> quiet pride/peace — and write it into
+  the ACTION physically ("a small smile breaks as the weave holds", "her brow
+  tightens in concentration"), never as an adjective floating alone. A whole ad
+  on one expression reads as AI; the arc is what reads as film.
+- SIGNATURE SHOT: exactly ONE beat per ad is the "wow" shot — a scale reveal the
+  viewer remembers: drone-style glide over a landscape, a massive wide with the
+  subject tiny in frame, golden light flooding a dark room. Prefer landscapes/
+  light/architecture as its subject (scale shots with faces multiply anatomy
+  risk). Mark it by giving that shot shot_type "wide" and camera_move
+  "drone glide" or "crane rise from chest height to a high wide reveal".
+- ENDING RULE: the final beat is environment-as-hero — the subject small inside a
+  wide frame, walking away, the world continuing without her — never a static
+  centered portrait. The last frame belongs to the world, not the face.
+- PRODUCT CONTACT BEAT: when the user HAS a real product photo, plan at least one
+  CONTACT beat — the character holding / pouring / drinking / applying the REAL
+  product. Plan it as pipeline "product" (i2v) whose start image is a COMPOSITED
+  KEYFRAME (the platform composites the character still + the real product photo,
+  the user approves it, then the shot animates motion-only: "she raises the
+  bottle and drinks, the label steady"). List BOTH the product photo and the
+  approved contact keyframe in needs_from_user. Generated pixels can never hold
+  label typography — the product must enter every frame as real pixels.
 - SPEAKING CHARACTERS (cinematic only): to make someone talk on screen, put the
   spoken line inside the shot prompt in quotes — 'he says warmly in Hindi: "..."' —
   add "His lips move naturally with the words", keep lines to ~8-10 words per shot,
@@ -226,9 +272,14 @@ Rules:
     PROOF->CTA sells with argument — pick the right genre for the idea.
   * A 30s Journey needs 12-15 SHORT story beats, not 6 long ones — each shot is
     generated at ~5s but only its best ~2s is used at the edit (declare it).
-  * Every character shot must be planned as i2v FROM ONE HERO PORTRAIT of the
+  * Every character shot must be planned as i2v FROM A HERO PORTRAIT of the
     protagonist (list the portrait in needs_from_user; offer to generate it first)
     — never fresh t2v per shot, or the protagonist becomes 8 different people.
+  * PORTRAIT VARIANTS: the platform can derive approved EMOTION VARIANTS of the
+    hero portrait (curious / concentrating / small success / quiet pride). Match
+    each character shot's start image to its "emotion" field — starting every
+    beat from the same neutral portrait re-seeds the same neutral face and kills
+    the emotional arc. List the needed variants in needs_from_user.
   * Each cinematic shot DECLARES its craft fields (see schema): shot_type follows
     the rotation WIDE -> MEDIUM -> CLOSE -> DETAIL with a WIDE breather every 3-4
     shots; camera_move is EXACTLY one of: push-in | pull-back | handheld drift |
@@ -246,7 +297,8 @@ Respond with STRICT JSON only (no markdown fences):
   "narration_script": str,
   "shots": [{"prompt": str, "negative_prompt": str,
              "shot_type": "wide|medium|close|detail",
-             "camera_move": str, "duration_used": float}],
+             "camera_move": str, "duration_used": float,
+             "emotion": str}],
   "segments": [{"pipeline": "overlay|cinematic|product|lipsync", "prompt": str,
                 "negative_prompt": str, "script": str}],
   "needs_from_user": [str]
@@ -317,7 +369,60 @@ def _groq_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
     return json.loads(r.json()["choices"][0]["message"]["content"])
 
 
-def _gemini_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
+def _extract_json(text: str) -> dict:
+    """Parse a JSON object out of a completion that may carry fences or
+    reasoning prose around it (Qwen-class models think out loud)."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.rsplit("```", 1)[0]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise json.JSONDecodeError("no JSON object in completion", text[:80], 0)
+    return json.loads(text[start:end + 1])
+
+
+def _nvidia_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
+    """NVIDIA NIM (Qwen 3.5) call. No response_format — support varies per NIM
+    model, so we instruct JSON and parse defensively instead."""
+    r = httpx.post(NVIDIA_URL,
+                   headers={"Authorization": f"Bearer {NVIDIA_API_KEY}"},
+                   json={"model": NVIDIA_MODEL,
+                         "temperature": temperature,
+                         "max_tokens": 8192,
+                         "messages": [
+                             {"role": "system", "content": system_prompt
+                              + "\nRespond with a single JSON object only — no prose, no fences."},
+                             {"role": "user", "content": user_msg},
+                         ]},
+                   timeout=120)
+    r.raise_for_status()
+    return _extract_json(r.json()["choices"][0]["message"]["content"])
+
+
+def _fallback_json(system_prompt: str, user_msg: str, temperature: float,
+                   require: str | None = None) -> dict | None:
+    """The non-Gemini rungs, in order: NVIDIA (Qwen) then Groq (Llama).
+    `require` names a top-level key the answer must carry — a rung returning
+    valid-but-wrong-shape JSON counts as a failure so the NEXT rung is tried
+    (otherwise one confused model short-circuits the whole ladder). Rung
+    exceptions are swallowed broadly: a fallback must never crash the ladder.
+    Returns None only when every configured rung fails."""
+    for enabled, call in ((NVIDIA_API_KEY, _nvidia_json), (GROQ_API_KEY, _groq_json)):
+        if not enabled:
+            continue
+        try:
+            out = call(system_prompt, user_msg, temperature)
+            if isinstance(out, dict) and (not require or require in out):
+                return out
+        except Exception:
+            pass
+    return None
+
+
+def _gemini_json(system_prompt: str, user_msg: str, temperature: float,
+                 require: str | None = None) -> dict:
     """One structured-JSON call with the platform's healing strategy:
       503/500 (overloaded)  -> short backoff, retry same model
       429 (free-tier quota) -> WAIT the delay Google names (fast retries burn
@@ -327,11 +432,12 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
       Both Gemini pools dry -> Groq-hosted Llama (separate vendor entirely).
     """
     if not GEMINI_API_KEY:
-        if GROQ_API_KEY:
-            return _groq_json(system_prompt, user_msg, temperature)
+        fb = _fallback_json(system_prompt, user_msg, temperature, require)
+        if fb is not None:
+            return fb
         raise PlanError(
-            "GEMINI_API_KEY is not set. Add it to adgen-backend/.env "
-            "(aistudio.google.com -> Get API key; see file 14)."
+            "GEMINI_API_KEY is not set (and no NVIDIA/Groq fallback answered). "
+            "Add keys to adgen-backend/.env."
         )
     body = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
@@ -358,12 +464,10 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
             code = e.response.status_code
             last_err = f"Gemini plan failed ({code}): {e.response.text[:800]}"
             if i == len(attempts) - 1 or code not in (429, 500, 503):
-                if GROQ_API_KEY:  # separate vendor — the ladder's last rung
-                    try:
-                        return _groq_json(system_prompt, user_msg, temperature)
-                    except (httpx.HTTPError, KeyError, IndexError,
-                            json.JSONDecodeError):
-                        pass
+                # separate vendors — NVIDIA (Qwen) then Groq (Llama)
+                fb = _fallback_json(system_prompt, user_msg, temperature, require)
+                if fb is not None:
+                    return fb
                 raise PlanError(last_err) from None
             if code == 429:
                 m = re.search(r"retry in ([0-9.]+)s", e.response.text)
@@ -406,7 +510,7 @@ def plan_questions(idea: str, language: str = "en") -> dict:
     out = _gemini_json(
         QUESTIONS_PROMPT,
         f"Language: {language}\nThe user is advertising: {idea.strip()}",
-        temperature=0.7,
+        temperature=0.7, require="questions",
     )
     qs = out.get("questions") or []
     clean = []
@@ -457,10 +561,108 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
             f"them; propose 3 clearly different creative directions: {rejected}"
         )
     # Regenerates run hotter — the user explicitly wants different ideas.
-    proposals = _gemini_json(SYSTEM_PROMPT, user_msg, temperature=0.9 if avoid else 0.7)
+    proposals = _gemini_json(SYSTEM_PROMPT, user_msg,
+                             temperature=0.9 if avoid else 0.7, require="approaches")
     if "approaches" not in proposals or not proposals["approaches"]:
         raise PlanError("Gemini returned no approaches.")
     return proposals
+
+
+DIRECTOR_PROMPT = """\
+You are the DIRECTOR'S ASSISTANT of an AI ad studio's timeline editor. The user
+speaks like a director ("cut the first 2 seconds of the voice", "use the other
+take of scene 3", "tighten everything", "kill 14 to 16 seconds", "make me a 20s
+chai ad in Hindi") and you translate intent into editor operations. You NEVER
+invent creative content — scripts and music come from the user.
+
+You receive CONTEXT: the current timeline as JSON — clips (1-based index, label,
+source duration, in_s/out_s window, takes available), voice track state
+(source, offset_s, trim, gain), total seconds, and available narration files.
+
+Respond with STRICT JSON only:
+{"say": "<one short director-speak sentence: what you did or need>",
+ "ops": [<zero or more operations, executed in order>]}
+
+Operations (use EXACTLY these shapes; clip = 1-based index from CONTEXT):
+ {"op":"trim","clip":int,"in_s":float|null,"out_s":float|null}   null = keep current
+ {"op":"center_cut","clip":int|null,"seconds":float}             null clip = ALL clips
+ {"op":"reorder","from":int,"to":int}                            1-based positions
+ {"op":"swap_take","clip":int,"take":int}
+ {"op":"delete","clip":int}
+ {"op":"split","at_s":float}                                     timeline seconds
+ {"op":"range_cut","start_s":float,"end_s":float}                remove this span
+ {"op":"voice_offset","seconds":float}
+ {"op":"voice_trim","in_s":float|null,"out_s":float|null}        trim WITHIN the voice file
+ {"op":"voice_gain","gain":float}                                0.4-2.0
+ {"op":"set_narration","name":str|null}                          null = clips' own audio
+ {"op":"voice_script","script":str,"language":"hi"|"en"}
+     the user pasted a READY narration script to speak over the cut — pass it
+     VERBATIM (never rewrite, never translate); it is synthesized at export.
+ {"op":"playhead","at_s":float}
+ {"op":"preview"}
+ {"op":"export","name":str|null}
+ {"op":"plan","idea":str,"language":"hi"|"en","duration_s":int,"format":str}  new ad brief
+ {"op":"generate_approach","index":int}   user picks approach N from the LAST shown plan
+ {"op":"generate_portrait","description":str}
+     create a NEW hero portrait from scratch (no reference exists yet). The
+     description must be a full physical anchor: age, face, skin tone, hair,
+     every garment with color — end with "head-and-shoulders portrait, neutral
+     expression, looking at camera, photorealistic". An approval grid appears;
+     the ✓-approved portrait becomes THE person for the whole session — all
+     expressions/variants derive from that exact image, never re-rolled fresh.
+ {"op":"portrait_variants","portrait":str|null,"emotions":[str]|null}
+     emotion stills from a hero portrait — approval grid appears in the chat.
+     Reference the portrait by a filename from CONTEXT.stills; null only when
+     there is exactly one still. Default emotions: curious / concentrating /
+     small success / quiet pride.
+ {"op":"keyframes","scenes":[str],"character":str|null,"product":str|null}
+     per-shot stills conditioned on named stills from CONTEXT.stills (the
+     stills-first flow: approve images, then animate). Write scenes as full
+     keyframe descriptions.
+ {"op":"ask","question":str}                                     when genuinely ambiguous
+
+Rules:
+- Resolve "scene N" via the clip labels in CONTEXT; if a reference is ambiguous
+  (two clips could match, no voice track loaded for a voice op), emit ONE ask op
+  and no destructive ops.
+- "cut/remove the first X seconds of the audio/voice" -> voice_trim with in_s=X
+  (voice ops act on the VOICE track when one is loaded; otherwise ask).
+- "cut/remove seconds A to B" (of the film) -> range_cut.
+- Sentences may compound: "swap scene 2 to take 1 and tighten it" -> swap_take
+  then center_cut on that clip. Keep ops <= 8 per turn.
+- Never export unless the user asks to export/render/finish.
+- A fresh ad request ("make me a ... ad") -> ONE plan op; the app runs the
+  planner and shows the treatment — do not fabricate shots yourself.
+- "say" is a colleague's confirmation ("Trimmed the voice head by 2s — it now
+  starts on the first beat."), never a JSON echo."""
+
+_DIRECTOR_OPS = {
+    "trim", "center_cut", "reorder", "swap_take", "delete", "split", "range_cut",
+    "voice_offset", "voice_trim", "voice_gain", "set_narration", "voice_script",
+    "playhead", "preview", "export", "plan", "generate_approach",
+    "generate_portrait", "portrait_variants", "keyframes", "ask",
+}
+
+
+def director_intent(message: str, context: dict, history: list[dict] | None = None) -> dict:
+    """One director-chat turn: user sentence + timeline context -> validated ops.
+
+    The frontend executes the ops with its existing editor functions — this
+    seam only translates intent, it never touches files or jobs itself."""
+    lines = [f"CONTEXT:\n{json.dumps(context, ensure_ascii=False)[:6000]}"]
+    for h in (history or [])[-6:]:
+        role = "user" if h.get("role") == "user" else "assistant"
+        lines.append(f"{role}: {str(h.get('text', ''))[:300]}")
+    lines.append(f"user: {message.strip()[:4000]}")
+    out = _gemini_json(DIRECTOR_PROMPT, "\n".join(lines), temperature=0.2, require="say")
+    say = str(out.get("say") or "").strip()[:400]
+    ops = []
+    for op in (out.get("ops") or [])[:8]:
+        if isinstance(op, dict) and op.get("op") in _DIRECTOR_OPS:
+            ops.append(op)
+    if not say and not ops:
+        raise PlanError("director brain returned neither words nor operations")
+    return {"say": say or "Done.", "ops": ops}
 
 
 def plan_dialogue(idea: str, language: str = "en", turns: int = 2,
@@ -474,7 +676,7 @@ def plan_dialogue(idea: str, language: str = "en", turns: int = 2,
     if regenerate:
         user_msg += "\nWrite a FRESH take — different angle and lines than an earlier draft."
     result = _gemini_json(DIALOGUE_SYSTEM_PROMPT, user_msg,
-                          temperature=0.9 if regenerate else 0.7)
+                          temperature=0.9 if regenerate else 0.7, require="turns")
     if not result.get("turns") or len(result.get("speakers", [])) != 2:
         raise PlanError("Gemini returned an incomplete dialogue plan.")
     return result

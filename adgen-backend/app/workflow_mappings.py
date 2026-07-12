@@ -242,3 +242,24 @@ LONGCAT_DUO_MAPPING = {
 # ~1/3 less compute; the pipeline auto-picks it when the narration is short —
 # rendering seconds nobody scripted is pure wasted wall-clock for the user.
 LONGCAT_2W_MAPPING = {k: v for k, v in LONGCAT_MAPPING.items() if k != "seed_extend2"}
+
+
+# workflows/qwen_image_edit.json — the KEYFRAME ENGINE (2026-07-12): local
+# Qwen-Image-Edit 2509 (Apache-2.0) on the pod. An EDIT model: reference
+# image(s) in, the SAME person/product out with only the instructed change —
+# portrait emotion variants, product-in-hand contact keyframes, per-shot
+# stills for the stills-first architecture. Output size follows image1
+# (scaled to ~1MP). cfg 2.5 / 20 steps / euler+simple / AuraFlow shift 3.1
+# per the official ComfyUI template. Node 79 (image2) is OPTIONAL — the
+# keyframes engine deletes it (and the encoders' image2 wires) for
+# single-reference edits.
+QWEN_EDIT_MAPPING = {
+    "prompt": ("76", "prompt"),
+    "negative_prompt": ("77", "prompt"),
+    "seed": ("31", "seed"),
+    "steps": ("31", "steps"),
+    "cfg": ("31", "cfg"),
+    "image1": ("78", "image"),
+    "image2": ("79", "image"),
+    "filename_prefix": ("60", "filename_prefix"),
+}

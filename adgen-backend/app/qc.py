@@ -31,9 +31,18 @@ QC_MAX_TAKES = max(1, int(os.getenv("QC_MAX_TAKES", "3")))
 # planner (same Gemini free-tier pools). Falls back to the shared key.
 QC_GEMINI_API_KEY = os.getenv("QC_GEMINI_API_KEY") or GEMINI_API_KEY
 
-# Second judge: Groq-hosted Llama-4 vision (OpenAI-compatible API, separate
-# vendor = truly independent quota). Used only when the Gemini pass fails —
-# the gate must never go blind just because one vendor throttles us.
+# Second judge: NVIDIA NIM vision (Qwen 3.5 VLM — different model family from
+# both Gemini and the Groq Llama rung, so the ladder never shares one family's
+# blind spots). OpenAI-compatible endpoint, account-wide key.
+NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip().strip("\"'“”")
+if NVIDIA_API_KEY and not NVIDIA_API_KEY.startswith("nvapi-"):
+    NVIDIA_API_KEY = ""  # non-NVIDIA paste — ignore it
+_NVIDIA_MODEL = "qwen/qwen3.5-397b-a17b"
+_NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+# Third judge: Groq-hosted Llama-4 vision (OpenAI-compatible API, separate
+# vendor = truly independent quota). The gate must never go blind just
+# because one or two vendors throttle us.
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip().strip("\"'“”")
 if GROQ_API_KEY and not GROQ_API_KEY.startswith("gsk_"):
     GROQ_API_KEY = ""  # a non-Groq paste (e.g. an AIza Google key) — ignore it
@@ -56,6 +65,7 @@ Shot brief (what it is supposed to show):
 Return STRICT JSON only:
 {{"sharpness": <1-5>, "anatomy_ok": <bool>, "props_ok": <bool>,
   "matches_brief": <bool>, "brand_legible": "yes"|"no"|"n/a", "exposure_ok": <bool>,
+  "product_ok": "yes"|"no"|"n/a",
   "has_face": <bool>, "has_brand_text": <bool>, "issue": "<short phrase, empty if clean>"}}
 
 - sharpness: 5 crisp, 3 acceptable at social-feed size, 1 unusably soft.
@@ -73,6 +83,10 @@ Return STRICT JSON only:
   or imitating a different real brand; "n/a" when no brand text is visible.
 - exposure_ok=false only for SUSTAINED under/over-exposure that hides the
   subject; a single stylistic flash/transition frame is fine.
+- product_ok="no" ONLY when the brief requires a specific REAL product in frame
+  (held / poured / drunk / applied) and it is absent, duplicated, morphing
+  between frames, or its label/shape is warped. "n/a" when the brief has no
+  such product-contact requirement.
 - These are compressed thumbnails: JPEG artifacts are NOT defects; judge content."""
 
 
@@ -167,13 +181,22 @@ def _frames_b64(path: str, n: int = 3) -> list[str]:
     return out
 
 
+def _tristate(v, default: str = "n/a") -> str:
+    """yes/no/n-a fields: sloppy judges emit JSON booleans — str(False).lower()
+    is 'false' != 'no', which would let the defect pass. Map bools explicitly."""
+    if isinstance(v, bool):
+        return "yes" if v else "no"
+    return str(v if v is not None else default).lower()
+
+
 def _normalize_verdict(v: dict) -> dict:
     return {
         "sharpness": int(v.get("sharpness", 3)),
         "anatomy_ok": bool(v.get("anatomy_ok", True)),
         "props_ok": bool(v.get("props_ok", True)),
         "matches_brief": bool(v.get("matches_brief", True)),
-        "brand_legible": str(v.get("brand_legible", "n/a")).lower(),
+        "brand_legible": _tristate(v.get("brand_legible", "n/a")),
+        "product_ok": _tristate(v.get("product_ok", "n/a")),
         "exposure_ok": bool(v.get("exposure_ok", True)),
         "has_face": bool(v.get("has_face", False)),
         "has_brand_text": bool(v.get("has_brand_text", False)),
@@ -181,43 +204,69 @@ def _normalize_verdict(v: dict) -> dict:
     }
 
 
-def _groq_review(frames: list[str], context: str) -> dict | None:
-    """Fallback judge: Llama-4 vision on Groq, same rubric, JSON mode."""
-    if not GROQ_API_KEY:
+def _openai_style_review(url: str, key: str, model: str, judge: str,
+                         frames: list[str], context: str,
+                         json_mode: bool, timeout: float = 60) -> dict | None:
+    """One rubric review over an OpenAI-compatible vision endpoint (Groq, NVIDIA
+    NIM). json_mode toggles response_format — NIM support varies per model, so
+    the NVIDIA rung instructs JSON and parses defensively instead."""
+    if not key:
         return None
     try:
-        r = httpx.post(_GROQ_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={"model": _GROQ_MODEL,
-                  "response_format": {"type": "json_object"},
-                  "messages": [
-                      {"role": "system", "content": _RUBRIC.format(context=context[:600] or "(no brief)")},
-                      {"role": "user", "content": [
-                          {"type": "text", "text": "Frames from the take, in order:"},
-                          *({"type": "image_url",
-                             "image_url": {"url": f"data:image/jpeg;base64,{b}"}}
-                            for b in frames),
-                      ]},
-                  ]},
-            timeout=60)
+        body: dict = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": _RUBRIC.format(context=context[:600] or "(no brief)")},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Frames from the take, in order:"},
+                    *({"type": "image_url",
+                       "image_url": {"url": f"data:image/jpeg;base64,{b}"}}
+                      for b in frames),
+                ]},
+            ],
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        else:
+            body["max_tokens"] = 2048
+        r = httpx.post(url, headers={"Authorization": f"Bearer {key}"},
+                       json=body, timeout=timeout)
         r.raise_for_status()
-        v = json.loads(r.json()["choices"][0]["message"]["content"])
-        out = _normalize_verdict(v)
-        out["judge"] = "groq"
+        text = r.json()["choices"][0]["message"]["content"].strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        out = _normalize_verdict(json.loads(text[start:end + 1]))
+        out["judge"] = judge
         return out
     except Exception:
         return None
 
 
+def _nvidia_review(frames: list[str], context: str) -> dict | None:
+    """Second judge: Qwen 3.5 VLM on NVIDIA NIM."""
+    return _openai_style_review(_NVIDIA_URL, NVIDIA_API_KEY, _NVIDIA_MODEL,
+                                "nvidia-qwen3.5", frames, context,
+                                json_mode=False, timeout=90)  # big MoE: slow cold starts
+
+
+def _groq_review(frames: list[str], context: str) -> dict | None:
+    """Third judge: Llama-4 vision on Groq, same rubric, JSON mode."""
+    return _openai_style_review(_GROQ_URL, GROQ_API_KEY, _GROQ_MODEL,
+                                "groq", frames, context, json_mode=True)
+
+
 def vision_review(path: str, context: str) -> dict | None:
-    """One rubric-scored vision pass over 3 frames: Gemini first, Groq-hosted
-    Llama-4 as the independent-vendor fallback. Returns None only when BOTH
+    """One rubric-scored vision pass over 3 frames — a three-vendor ladder:
+    Gemini -> NVIDIA (Qwen 3.5) -> Groq (Llama-4). Returns None only when ALL
     fail — the gate must degrade, never block a render on a judge outage.
 
-    Quota manners: on Gemini 429 we skip to Groq IMMEDIATELY (no sleep-and-
-    retry, no fallback-model hop) — QC runs per take and must never drain the
-    planner's quota ladder while a render thread sits blocked."""
-    if not QC_GEMINI_API_KEY and not GROQ_API_KEY:
+    Quota manners: on Gemini 429 we skip down the ladder IMMEDIATELY (no
+    sleep-and-retry, no fallback-model hop) — QC runs per take and must never
+    drain the planner's quota ladder while a render thread sits blocked."""
+    if not QC_GEMINI_API_KEY and not NVIDIA_API_KEY and not GROQ_API_KEY:
         return None
     try:
         frames = _frames_b64(path)
@@ -255,7 +304,7 @@ def vision_review(path: str, context: str) -> dict | None:
                 return out
         except Exception:
             pass
-    return _groq_review(frames, context)
+    return _nvidia_review(frames, context) or _groq_review(frames, context)
 
 
 def review_clip(path: str, context: str = "") -> dict:
@@ -283,12 +332,17 @@ def review_clip(path: str, context: str = "") -> dict:
             rec["issues"].append(f"misses brief{': ' + v['issue'] if v['issue'] else ''}")
         if v["brand_legible"] == "no":
             rec["issues"].append("brand text garbled")
+        if v["product_ok"] == "no":
+            # a contact beat without its real product (or with a warped label)
+            # is unusable for the advertiser — worth every re-roll
+            rec["issues"].append(f"product missing/warped{': ' + v['issue'] if v['issue'] else ''}")
         if not v["exposure_ok"]:
             rec["issues"].append("bad exposure")
         rec["score"] = (v["sharpness"]
                         + 2.0 * v["anatomy_ok"] + 2.0 * v["props_ok"]
                         + 1.5 * v["matches_brief"]
-                        + 1.5 * (v["brand_legible"] != "no") + 1.0 * v["exposure_ok"])
+                        + 1.5 * (v["brand_legible"] != "no")
+                        + 1.5 * (v["product_ok"] != "no") + 1.0 * v["exposure_ok"])
     else:
         rec["score"] = 5.0  # vision unavailable — local checks only, neutral base
     rec["score"] -= min(4.0, 2.0 * rec["frozen_s"])

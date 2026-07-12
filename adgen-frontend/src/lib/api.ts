@@ -361,12 +361,37 @@ export const api = {
       language?: string;
       offset_ms?: number;
       gain?: number;
+      in_s?: number; // trim window within the voice file (cut its head/tail)
+      out_s?: number;
     };
     music?: string;
     music_gain?: number;
     name?: string;
   }): Promise<{ job_id: string }> =>
     fetch(`${BASE}/timeline/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }).then(jsonOrThrow),
+  // Director chat: one natural-language instruction + the current timeline
+  // context -> validated editor operations the page executes locally.
+  directorIntent: (req: {
+    message: string;
+    context: unknown;
+    history: { role: string; text: string }[];
+  }): Promise<{ say: string; ops: Record<string, unknown>[] }> =>
+    fetch(`${BASE}/director/intent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }).then(jsonOrThrow),
+  // Emotion variants of an approved hero portrait (emotional-arc fix).
+  keyframeVariants: (req: {
+    portrait: string;
+    name: string;
+    emotions?: string[];
+  }): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/keyframes/variants`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),

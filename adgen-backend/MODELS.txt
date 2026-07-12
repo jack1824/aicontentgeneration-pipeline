@@ -148,3 +148,11 @@ POD DISK LAYOUT (learned the hard way, 2026-07-05; updated after the
    Disk: ~90 GB (Wan era) + ~32 GB LTX set + ~22 GB LongCat ≈ 145 GB
    on the 250 GB network volume — fits.
 ================================================================
+
+# --- Keyframe engine: Qwen-Image-Edit 2509 (added 2026-07-13) ---
+# models/diffusion_models/ (~20.4 GB)
+https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_2509_fp8mixed.safetensors
+# models/text_encoders/ (~9.4 GB)
+https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
+# models/vae/ (~254 MB)
+https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors

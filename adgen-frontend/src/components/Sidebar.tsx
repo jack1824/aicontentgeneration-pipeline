@@ -66,7 +66,7 @@ const NAV_GROUPS: { label: string | null; items: NavItem[] }[] = [
       },
       {
         href: "/timeline",
-        label: "Timeline",
+        label: "Director",
         icon: (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
             <rect x="3" y="5" width="18" height="5" rx="1.5" />

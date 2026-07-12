@@ -107,6 +107,8 @@ def _attach_sync(job_id: str, video_path: str, ok_tail_s: float = 1.0) -> None:
         _warn(job_id, f"silent gap {g['start']}–{g['end']}s ({g['len']}s)")
     if rep.get("tail", 0) > ok_tail_s:
         _warn(job_id, f"video runs {rep['tail']}s past the last sound — Library → ✂ Fix timing")
+    if rep.get("lead_in", 0) > 2.5:
+        _warn(job_id, f"first sound arrives at {rep['lead_in']}s — silent open")
 
 
 def _voice_locked(path: Path) -> bool:
@@ -780,6 +782,10 @@ class TimelineNarration(BaseModel):
     language: str = "hi"
     offset_ms: int = Field(default=0, ge=0, le=20000)
     gain: float = Field(default=1.0, ge=0.2, le=3.0)
+    # trim window WITHIN the narration file (Timeline voice-block edge drags:
+    # "cut the first 2s of the VO") — 0/None means use the whole file
+    in_s: float = Field(default=0.0, ge=0)
+    out_s: float | None = Field(default=None, gt=0)
 
 
 class TimelineExportRequest(BaseModel):
@@ -849,6 +855,41 @@ def timeline_export_endpoint(req: TimelineExportRequest):
                         output_path=str(audio_dir / f"{base}-narration.mp3"))
                 elif wants_narration:
                     narration_file = req.narration.path
+
+                if narration_file and req.narration and (
+                    req.narration.in_s > 0.05 or req.narration.out_s is not None
+                ):
+                    adur = ffmpeg.probe(narration_file)["duration"]
+                    a_out = min(req.narration.out_s or adur, adur)
+                    if a_out - req.narration.in_s < 0.2:
+                        # inverted / out-of-range window would leave a 0.1s voice
+                        # stub — keep the full narration and say so loudly
+                        _warn(job_id,
+                              f"voice trim {req.narration.in_s:.1f}–{a_out:.1f}s is empty "
+                              f"(file is {adur:.1f}s) — ignored, using the full narration")
+                    elif req.narration.in_s > 0.05 or a_out < adur - 0.05:
+                        _update(job_id, status="assembling", progress=80, detail="trimming voice")
+                        narration_file = ffmpeg.cut_audio(
+                            narration_file, req.narration.in_s,
+                            a_out - req.narration.in_s, str(Path(tmp) / "voice-trim.mp3"))
+
+                # Actionable fit check BEFORE the mix: TTS pace varies ±30%, so a
+                # script written "by feel" often undershoots the film (protein +
+                # journey postmortems). Tell the user how many words are missing.
+                if narration_file and req.narration:
+                    try:
+                        ndur = ffmpeg.probe(narration_file)["duration"]
+                        vdur = ffmpeg.probe(joined)["duration"]
+                        n_end = req.narration.offset_ms / 1000.0 + ndur
+                        script_txt = req.narration.script or ""
+                        if n_end < vdur - 3.0 and script_txt and ndur > 1:
+                            pace = len(script_txt.split()) / ndur
+                            _warn(job_id,
+                                  f"narration will end at {n_end:.1f}s of {vdur:.1f}s — "
+                                  f"~{max(1, int((vdur - 1.0 - n_end) * pace))} more words "
+                                  f"would carry it to the end")
+                    except Exception:
+                        pass
 
                 if narration_file:
                     _update(job_id, status="assembling", progress=85, detail="narration overlay")
@@ -1182,6 +1223,57 @@ def generate_keyframes_endpoint(req: KeyframeSetRequest):
 
     threading.Thread(target=run, daemon=True).start()
     return {"job_id": job_id}
+
+
+class KeyframeVariantsRequest(BaseModel):
+    """Emotion variants of an approved hero portrait (the emotional-arc fix):
+    same woman, same framing, only the expression changes — each character beat
+    then starts i2v from the variant matching its planned emotion."""
+    portrait: str                              # approved hero portrait (local path)
+    name: str = Field(pattern=r"^[a-zA-Z0-9._-]+$")
+    emotions: list[str] | None = Field(default=None, max_length=8)
+
+
+@app.post("/keyframes/variants")
+def keyframe_variants_endpoint(req: KeyframeVariantsRequest):
+    if not Path(req.portrait).exists():
+        raise HTTPException(404, f"portrait not found: {req.portrait}")
+    job_id = _new_job("keyframes", req.name)
+
+    def run() -> None:
+        def on_progress(status: str, pct: int, detail: str) -> None:
+            if JOBS.get(job_id, {}).get("status") == "cancelled":
+                raise JobCancelled()
+            _update(job_id, status=status, progress=pct, detail=detail)
+        try:
+            paths = keyframes.derive_variants(
+                req.portrait, req.name, emotions=req.emotions, on_progress=on_progress)
+            _update(job_id, status="done", progress=100, detail="",
+                    keyframes=[f"/assets-files/keyframes/{Path(p).name}" for p in paths],
+                    keyframe_paths=paths)
+        except JobCancelled:
+            pass
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+class DirectorIntentRequest(BaseModel):
+    """One director-chat turn: a natural-language instruction + the current
+    timeline state -> validated editor operations the frontend executes."""
+    message: str = Field(min_length=1, max_length=6000)
+    context: dict = Field(default_factory=dict)
+    history: list[dict] = Field(default_factory=list, max_length=12)
+
+
+@app.post("/director/intent")
+def director_intent_endpoint(req: DirectorIntentRequest):
+    try:
+        return llm.director_intent(req.message, req.context, req.history)
+    except llm.PlanError as e:
+        raise HTTPException(502, str(e))
 
 
 @app.post("/sheets/generate")
