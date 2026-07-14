@@ -1105,7 +1105,7 @@ def list_avatars():
 class FaceGenRequest(BaseModel):
     """Generate a synthetic avatar face: Wan t2v renders exactly ONE frame (a
     photoreal portrait still) — no image model install needed."""
-    description: str = Field(min_length=3, max_length=500)
+    description: str = Field(min_length=3, max_length=800)
     negative: str | None = Field(default=None, max_length=300)
     seed: int | None = None
 

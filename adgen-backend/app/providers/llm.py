@@ -483,8 +483,17 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float,
         if text.startswith("```"):
             text = text.split("\n", 1)[1] if "\n" in text else ""
             text = text.rsplit("```", 1)[0]
-        return json.loads(text)
-    except (KeyError, IndexError, json.JSONDecodeError) as e:
+        out = json.loads(text)
+        if require and require not in out:
+            raise PlanError(f"Gemini plan missing required key '{require}'")
+        return out
+    except (KeyError, IndexError, json.JSONDecodeError, PlanError) as e:
+        # a 200 response can still carry broken/wrong-shape JSON (long verbatim
+        # briefs are the usual trigger) — that must fall through to NVIDIA/Groq
+        # exactly like an HTTP error does, not dead-end the whole ladder.
+        fb = _fallback_json(system_prompt, user_msg, temperature, require)
+        if fb is not None:
+            return fb
         raise PlanError(f"Gemini returned an unparseable plan: {e}") from None
 
 
@@ -620,6 +629,14 @@ Operations (use EXACTLY these shapes; clip = 1-based index from CONTEXT):
      stills-first flow: approve images, then animate). Write scenes as full
      keyframe descriptions.
  {"op":"ask","question":str}                                     when genuinely ambiguous
+ {"op":"captions","items":[{"start":float,"end":float,"text":str,"position":"top"|"bottom"|"center","accent":bool}]}
+     burn timed on-screen text/supers into the CURRENT rendered video (the most
+     recent completed render or export in this conversation — never a still).
+     Only fires when the user gives or pastes concrete on-screen text lines with
+     timing (a script's "on-screen text" cues, or explicit "put OVERLAY from
+     Xs to Ys"); never invent caption text yourself. Devanagari-safe. Keep each
+     text <=120 chars; position defaults to "bottom"; accent=true for CTA/price
+     lines that should pop in the accent color.
 
 Rules:
 - Resolve "scene N" via the clip labels in CONTEXT; if a reference is ambiguous
@@ -640,7 +657,7 @@ _DIRECTOR_OPS = {
     "trim", "center_cut", "reorder", "swap_take", "delete", "split", "range_cut",
     "voice_offset", "voice_trim", "voice_gain", "set_narration", "voice_script",
     "playhead", "preview", "export", "plan", "generate_approach",
-    "generate_portrait", "portrait_variants", "keyframes", "ask",
+    "generate_portrait", "portrait_variants", "keyframes", "ask", "captions",
 }
 
 

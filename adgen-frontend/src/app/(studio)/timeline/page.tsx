@@ -86,7 +86,7 @@ type ChatMsg =
   | { kind: "progress"; jobId: string }
   | { kind: "stills"; jobId: string; title: string; params: StillsParams }
   | { kind: "questions" } // renders the ACTIVE intake card (state lives in `intake`)
-  | { kind: "assetask"; title: string; needs: string[]; description: string }; // gate card: ⚡ generate or 📎 upload
+  | { kind: "assetask"; title: string; needs: string[]; description: string; isProduct: boolean }; // gate card: ⚡ generate or 📎 upload (product needs are upload-only — brand law)
 
 type Intake = {
   idea: string;
@@ -562,7 +562,9 @@ function TimelineStudio() {
 
   /* ----- data loading ----- */
   useEffect(() => {
-    api.outputs().then((d) => setPool(d.outputs.filter((o) => o.kind === "clip"))).catch(() => {});
+    // bin shows raw clips AND rendered finals (an exported cut is footage too —
+    // reusable in a later timeline, e.g. as a B-roll insert or reference take).
+    api.outputs().then((d) => setPool(d.outputs)).catch(() => {});
     api.stills().then((d) => setStills(d.stills)).catch(() => {});
   }, []);
 
@@ -632,7 +634,7 @@ function TimelineStudio() {
       try {
         window.localStorage.setItem("tl.chat", JSON.stringify({
           v: 1,
-          msgs: chatMsgs.slice(-40),
+          msgs: chatMsgs,
           jobs: chatJobs,
           lastPlan: lastPlanRef.current,
           approved: approvedStills,
@@ -1387,6 +1389,21 @@ function TimelineStudio() {
     chatEndRef.current?.scrollIntoView({ block: "end" });
   }, [chatMsgs.length]);
 
+  // The most recently COMPLETED render/export in this conversation — captions
+  // burn onto this file. Checks the manual Export job first, then scans chat
+  // progress cards newest-first (a chat-fired render can be more recent).
+  const findLastRenderedVideo = (): string | null => {
+    if (job?.status === "done" && job.video_path) return job.video_path;
+    for (let i = chatMsgs.length - 1; i >= 0; i--) {
+      const m = chatMsgs[i];
+      if (m.kind === "progress") {
+        const j = chatJobs[m.jobId];
+        if (j?.status === "done" && j.video) return j.video;
+      }
+    }
+    return null;
+  };
+
   const buildChatContext = () => ({
     clips: clips.map((c, i) => ({
       i: i + 1,
@@ -1423,6 +1440,7 @@ function TimelineStudio() {
     last_plan: lastPlanRef.current
       ? lastPlanRef.current.approaches.map((a, i) => `${i + 1}. ${a.title} (${a.pipeline})`)
       : null,
+    last_render: findLastRenderedVideo() ? "a completed render exists — captions can fire" : null,
   });
 
   // ⚡ from-scratch hero portrait: generated ONCE, ✓-approved, and then every
@@ -1516,11 +1534,16 @@ function TimelineStudio() {
     if (photoNeeds.length && !haveImages && !gatedRef.current.has(ap.title)) {
       gatedRef.current.add(ap.title);
       // the character anchor lives verbatim in the first shot prompt — reuse it
+      // brand law: a "product" need can only ever be an upload (generated
+      // labels/logos garble) — Generate must never be offered for these.
+      const isProduct = photoNeeds.some((n) => /product|pack(age|aging)|label|logo|box\b/i.test(n));
       const src = ap.segments?.[0]?.prompt ?? ap.shots?.[0]?.prompt ?? "";
-      const desc =
-        (src ? src.split(". ").slice(0, 2).join(". ") : photoNeeds[0]) +
-        " — head-and-shoulders portrait, neutral expression, looking at camera, photorealistic";
-      pushMsg({ kind: "assetask", title: ap.title, needs: photoNeeds, description: desc });
+      const suffix = " — head-and-shoulders portrait, neutral expression, looking at camera, photorealistic";
+      // server caps this at 500 chars — a rich cinematic shot prompt's first two
+      // sentences plus the suffix can overrun that, so budget the source text.
+      const rawSrc = src ? src.split(". ").slice(0, 2).join(". ") : photoNeeds[0];
+      const desc = rawSrc.slice(0, 500 - suffix.length) + suffix;
+      pushMsg({ kind: "assetask", title: ap.title, needs: photoNeeds, description: desc, isProduct });
       if (ap.pipeline === "cinematic") {
         postChat(
           "assistant",
@@ -1616,6 +1639,8 @@ function TimelineStudio() {
             if (id === chatJobId) setChatJobId(null);
             if (j.status === "done" && j.video_path) {
               postChat("assistant", `✅ Landed: ${j.video_path.split("/").pop()} — in the Library; open it here to cut it.`);
+              // the finished render/export belongs in the bin right away
+              api.outputs().then((d) => setPool(d.outputs)).catch(() => {});
             }
           }
         }
@@ -1896,6 +1921,27 @@ function TimelineStudio() {
           const idx = (num(op.index) ?? 0) - 1;
           if (!plan || !plan.approaches[idx]) { notes.push("no plan on the table — brief me first"); continue; }
           await fireApproach(plan.approaches[idx], plan.language);
+        } else if (kind === "captions") {
+          const rawItems = Array.isArray(op.items) ? (op.items as unknown[]) : [];
+          const items = rawItems
+            .map((it) => {
+              const o = it as Record<string, unknown>;
+              const start = num(o.start), end = num(o.end);
+              const text = String(o.text ?? "").trim();
+              if (start === null || end === null || !text || end <= start) return null;
+              const position = ["top", "bottom", "center"].includes(String(o.position))
+                ? (o.position as "top" | "bottom" | "center") : "bottom";
+              return { start, end, text: text.slice(0, 120), position, accent: !!o.accent };
+            })
+            .filter((x): x is NonNullable<typeof x> => x !== null)
+            .slice(0, 12);
+          if (!items.length) { notes.push("captions needs timed {start,end,text} items"); continue; }
+          const videoPath = findLastRenderedVideo();
+          if (!videoPath) { notes.push("no rendered video yet — render or export first, then burn captions"); continue; }
+          const { job_id } = await api.brandPass({ video_path: videoPath, captions: items });
+          setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
+          pushMsg({ kind: "progress", jobId: job_id });
+          postChat("assistant", `🔤 Burning ${items.length} caption${items.length > 1 ? "s" : ""} onto the last render…`);
         } else if (kind === "ask") {
           postChat("assistant", String(op.question || "Which one do you mean?"));
         }
@@ -2137,7 +2183,11 @@ function TimelineStudio() {
       try {
         const j = await api.job(jobId);
         setJob(j);
-        if (j.status === "done" && j.video_path) setShowResult(true);
+        if (j.status === "done" && j.video_path) {
+          setShowResult(true);
+          // the fresh final belongs in the bin immediately, not just after a reload
+          api.outputs().then((d) => setPool(d.outputs)).catch(() => {});
+        }
         if (["done", "error", "cancelled"].includes(j.status)) clearInterval(t);
       } catch {
         /* transient */
@@ -2377,12 +2427,14 @@ function TimelineStudio() {
                           ))}
                         </ul>
                         <div className="mt-2.5 flex flex-wrap gap-2">
-                          <button
-                            onClick={() => generatePortrait(m.description)}
-                            className={`rounded-btn border border-[rgba(255,77,61,0.5)] bg-[rgba(255,77,61,0.12)] px-3 py-1.5 text-[11px] font-semibold text-text-primary hover:bg-[rgba(255,77,61,0.22)] ${focusRing}`}
-                          >
-                            ⚡ Generate the portrait
-                          </button>
+                          {!m.isProduct && (
+                            <button
+                              onClick={() => generatePortrait(m.description)}
+                              className={`rounded-btn border border-[rgba(255,77,61,0.5)] bg-[rgba(255,77,61,0.12)] px-3 py-1.5 text-[11px] font-semibold text-text-primary hover:bg-[rgba(255,77,61,0.22)] ${focusRing}`}
+                            >
+                              ⚡ Generate the portrait
+                            </button>
+                          )}
                           <button
                             onClick={() => fileRef.current?.click()}
                             className={`seg rounded-btn px-3 py-1.5 text-[11px] ${focusRing}`}
@@ -2391,8 +2443,9 @@ function TimelineStudio() {
                           </button>
                         </div>
                         <p className="mt-1.5 text-[9px] italic text-text-muted">
-                          ✓-approve what you like in the grid, then press ▶ Make this again.
-                          Product photos (labels/logos) must always be uploads — generated text garbles.
+                          {m.isProduct
+                            ? "Product photos (labels/logos) must always be uploads — generated text garbles."
+                            : "✓-approve what you like in the grid, then press ▶ Make this again."}
                         </p>
                       </div>
                     </div>
