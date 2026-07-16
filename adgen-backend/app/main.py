@@ -20,6 +20,7 @@ Run:  ./.venv/bin/uvicorn app.main:app --port 8000
 import json
 import threading
 import time
+import traceback
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -232,6 +233,11 @@ def plan_endpoint(req: PlanRequest):
                         cast=cast or None)
     except llm.PlanError as e:
         raise HTTPException(502, str(e))
+    except Exception as e:
+        # the planner must never dead-end as a bare 500: surface a readable 502
+        # (the frontend shows the detail) while keeping the trace for debugging.
+        traceback.print_exc()
+        raise HTTPException(502, f"planner error ({type(e).__name__}): {e}") from None
 
 
 class DialoguePlanRequest(BaseModel):

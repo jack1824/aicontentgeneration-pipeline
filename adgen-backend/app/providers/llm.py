@@ -451,6 +451,7 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float,
     last_err: str = ""
     r = None
     for i, model in enumerate(attempts):
+        is_last = i == len(attempts) - 1
         try:
             r = httpx.post(
                 GEMINI_URL.format(model=model),
@@ -460,16 +461,27 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float,
             )
             r.raise_for_status()
             break
-        except httpx.HTTPStatusError as e:
-            code = e.response.status_code
-            last_err = f"Gemini plan failed ({code}): {e.response.text[:800]}"
-            if i == len(attempts) - 1 or code not in (429, 500, 503):
+        except httpx.HTTPError as e:
+            # httpx.HTTPError is the common base of BOTH a bad HTTP status AND a
+            # network-level failure (ReadTimeout/ConnectError). The latter carries
+            # no .response — long verbatim briefs make Gemini slow enough to time
+            # out, and if we only caught HTTPStatusError that timeout escaped
+            # uncaught, bypassed NVIDIA/Groq entirely, and surfaced as a bare 500.
+            is_status = isinstance(e, httpx.HTTPStatusError)
+            code = e.response.status_code if is_status else None
+            last_err = (
+                f"Gemini plan failed ({code}): {e.response.text[:800]}" if is_status
+                else f"Gemini plan unreachable: {type(e).__name__}: {e}"
+            )
+            # network errors (code is None) are transient -> retryable like 503
+            retryable = code is None or code in (429, 500, 503)
+            if is_last or not retryable:
                 # separate vendors — NVIDIA (Qwen) then Groq (Llama)
                 fb = _fallback_json(system_prompt, user_msg, temperature, require)
                 if fb is not None:
                     return fb
                 raise PlanError(last_err) from None
-            if code == 429:
+            if code == 429 and is_status:
                 m = re.search(r"retry in ([0-9.]+)s", e.response.text)
                 time.sleep(min(float(m.group(1)) + 1.0 if m else 30.0, 45.0))
             else:
