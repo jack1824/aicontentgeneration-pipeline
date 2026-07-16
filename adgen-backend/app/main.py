@@ -221,23 +221,34 @@ def plan_questions_endpoint(req: PlanQuestionsRequest):
 
 @app.post("/plan")
 def plan_endpoint(req: PlanRequest):
+    """ASYNC: returns a job_id immediately; the plan is computed in a background
+    thread and read back via GET /jobs/{id} (field `plan`). Gemini takes 60-100s+
+    on long verbatim briefs — a single synchronous request that long trips the
+    Cloudflare quick-tunnel's ~100s cap (524) and Vercel/proxy timeouts. Polling a
+    fast job endpoint sidesteps every one of those, exactly like renders do."""
     cast = []
-    for cid in req.cast_ids:
+    for cid in req.cast_ids:  # resolve synchronously so unknown ids 404 up front
         ch = characters.get_character(cid)
         if ch is None:
             raise HTTPException(404, f"unknown character_id {cid}")
         cast.append({"name": ch["name"], "anchor": ch["anchor"]})
-    try:
-        return llm.plan(req.idea, language=req.language, ad_format=req.format,
-                        duration_s=req.duration_s, avoid=req.avoid or None,
-                        cast=cast or None)
-    except llm.PlanError as e:
-        raise HTTPException(502, str(e))
-    except Exception as e:
-        # the planner must never dead-end as a bare 500: surface a readable 502
-        # (the frontend shows the detail) while keeping the trace for debugging.
-        traceback.print_exc()
-        raise HTTPException(502, f"planner error ({type(e).__name__}): {e}") from None
+    job_id = _new_job("plan", "ad plan")  # kind="plan" -> not pod-bound
+
+    def run() -> None:
+        try:
+            _update(job_id, status="planning", progress=25, detail="writing treatments")
+            result = llm.plan(req.idea, language=req.language, ad_format=req.format,
+                              duration_s=req.duration_s, avoid=req.avoid or None,
+                              cast=cast or None)
+            _update(job_id, status="done", progress=100, detail="", plan=result)
+        except llm.PlanError as e:
+            _update(job_id, status="error", error=str(e))
+        except Exception as e:
+            traceback.print_exc()
+            _update(job_id, status="error", error=f"planner error ({type(e).__name__}): {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
 
 
 class DialoguePlanRequest(BaseModel):

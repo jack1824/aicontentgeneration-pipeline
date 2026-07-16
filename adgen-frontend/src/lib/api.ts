@@ -289,12 +289,28 @@ async function jsonOrThrow(r: Response) {
 
 export const api = {
   health: () => fetch(`${BASE}/health`).then(jsonOrThrow),
-  plan: (req: PlanRequest): Promise<{ approaches: PlanApproach[] }> =>
-    fetch(`${BASE}/plan`, {
+  // ASYNC planner: /plan returns a job_id instantly; we poll /jobs/{id} until the
+  // treatments land. Each request is <1s, so a 60-100s Gemini plan can never trip
+  // the Cloudflare tunnel's ~100s cap (524) or a proxy/serverless timeout again.
+  // Signature is unchanged, so callers keep `await api.plan(...)`.
+  plan: async (req: PlanRequest): Promise<{ approaches: PlanApproach[] }> => {
+    const { job_id } = await fetch(`${BASE}/plan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
-    }).then(jsonOrThrow),
+    }).then(jsonOrThrow);
+    for (let i = 0; i < 90; i++) {           // ~3 min ceiling (Gemini tops out ~100s)
+      await new Promise((r) => setTimeout(r, 2000));
+      const j: { status: string; error?: string; plan?: { approaches: PlanApproach[] } } =
+        await fetch(`${BASE}/jobs/${job_id}`).then(jsonOrThrow);
+      if (j.status === "done") {
+        if (j.plan?.approaches?.length) return { approaches: j.plan.approaches };
+        throw new Error("planner returned no approaches");
+      }
+      if (j.status === "error") throw new Error(j.error || "planner failed");
+    }
+    throw new Error("planner timed out");
+  },
   planDialogue: (req: {
     idea: string;
     language?: string;
