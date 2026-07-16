@@ -482,6 +482,7 @@ export const api = {
     description: string;
     negative?: string;
     seed?: number;
+    subject?: "person" | "product"; // product = studio packshot, no human framing
   }): Promise<{ job_id: string }> =>
     fetch(`${BASE}/avatars/generate-face`, {
       method: "POST",

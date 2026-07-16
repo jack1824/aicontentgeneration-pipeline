@@ -1108,6 +1108,9 @@ class FaceGenRequest(BaseModel):
     description: str = Field(min_length=3, max_length=800)
     negative: str | None = Field(default=None, max_length=300)
     seed: int | None = None
+    # "person" -> studio headshot; "product" -> studio packshot with no people
+    # (so "generate a pizza box" stops rendering a human face).
+    subject: Literal["person", "product"] = "person"
 
 
 @app.post("/avatars/generate-face")
@@ -1119,13 +1122,14 @@ def generate_face_endpoint(req: FaceGenRequest):
             if job_id in JOBS:
                 JOBS[job_id]["prompt_id"] = prompt_id
         try:
+            is_product = req.subject == "product"
             _update(job_id, status="generating", progress=15,
-                    detail="rendering portrait still (1-frame Wan, 20 steps)")
+                    detail=f"rendering {'product' if is_product else 'portrait'} still (1-frame Wan, 20 steps)")
             # Fresh random seed per click unless pinned — "try again" must differ.
             seed = req.seed or (int(uuid.uuid4().hex[:6], 16) % 900000) + 1
             png = pipeline.generate_face(
                 req.description, negative=req.negative, seed=seed,
-                out_stem=f"gen-{job_id}", on_submit=on_submit,
+                subject=req.subject, out_stem=f"gen-{job_id}", on_submit=on_submit,
             )
             _update(job_id, status="done", progress=100, detail="", video_path=png,
                     image_url=f"/assets-files/avatars/{Path(png).name}")

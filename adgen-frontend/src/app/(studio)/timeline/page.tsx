@@ -42,10 +42,67 @@ type TAudio = { path: string; url: string; name: string };
 
 type Selection = { type: "clip"; id: string } | { type: "voice" } | null;
 
+// ---- Projects (virtual folders) -------------------------------------------
+// Each project is its own workspace: its cut, its Director conversation, and its
+// media (the bin filters to the active project's tag). Nothing lives on the
+// backend disk differently — a project just tags the names of everything it
+// generates with its id, so the bin can show "only this project's media".
+const PROJECTS_KEY = "tl.projects";
+const ACTIVE_KEY = "tl.activeProject";
+type Project = { id: string; name: string; created: number };
+
+function loadProjects(): Project[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const l = JSON.parse(window.localStorage.getItem(PROJECTS_KEY) ?? "[]");
+    return Array.isArray(l) ? (l as Project[]) : [];
+  } catch {
+    return [];
+  }
+}
+function saveProjects(list: Project[]): void {
+  try {
+    window.localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
+  } catch {
+    /* best effort */
+  }
+}
+function newProjectId(): string {
+  return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+// Resolve (and lazily create) the active project. On first run it adopts any
+// existing un-namespaced draft/chat as "Untitled project" so a live session is
+// never lost when the project system lands.
+function getActivePid(): string {
+  if (typeof window === "undefined") return "p0";
+  try {
+    let list = loadProjects();
+    if (!list.length) {
+      const id = newProjectId();
+      list = [{ id, name: "Untitled project", created: Date.now() }];
+      saveProjects(list);
+      const legacyDraft = window.localStorage.getItem("tl.project");
+      const legacyChat = window.localStorage.getItem("tl.chat");
+      if (legacyDraft) window.localStorage.setItem(`tl.project.${id}`, legacyDraft);
+      if (legacyChat) window.localStorage.setItem(`tl.chat.${id}`, legacyChat);
+      window.localStorage.setItem(ACTIVE_KEY, id);
+      return id;
+    }
+    let active = window.localStorage.getItem(ACTIVE_KEY) || "";
+    if (!active || !list.some((p) => p.id === active)) {
+      active = list[0].id;
+      window.localStorage.setItem(ACTIVE_KEY, active);
+    }
+    return active;
+  } catch {
+    return "p0";
+  }
+}
+const draftKeyFor = (pid: string) => `tl.project.${pid}`;
+const chatKeyFor = (pid: string) => `tl.chat.${pid}`;
+
 // The current project autosaves here (like the other studio pages) so leaving
-// for Library/Create and coming back restores the cut exactly. One draft — the
-// "current project"; opening a DIFFERENT video from Library starts a new one.
-const DRAFT_KEY = "tl.project";
+// for Library/Create and coming back restores the cut exactly. Keyed per project.
 type Draft = {
   v: 1;
   sourceVideo: string | null;
@@ -65,7 +122,7 @@ type Draft = {
 function readDraft(): Draft | null {
   if (typeof window === "undefined") return null;
   try {
-    const d = JSON.parse(window.localStorage.getItem(DRAFT_KEY) ?? "null");
+    const d = JSON.parse(window.localStorage.getItem(draftKeyFor(getActivePid())) ?? "null");
     return d && d.v === 1 && Array.isArray(d.clips) ? (d as Draft) : null;
   } catch {
     return null;
@@ -77,7 +134,7 @@ function readDraft(): Draft | null {
 type StillsParams =
   | { type: "variants"; portrait: string; emotions: string[]; name: string }
   | { type: "set"; scenes: string[]; character_image?: string; product_image?: string; name: string }
-  | { type: "portrait"; description: string; name: string }; // from-scratch hero portrait
+  | { type: "portrait"; description: string; name: string; subject?: "person" | "product" }; // from-scratch hero still (person=headshot, product=packshot)
 
 type ChatMsg =
   | { kind: "text"; role: "user" | "assistant"; text: string }
@@ -86,7 +143,7 @@ type ChatMsg =
   | { kind: "progress"; jobId: string }
   | { kind: "stills"; jobId: string; title: string; params: StillsParams }
   | { kind: "questions" } // renders the ACTIVE intake card (state lives in `intake`)
-  | { kind: "assetask"; title: string; needs: string[]; description: string; isProduct: boolean }; // gate card: ⚡ generate or 📎 upload (product needs are upload-only — brand law)
+  | { kind: "assetask"; title: string; needs: string[]; description: string; isProduct: boolean; canGenerate: boolean; subject: "person" | "product" }; // gate card: ⚡ generate (person) and/or 📎 upload (product/UI are upload-only — brand law); a mixed card offers BOTH
 
 type Intake = {
   idea: string;
@@ -120,6 +177,31 @@ function slugName(title: string): string {
   return `${slug || "chat-ad"}-${Date.now().toString(36).slice(-4)}`;
 }
 
+// Person vs product/object — decides whether a from-scratch still is framed as a
+// human headshot or a studio packshot. "a pizza box" must never become a face.
+// A person mention wins (a person holding a product is still a portrait).
+const PERSON_HINT =
+  /\b(man|woman|men|women|person|people|boy|girl|guy|lady|male|female|human|model|spokes\w*|shopkeeper|owner|customer|actor|founder|worker|farmer|child|kid|teen|elderly|gentleman|businessman|businesswoman|face|portrait of)\b/i;
+const PRODUCT_HINT =
+  /\b(pizza|box|bottle|can|cup|jar|packet|pack|package|packaging|product|food|dish|burger|drink|beverage|snack|meal|plate|bowl|carton|tube|sachet|wrapper|gadget|device|phone|shoe|bag|cosmetic|cream|tin|pouch|container|hamper|packshot)\b/i;
+// Assets that can only ever be UPLOADS (generating them garbles): real branded
+// product pixels, plus app UI / screen recordings / mockups the ad must show.
+const UPLOAD_ONLY_NEED =
+  /\bproduct|pack(age|aging)|label|logo|box\b|mockup|screen ?rec|screenshot|screen ?grab|app ui|ui\b|footage|banner\b/i;
+// A need we CAN generate: a person/portrait/expression. A card may carry both a
+// person need AND an upload-only need (e.g. "hero portrait" + "product photo of
+// the app UI") — those aren't mutually exclusive, so the gate offers Generate
+// for the person and Upload for the product, instead of hiding Generate whenever
+// any product need is present.
+const GEN_PERSON_NEED =
+  /\b(portrait|hero|headshot|face|character|protagonist|person|people|variants?|expressions?|actor|model|spokes\w*|man|woman|owner|shopkeeper|founder|customer)\b/i;
+function classifySubject(text: string): "person" | "product" {
+  const t = text || "";
+  if (PERSON_HINT.test(t)) return "person";
+  if (PRODUCT_HINT.test(t)) return "product";
+  return "person"; // portraits are the common case — default preserves behavior
+}
+
 // Hydration gate helper: true on the client after hydration, false during the
 // server render AND the hydration pass — so both trees match even though the
 // real state comes from localStorage drafts.
@@ -143,7 +225,7 @@ type ChatPersist = {
 function readChat(): ChatPersist | null {
   if (typeof window === "undefined") return null;
   try {
-    const d = JSON.parse(window.localStorage.getItem("tl.chat") ?? "null");
+    const d = JSON.parse(window.localStorage.getItem(chatKeyFor(getActivePid())) ?? "null");
     return d && d.v === 1 && Array.isArray(d.msgs) ? (d as ChatPersist) : null;
   } catch {
     return null;
@@ -387,6 +469,18 @@ function TimelineStudio() {
   // restore the saved project — unless a DIFFERENT video was deep-linked
   // (this subtree renders client-side only via the Suspense/useSearchParams
   // bailout, so reading localStorage in initializers is hydration-safe)
+  // Active project (virtual folder). Read once; switching persists + reloads so
+  // every initializer re-reads the target project's keys with a clean slate.
+  const [activePid] = useState(getActivePid);
+  const [projects, setProjects] = useState<Project[]>(loadProjects);
+  const [showAllMedia, setShowAllMedia] = useState(false); // media bin: this project vs everything
+  const [projMenuOpen, setProjMenuOpen] = useState(false);
+  const [newProjName, setNewProjName] = useState("");
+  const [renamingPid, setRenamingPid] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState("");
+  const activeProject = projects.find((p) => p.id === activePid) ?? projects[0];
+  const isDefaultProject = projects[0]?.id === activePid; // absorbs legacy/untagged media
+
   const [draft] = useState(readDraft);
   const useDraft =
     !!draft &&
@@ -458,7 +552,18 @@ function TimelineStudio() {
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
   const [chatJobId, setChatJobId] = useState<string | null>(null);
+  // 🎙 post-render narration: after a render lands, lay a voiceover over it,
+  // auto-fit to the video's length (/revoice). narrateFor = the render job whose
+  // composer is open; renderMetaRef remembers each render's plan script + language
+  // so the box can prefill the ad's own narration.
+  const [narrateFor, setNarrateFor] = useState<string | null>(null);
+  const [narrateText, setNarrateText] = useState("");
+  const renderMetaRef = useRef<Record<string, { script: string; language: string }>>({});
   const [chatJobs, setChatJobs] = useState<Record<string, ChatJobState>>(() => chatBoot?.jobs ?? {});
+  // live mirror so op handlers can check "is a render already rolling?" without
+  // reading stale state captured when sendChat started (the double-render guard).
+  const chatJobsRef = useRef(chatJobs);
+  useEffect(() => { chatJobsRef.current = chatJobs; }, [chatJobs]);
   const [dirW, setDirW] = useState(() => readPanelW("tl.dirW", 320, 260, 460));
   const dirWRef = useRef(dirW);
   const [undoAvailable, setUndoAvailable] = useState(false);
@@ -619,7 +724,7 @@ function TimelineStudio() {
           voiceScript,
           voiceLang,
         };
-        window.localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+        window.localStorage.setItem(draftKeyFor(activePid), JSON.stringify(d));
       } catch {
         /* quota / private mode — autosave is best-effort */
       }
@@ -632,7 +737,7 @@ function TimelineStudio() {
     if (typeof window === "undefined") return;
     const t = setTimeout(() => {
       try {
-        window.localStorage.setItem("tl.chat", JSON.stringify({
+        window.localStorage.setItem(chatKeyFor(activePid), JSON.stringify({
           v: 1,
           msgs: chatMsgs,
           jobs: chatJobs,
@@ -653,7 +758,7 @@ function TimelineStudio() {
     setConfirmClose(false);
     stopPlayback();
     try {
-      window.localStorage.removeItem(DRAFT_KEY);
+      window.localStorage.removeItem(draftKeyFor(activePid));
     } catch {
       /* ignore */
     }
@@ -693,9 +798,69 @@ function TimelineStudio() {
     setApprovedStills([]);
     lastPlanRef.current = null;
     try {
-      window.localStorage.removeItem("tl.chat");
+      window.localStorage.removeItem(chatKeyFor(activePid));
     } catch {
       /* ignore */
+    }
+  };
+
+  // Every generated/rendered name is tagged with the project id so the media bin
+  // can show "only this project's media". Underscores survive the backend's
+  // name->filename path, so `<pid>__<slug>-<ts>` is a stable per-project key.
+  const pname = (title: string) => `${activePid}__${slugName(title)}`;
+
+  // ---- Project switching -----------------------------------------------------
+  // Flush the CURRENT project synchronously (autosave is debounced), then reload
+  // so every initializer re-reads the target project's keys from scratch. A hard
+  // reload is the clean way to swap a workspace this stateful.
+  const saveCurrentProject = () => {
+    try {
+      const d: Draft = {
+        v: 1, sourceVideo: projectVideoRef.current, loadedFrom, clips, audioAssets,
+        narrationPath, voiceOffset, voiceIn, voiceOut, gain, name, pps, voiceScript, voiceLang,
+      };
+      window.localStorage.setItem(draftKeyFor(activePid), JSON.stringify(d));
+      window.localStorage.setItem(chatKeyFor(activePid), JSON.stringify({
+        v: 1, msgs: chatMsgs, jobs: chatJobs, lastPlan: lastPlanRef.current, approved: approvedStills,
+      } satisfies ChatPersist));
+    } catch {
+      /* best effort */
+    }
+  };
+  const switchProject = (pid: string) => {
+    if (pid === activePid) { setProjMenuOpen(false); return; }
+    saveCurrentProject();
+    try { window.localStorage.setItem(ACTIVE_KEY, pid); } catch { /* ignore */ }
+    window.location.href = "/timeline"; // clean remount into the target project
+  };
+  const createProject = () => {
+    const nm = newProjName.trim() || "Untitled project";
+    saveCurrentProject();
+    const id = newProjectId();
+    const next = [...projects, { id, name: nm.slice(0, 60), created: Date.now() }];
+    saveProjects(next);
+    try { window.localStorage.setItem(ACTIVE_KEY, id); } catch { /* ignore */ }
+    window.location.href = "/timeline"; // new project = empty cut + fresh chat
+  };
+  const renameProject = (pid: string, nm: string) => {
+    const next = projects.map((p) => (p.id === pid ? { ...p, name: nm.slice(0, 60) || p.name } : p));
+    setProjects(next);
+    saveProjects(next);
+  };
+  const deleteProject = (pid: string) => {
+    // wipe its saved workspace; never delete the last project
+    if (projects.length <= 1) return;
+    try {
+      window.localStorage.removeItem(draftKeyFor(pid));
+      window.localStorage.removeItem(chatKeyFor(pid));
+    } catch { /* ignore */ }
+    const next = projects.filter((p) => p.id !== pid);
+    saveProjects(next);
+    if (pid === activePid) {
+      try { window.localStorage.setItem(ACTIVE_KEY, next[0].id); } catch { /* ignore */ }
+      window.location.href = "/timeline";
+    } else {
+      setProjects(next);
     }
   };
 
@@ -1446,16 +1611,17 @@ function TimelineStudio() {
   // ⚡ from-scratch hero portrait: generated ONCE, ✓-approved, and then every
   // expression/variant is an EDIT of that exact file — the person can never
   // silently change mid-session.
-  const generatePortrait = async (description: string) => {
+  const generatePortrait = async (description: string, subject: "person" | "product" = "person") => {
     try {
-      const { job_id } = await api.generateFace({ description });
+      const { job_id } = await api.generateFace({ description, subject });
       setChatJobs((m) => ({
         ...m,
         [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null },
       }));
       pushMsg({
-        kind: "stills", jobId: job_id, title: "Hero portrait — ✓ to lock her in",
-        params: { type: "portrait", description, name: slugName("portrait") },
+        kind: "stills", jobId: job_id,
+        title: subject === "product" ? "Product still — ✓ to lock it in" : "Hero portrait — ✓ to lock her in",
+        params: { type: "portrait", description, name: pname(subject === "product" ? "product" : "portrait"), subject },
       });
     } catch (e) {
       postChat("assistant", `❌ portrait generation failed: ${String(e).slice(0, 140)}`);
@@ -1466,22 +1632,26 @@ function TimelineStudio() {
   const rerollStill = async (msg: Extract<ChatMsg, { kind: "stills" }>, idx: number) => {
     try {
       if (msg.params.type === "portrait") {
-        // re-rolling the BASE portrait is the ONE place a new person appears —
-        // by design, until you ✓ one; variants never do this
+        // re-rolling the BASE still is the ONE place a new subject appears —
+        // by design, until you ✓ one; variants never do this. Preserve the
+        // person/product framing so a product re-roll stays a packshot.
+        const subject = msg.params.subject ?? "person";
         const { job_id } = await api.generateFace({
           description: msg.params.description,
+          subject,
           seed: freshSeed(),
         });
         setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
         pushMsg({
-          kind: "stills", jobId: job_id, title: "↻ new portrait candidate",
-          params: { type: "portrait", description: msg.params.description, name: slugName("portrait") },
+          kind: "stills", jobId: job_id,
+          title: subject === "product" ? "↻ new product candidate" : "↻ new portrait candidate",
+          params: { type: "portrait", description: msg.params.description, name: pname(subject === "product" ? "product" : "portrait"), subject },
         });
         return;
       }
       if (msg.params.type === "variants") {
         const emotion = msg.params.emotions[idx] ?? msg.params.emotions[0] ?? "same expression";
-        const nm = slugName("variant");
+        const nm = pname("variant");
         const { job_id } = await api.keyframeVariants({
           portrait: msg.params.portrait, name: nm, emotions: [emotion],
         });
@@ -1491,7 +1661,7 @@ function TimelineStudio() {
       } else {
         const scene = msg.params.scenes[idx] ?? msg.params.scenes[0];
         if (!scene) return;
-        const nm = slugName("keyframe");
+        const nm = pname("keyframe");
         const { job_id } = await api.generateKeyframes({
           scenes: [scene], character_image: msg.params.character_image,
           product_image: msg.params.product_image, name: nm,
@@ -1527,23 +1697,39 @@ function TimelineStudio() {
   // Fire a planned approach as a real render (D1). Sequence/overlay/cinematic
   // coerce cleanly; asset-gated pipelines route the user to Create for now.
   const fireApproach = async (ap: PlanApproach, language: string) => {
-    const photoNeeds = (ap.needs_from_user ?? []).filter((n) =>
-      /photo|portrait|image|still|face|variant/i.test(n),
-    );
-    const haveImages = approvedRef.current.length > 0 || sessionUploadRef.current > 0;
-    if (photoNeeds.length && !haveImages && !gatedRef.current.has(ap.title)) {
+    // Gate (user's rule: "if the script demands a photo, it must be given
+    // first"). ANY required asset gates — the old filter only matched
+    // photo/portrait words, so a need like "Screen recording or mockups of the
+    // app UI" slipped through and rendered with nothing.
+    // BUT once the user HAS provided pixels — approved a still or uploaded an
+    // image — the gate must step aside, or they get looped: "provide pixels" ->
+    // they do -> "provide pixels" again. So the gate only blocks when nothing
+    // has been given yet. gatedRef still gives an explicit second-press override
+    // for the zero-pixel case.
+    const assetNeeds = ap.needs_from_user ?? [];
+    const haveProvidedPixels =
+      approvedRef.current.length > 0 || sessionUploadRef.current > 0;
+    if (assetNeeds.length && !haveProvidedPixels && !gatedRef.current.has(ap.title)) {
       gatedRef.current.add(ap.title);
-      // the character anchor lives verbatim in the first shot prompt — reuse it
-      // brand law: a "product" need can only ever be an upload (generated
-      // labels/logos garble) — Generate must never be offered for these.
-      const isProduct = photoNeeds.some((n) => /product|pack(age|aging)|label|logo|box\b/i.test(n));
+      // brand law: real product pixels AND app UI / screen recordings / mockups
+      // can only be UPLOADS (generating them garbles). But a card can carry a
+      // person need too — offer Generate for the portrait AND Upload for the
+      // product, instead of hiding Generate whenever any product need exists.
+      const needText = assetNeeds.join(" ");
+      const isProduct = UPLOAD_ONLY_NEED.test(needText); // has an upload-only need
+      const canGenerate = GEN_PERSON_NEED.test(needText); // has a generatable person need
       const src = ap.segments?.[0]?.prompt ?? ap.shots?.[0]?.prompt ?? "";
-      const suffix = " — head-and-shoulders portrait, neutral expression, looking at camera, photorealistic";
-      // server caps this at 500 chars — a rich cinematic shot prompt's first two
-      // sentences plus the suffix can overrun that, so budget the source text.
-      const rawSrc = src ? src.split(". ").slice(0, 2).join(". ") : photoNeeds[0];
-      const desc = rawSrc.slice(0, 500 - suffix.length) + suffix;
-      pushMsg({ kind: "assetask", title: ap.title, needs: photoNeeds, description: desc, isProduct });
+      const rawSrc = src ? src.split(". ").slice(0, 2).join(". ") : assetNeeds[0];
+      // when there's a person need, the Generate button makes THAT portrait
+      const subject: "person" | "product" = canGenerate ? "person" : classifySubject(rawSrc);
+      const suffix =
+        subject === "product"
+          ? " — studio product photograph, clean seamless background, no people, photorealistic"
+          : " — head-and-shoulders portrait, neutral expression, looking at camera, photorealistic";
+      // server caps this at 800 chars — budget the source text so a rich shot
+      // prompt's first two sentences plus the suffix never overrun it.
+      const desc = rawSrc.slice(0, 800 - suffix.length) + suffix;
+      pushMsg({ kind: "assetask", title: ap.title, needs: assetNeeds, description: desc, isProduct, canGenerate, subject });
       if (ap.pipeline === "cinematic") {
         postChat(
           "assistant",
@@ -1571,7 +1757,7 @@ function TimelineStudio() {
           };
         }),
         language, quality: "quality",
-        name: slugName(ap.title),
+        name: pname(ap.title),
       };
       if (injected) postChat("assistant", `🖼 ${injected} approved still${injected > 1 ? "s" : ""} wired into the character/product shots.`);
     } else if (ap.pipeline === "overlay" || ap.pipeline === "cinematic") {
@@ -1580,7 +1766,7 @@ function TimelineStudio() {
         shots: (ap.shots ?? []).map((s) => ({ prompt: s.prompt, negative_prompt: s.negative_prompt })),
         script: ap.narration_script || null,
         language, quality: "quality",
-        name: slugName(ap.title),
+        name: pname(ap.title),
       };
     }
     if (!req) {
@@ -1592,6 +1778,9 @@ function TimelineStudio() {
       postChat("assistant", `Note — this plan asked for: ${ap.needs_from_user.join(", ")}. Rendering without them.`);
     }
     const { job_id } = await api.generate(req);
+    // remember this render's own narration + language so the post-render "Add
+    // narration" box can prefill the ad's script (user can still edit/replace).
+    renderMetaRef.current[job_id] = { script: ap.narration_script || "", language };
     setChatJobs((m) => ({
       ...m,
       [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null },
@@ -1599,6 +1788,31 @@ function TimelineStudio() {
     setChatJobId(job_id);
     postChat("assistant", `🎬 Rolling "${ap.title}" at full quality — progress and QC events below.`);
     pushMsg({ kind: "progress", jobId: job_id });
+  };
+
+  // 🎙 open the narration composer for a landed render (prefill the ad's script)
+  const openNarrate = (jobId: string) => {
+    setNarrateText(renderMetaRef.current[jobId]?.script ?? "");
+    setNarrateFor(jobId);
+  };
+
+  // 🎙 lay the typed narration over the render — /revoice TTSes it and fits it to
+  // the video's length (speeds up if long, trims tail if short), replacing the
+  // soundtrack. New job streams into its own progress card.
+  const submitNarrate = async (videoPath: string, jobId: string) => {
+    const script = narrateText.trim();
+    if (script.length < 3) { postChat("assistant", "Paste the narration script first — it's spoken verbatim and fit to the video length."); return; }
+    const language = renderMetaRef.current[jobId]?.language ?? "hi";
+    setNarrateFor(null);
+    try {
+      const { job_id } = await api.revoice({ video_path: videoPath, script, language });
+      renderMetaRef.current[job_id] = { script, language };
+      setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
+      pushMsg({ kind: "progress", jobId: job_id });
+      postChat("assistant", "🎙 Generating the voiceover and fitting it to the video…");
+    } catch (e) {
+      postChat("assistant", `❌ narration failed: ${String(e).slice(0, 140)}`);
+    }
   };
 
   // Poll EVERY unfinished chat-fired job (renders AND stills — they overlap):
@@ -1843,7 +2057,13 @@ function TimelineStudio() {
         } else if (kind === "generate_portrait") {
           const desc = String(op.description || "").trim();
           if (desc.length < 10) { notes.push("generate_portrait needs a full description"); continue; }
-          await generatePortrait(desc);
+          // trust the planner's subject if it set one; otherwise infer it so
+          // "generate a pizza box" renders a packshot, not a human face.
+          const subject: "person" | "product" =
+            op.subject === "product" || op.subject === "person"
+              ? op.subject
+              : classifySubject(desc);
+          await generatePortrait(desc, subject);
         } else if (kind === "portrait_variants") {
           const q = op.portrait ? String(op.portrait).toLowerCase() : "";
           let portrait =
@@ -1858,7 +2078,7 @@ function TimelineStudio() {
           const emotions = Array.isArray(op.emotions) && op.emotions.length
             ? (op.emotions as unknown[]).map(String).slice(0, 8)
             : undefined;
-          const nm = slugName("variants");
+          const nm = pname("variants");
           const { job_id } = await api.keyframeVariants({
             portrait, name: nm, ...(emotions ? { emotions } : {}),
           });
@@ -1888,7 +2108,7 @@ function TimelineStudio() {
             notes.push("keyframes needs a character or product still — name one from the stills");
             continue;
           }
-          const nm = slugName("keyframes");
+          const nm = pname("keyframes");
           const { job_id } = await api.generateKeyframes({ scenes, character_image, product_image, name: nm });
           setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
           pushMsg({
@@ -1920,6 +2140,17 @@ function TimelineStudio() {
           const plan = lastPlanRef.current;
           const idx = (num(op.index) ?? 0) - 1;
           if (!plan || !plan.approaches[idx]) { notes.push("no plan on the table — brief me first"); continue; }
+          // Guard: never let a chat message silently start a SECOND render while
+          // one is already rolling. This is exactly what happened when "at end to
+          // market the brand" got misread as generate_approach mid-render — two
+          // treatments went to the pod at once. Confirm via the card instead.
+          const renderActive = Object.values(chatJobsRef.current).some(
+            (j) => j.video === null && !["done", "error", "cancelled"].includes(j.status),
+          );
+          if (renderActive) {
+            postChat("assistant", `A render is already rolling. To also start "${plan.approaches[idx].title}", press ▶ Make this on its card.`);
+            continue;
+          }
           await fireApproach(plan.approaches[idx], plan.language);
         } else if (kind === "captions") {
           const rawItems = Array.isArray(op.items) ? (op.items as unknown[]) : [];
@@ -2215,9 +2446,18 @@ function TimelineStudio() {
   const ticks: number[] = [];
   for (let t = 0; t <= maxT + 1e-6; t += tickInt) ticks.push(+t.toFixed(2));
 
-  const filteredPool = pool.filter((o) =>
-    o.name.toLowerCase().includes(poolFilter.trim().toLowerCase()),
-  );
+  // Media bin shows only THIS project's media (tagged by `<pid>__`). The first
+  // project also adopts any untagged/legacy media so nothing pre-projects is
+  // orphaned. The "All" toggle lifts the filter entirely.
+  const projPrefixes = projects.map((p) => p.id + "__");
+  const ownedByActive = (nm: string) => {
+    if (nm.startsWith(activePid + "__")) return true;
+    if (isDefaultProject && !projPrefixes.some((pre) => nm.startsWith(pre))) return true;
+    return false;
+  };
+  const filteredPool = pool
+    .filter((o) => showAllMedia || ownedByActive(o.name))
+    .filter((o) => o.name.toLowerCase().includes(poolFilter.trim().toLowerCase()));
 
   const focusRing =
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(255,77,61,0.55)]";
@@ -2234,7 +2474,16 @@ function TimelineStudio() {
     <>
       <div className="flex items-center justify-between px-3 pt-3">
         <span className="label-cap">Media bin</span>
-        <span className="text-[10px] text-text-muted">{filteredPool.length} clips</span>
+        <span className="flex items-center gap-1.5">
+          <button
+            onClick={() => setShowAllMedia((v) => !v)}
+            title={showAllMedia ? "Showing every project's media — click for this project only" : "Showing this project's media — click to see all"}
+            className={`rounded px-1.5 py-0.5 text-[9px] font-medium ${showAllMedia ? "bg-[rgba(255,77,61,0.15)] text-[rgba(255,140,130,1)]" : "seg text-text-muted"} ${focusRing}`}
+          >
+            {showAllMedia ? "all projects" : "this project"}
+          </button>
+          <span className="text-[10px] text-text-muted">{filteredPool.length}</span>
+        </span>
       </div>
       <div className="px-3 pt-2">
         <input
@@ -2299,6 +2548,84 @@ function TimelineStudio() {
             trim · reorder · split · nudge the voice — no re-rendering
             {loadedFrom ? ` — editing ${loadedFrom}` : ""}
           </p>
+        </div>
+
+        {/* ===== project switcher (virtual folders) ===== */}
+        <div className="relative">
+          <button
+            onClick={() => setProjMenuOpen((v) => !v)}
+            title="Switch, create, rename or delete a project"
+            className={`inline-flex items-center gap-1.5 rounded-btn border border-white/10 bg-surface-2 px-2.5 py-1.5 text-xs text-text-primary hover:border-white/20 ${focusRing}`}
+          >
+            <span className="text-[rgba(255,140,130,1)]">📁</span>
+            <span className="max-w-[160px] truncate">{activeProject?.name ?? "Project"}</span>
+            <span className="text-text-muted">▾</span>
+          </button>
+          {projMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => { setProjMenuOpen(false); setRenamingPid(null); }} />
+              <div className="absolute left-0 top-full z-50 mt-1.5 w-72 rounded-xl border border-white/10 bg-surface-1 p-2 shadow-2xl">
+                <div className="label-cap px-1.5 pb-1">Projects</div>
+                <div className="max-h-64 space-y-0.5 overflow-y-auto">
+                  {projects.map((p) => (
+                    <div key={p.id} className="group flex items-center gap-1">
+                      {renamingPid === p.id ? (
+                        <input
+                          autoFocus
+                          value={renameText}
+                          onChange={(e) => setRenameText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { renameProject(p.id, renameText); setRenamingPid(null); }
+                            if (e.key === "Escape") setRenamingPid(null);
+                          }}
+                          onBlur={() => { renameProject(p.id, renameText); setRenamingPid(null); }}
+                          className={`input-well min-w-0 flex-1 rounded px-2 py-1 text-[11px] ${focusRing}`}
+                        />
+                      ) : (
+                        <button
+                          onClick={() => switchProject(p.id)}
+                          className={`min-w-0 flex-1 truncate rounded px-2 py-1 text-left text-[11px] ${p.id === activePid ? "bg-[rgba(255,77,61,0.12)] text-text-primary" : "text-text-secondary hover:bg-white/5"} ${focusRing}`}
+                        >
+                          {p.id === activePid ? "● " : ""}{p.name}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => { setRenamingPid(p.id); setRenameText(p.name); }}
+                        title="Rename"
+                        className="rounded px-1 py-1 text-[10px] text-text-muted opacity-0 hover:text-text-primary group-hover:opacity-100"
+                      >
+                        ✎
+                      </button>
+                      {projects.length > 1 && (
+                        <button
+                          onClick={() => deleteProject(p.id)}
+                          title="Delete project (wipes its cut + chat; media stays in the Library)"
+                          className="rounded px-1 py-1 text-[10px] text-text-muted opacity-0 hover:text-red-400 group-hover:opacity-100"
+                        >
+                          🗑
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-1.5 flex gap-1 border-t border-white/5 pt-1.5">
+                  <input
+                    value={newProjName}
+                    onChange={(e) => setNewProjName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") createProject(); }}
+                    placeholder="New project name…"
+                    className={`input-well min-w-0 flex-1 rounded px-2 py-1 text-[11px] ${focusRing}`}
+                  />
+                  <button
+                    onClick={createProject}
+                    className={`rounded-btn border border-[rgba(255,77,61,0.5)] bg-[rgba(255,77,61,0.12)] px-2.5 py-1 text-[11px] font-semibold text-text-primary hover:bg-[rgba(255,77,61,0.22)] ${focusRing}`}
+                  >
+                    ＋ New
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {!wide && (
@@ -2412,7 +2739,7 @@ function TimelineStudio() {
                 ✕
               </button>
             </div>
-            <div className="mt-2 flex-1 space-y-2 overflow-y-auto px-3 pb-2">
+            <div className="mt-3 flex-1 space-y-3 overflow-y-auto px-3.5 pb-2">
               {chatMsgs.map((m, i) => {
                 if (m.kind === "assetask") {
                   return (
@@ -2427,12 +2754,12 @@ function TimelineStudio() {
                           ))}
                         </ul>
                         <div className="mt-2.5 flex flex-wrap gap-2">
-                          {!m.isProduct && (
+                          {m.canGenerate && (
                             <button
-                              onClick={() => generatePortrait(m.description)}
+                              onClick={() => generatePortrait(m.description, m.subject)}
                               className={`rounded-btn border border-[rgba(255,77,61,0.5)] bg-[rgba(255,77,61,0.12)] px-3 py-1.5 text-[11px] font-semibold text-text-primary hover:bg-[rgba(255,77,61,0.22)] ${focusRing}`}
                             >
-                              ⚡ Generate the portrait
+                              {m.subject === "product" ? "⚡ Generate the product still" : "⚡ Generate the portrait"}
                             </button>
                           )}
                           <button
@@ -2443,9 +2770,11 @@ function TimelineStudio() {
                           </button>
                         </div>
                         <p className="mt-1.5 text-[9px] italic text-text-muted">
-                          {m.isProduct
-                            ? "Product photos (labels/logos) must always be uploads — generated text garbles."
-                            : "✓-approve what you like in the grid, then press ▶ Make this again."}
+                          {m.canGenerate && m.isProduct
+                            ? "Generate the portrait here; the product / app-UI shots must be uploaded (generated labels & UI text garble)."
+                            : m.isProduct
+                              ? "Product / app-UI photos must always be uploads — generated text garbles."
+                              : "✓-approve what you like in the grid, then press ▶ Make this again."}
                         </p>
                       </div>
                     </div>
@@ -2753,7 +3082,41 @@ function TimelineStudio() {
                         </ul>
                       )}
                       {pj?.status === "done" && pj.video && (
-                        <p className="mt-1 truncate text-[10px] text-text-secondary">→ {pj.video.split("/").pop()}</p>
+                        <>
+                          <p className="mt-1 truncate text-[10px] text-text-secondary">→ {pj.video.split("/").pop()}</p>
+                          {narrateFor === m.jobId ? (
+                            <div className="mt-2 space-y-1.5">
+                              <textarea
+                                value={narrateText}
+                                onChange={(e) => setNarrateText(e.target.value)}
+                                rows={3}
+                                placeholder="Paste the narration script — spoken verbatim, auto-fit to the video length."
+                                className={`w-full resize-y rounded-lg border border-white/10 bg-surface-2 px-2 py-1.5 text-[11px] leading-relaxed text-text-primary ${focusRing}`}
+                              />
+                              <div className="flex gap-1.5">
+                                <button
+                                  onClick={() => submitNarrate(pj.video as string, m.jobId)}
+                                  className={`rounded-btn border border-[rgba(255,77,61,0.5)] bg-[rgba(255,77,61,0.12)] px-3 py-1 text-[11px] font-semibold text-text-primary hover:bg-[rgba(255,77,61,0.22)] ${focusRing}`}
+                                >
+                                  🎙 Narrate over this
+                                </button>
+                                <button
+                                  onClick={() => setNarrateFor(null)}
+                                  className={`seg rounded-btn px-3 py-1 text-[11px] ${focusRing}`}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => openNarrate(m.jobId)}
+                              className={`mt-2 rounded-btn border border-white/10 bg-surface-2 px-3 py-1 text-[11px] text-text-secondary hover:text-text-primary ${focusRing}`}
+                            >
+                              🎙 Add narration
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   );
@@ -2761,12 +3124,12 @@ function TimelineStudio() {
                 return (
                   <div
                     key={i}
-                    className={`bubble-in max-w-[95%] whitespace-pre-wrap rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed ${
+                    className={`bubble-in whitespace-pre-wrap text-[12px] leading-relaxed ${
                       m.role === "user"
-                        ? "ml-auto bg-[rgba(255,77,61,0.12)] text-text-primary"
+                        ? "ml-auto max-w-[88%] rounded-2xl bg-[rgba(255,77,61,0.10)] px-3 py-2 text-text-primary"
                         : m.text.startsWith("⚠")
-                          ? "border-l-2 border-amber-400/40 bg-surface-2 text-amber-400/90"
-                          : "border-l-2 border-[rgba(255,77,61,0.3)] bg-surface-2 text-text-secondary"
+                          ? "max-w-[94%] px-0.5 font-display text-[11px] text-amber-400/90"
+                          : "max-w-[94%] px-0.5 font-display text-text-secondary"
                     }`}
                   >
                     {m.text}

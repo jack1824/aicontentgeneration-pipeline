@@ -347,14 +347,31 @@ FACE_NEGATIVE = (
     "raised arms, hands, text, watermark, blur"
 )
 
+# A product/object still uses the SAME 1-frame Wan trick, but must NEVER inherit
+# the human-headshot framing above — a "pizza box" description with the portrait
+# suffix renders a person. Product styling is studio packshot, people banned.
+PRODUCT_PROMPT_SUFFIX = (
+    ". Professional studio product photograph, the single hero product centered "
+    "on a clean seamless background, soft even commercial lighting, crisp sharp "
+    "focus, high detail, advertising still, photorealistic. No people, no hands."
+)
+PRODUCT_NEGATIVE = (
+    "person, people, human, man, woman, face, portrait, headshot, hands, arms, "
+    "model, cartoon, anime, 3d render, cgi, illustration, painting, garbled text, "
+    "watermark, blur, low quality, deformed, extra objects, cluttered"
+)
+
 
 def generate_face(description: str, negative: str | None = None,
                   seed: int | None = None, out_stem: str = "face",
-                  on_submit=None) -> str:
-    """Render ONE photoreal portrait still (768x768 PNG) for an avatar profile.
+                  subject: str = "person", on_submit=None) -> str:
+    """Render ONE photoreal still (1024x1024 PNG) for an avatar/product anchor.
 
-    Returns the PNG path under assets/avatars/ — the same folder uploaded faces
-    live in, so the profile machinery treats both identically.
+    subject="person" (default): a studio headshot — the identity every future ad
+    locks to. subject="product": a studio packshot with NO people — so a "pizza
+    box" prompt stops rendering a human face (the head-shoulders suffix is what
+    forced that). Returns the PNG path under assets/avatars/ — the same folder
+    uploaded faces live in, so the profile machinery treats both identically.
     """
     if not COMFY_POD_URLS:
         raise RuntimeError("COMFY_POD_URLS is not set in .env — no pod to generate on.")
@@ -366,9 +383,12 @@ def generate_face(description: str, negative: str | None = None,
     tmp_mp4 = out_dir / f"{out_stem}.mp4"
     png = out_dir / f"{out_stem}.png"
 
+    is_product = subject == "product"
+    suffix = PRODUCT_PROMPT_SUFFIX if is_product else FACE_PROMPT_SUFFIX
+    default_negative = PRODUCT_NEGATIVE if is_product else FACE_NEGATIVE
     inputs = {
-        "prompt": description.strip() + FACE_PROMPT_SUFFIX,
-        "negative_prompt": negative or FACE_NEGATIVE,
+        "prompt": description.strip() + suffix,
+        "negative_prompt": negative or default_negative,
         "seed": seed or DEFAULT_BASE_SEED,
         "duration": 0.0,          # 1 frame — a still photo, not a clip
         # 1024² (vs the videos' 640-class): stills have no motion budget to spend,

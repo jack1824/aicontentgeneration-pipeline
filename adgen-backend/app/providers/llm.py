@@ -612,13 +612,19 @@ Operations (use EXACTLY these shapes; clip = 1-based index from CONTEXT):
  {"op":"export","name":str|null}
  {"op":"plan","idea":str,"language":"hi"|"en","duration_s":int,"format":str}  new ad brief
  {"op":"generate_approach","index":int}   user picks approach N from the LAST shown plan
- {"op":"generate_portrait","description":str}
-     create a NEW hero portrait from scratch (no reference exists yet). The
-     description must be a full physical anchor: age, face, skin tone, hair,
-     every garment with color — end with "head-and-shoulders portrait, neutral
-     expression, looking at camera, photorealistic". An approval grid appears;
-     the ✓-approved portrait becomes THE person for the whole session — all
-     expressions/variants derive from that exact image, never re-rolled fresh.
+ {"op":"generate_portrait","description":str,"subject":"person"|"product"}
+     create a NEW hero still from scratch (no reference exists yet).
+     subject="person" (default): a full physical anchor — age, face, skin tone,
+     hair, every garment with color — end with "head-and-shoulders portrait,
+     neutral expression, looking at camera, photorealistic". The ✓-approved
+     portrait becomes THE person for the session; variants derive from that
+     exact image.
+     subject="product": a GENERIC, UNBRANDED object/food/packshot (e.g. "a pizza
+     box", "a cold drink can"). Describe it as studio product photography — NEVER
+     add any portrait/headshot phrasing (that renders a human).
+     Do NOT generate a REAL branded product the ad must show (a specific label or
+     logo) — list it in needs_from_user as an upload; generated brand text garbles.
+     An approval grid appears either way.
  {"op":"portrait_variants","portrait":str|null,"emotions":[str]|null}
      emotion stills from a hero portrait — approval grid appears in the chat.
      Reference the portrait by a filename from CONTEXT.stills; null only when
@@ -648,6 +654,10 @@ Rules:
 - Sentences may compound: "swap scene 2 to take 1 and tighten it" -> swap_take
   then center_cut on that clip. Keep ops <= 8 per turn.
 - Never export unless the user asks to export/render/finish.
+- Only emit generate_approach when the user EXPLICITLY starts a shown approach
+  ("make the first one", "render approach 2", "go with #1"). NEVER emit it from a
+  message about handling an upload, how to use an image, adjusting the cut, or
+  general conversation — those are not a render command. When unsure, emit ask.
 - A fresh ad request ("make me a ... ad") -> ONE plan op; the app runs the
   planner and shows the treatment — do not fabricate shots yourself.
 - "say" is a colleague's confirmation ("Trimmed the voice head by 2s — it now
