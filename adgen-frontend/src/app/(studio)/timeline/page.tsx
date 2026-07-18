@@ -2173,6 +2173,19 @@ function TimelineStudio() {
           setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
           pushMsg({ kind: "progress", jobId: job_id });
           postChat("assistant", `🔤 Burning ${items.length} caption${items.length > 1 ? "s" : ""} onto the last render…`);
+        } else if (kind === "end_card") {
+          // append a branded end card to the last render. Brand text is required
+          // and comes from the user (never invented) — same law as captions.
+          const brand = String(op.brand || "").trim();
+          if (!brand) { notes.push("end_card needs the brand name — ask the user for it"); continue; }
+          const tagline = op.tagline ? String(op.tagline).slice(0, 80) : undefined;
+          const offer = op.offer ? String(op.offer).slice(0, 60) : undefined;
+          const videoPath = findLastRenderedVideo();
+          if (!videoPath) { notes.push("no rendered video yet — render or export first, then add the end card"); continue; }
+          const { job_id } = await api.endCard({ video_path: videoPath, brand, ...(tagline ? { tagline } : {}), ...(offer ? { offer } : {}) });
+          setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
+          pushMsg({ kind: "progress", jobId: job_id });
+          postChat("assistant", `🎬 Adding the end card — ${brand}${tagline ? ` · “${tagline}”` : ""}…`);
         } else if (kind === "ask") {
           postChat("assistant", String(op.question || "Which one do you mean?"));
         }

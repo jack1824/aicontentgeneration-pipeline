@@ -646,6 +646,12 @@ Operations (use EXACTLY these shapes; clip = 1-based index from CONTEXT):
      per-shot stills conditioned on named stills from CONTEXT.stills (the
      stills-first flow: approve images, then animate). Write scenes as full
      keyframe descriptions.
+ {"op":"end_card","brand":str,"tagline":str|null,"offer":str|null}
+     append a branded END CARD (a few seconds) to the CURRENT rendered video —
+     the one place on-screen text belongs (shots ban text; models garble it).
+     Fires only when a rendered video exists AND the user supplies the brand name
+     (tagline/offer optional) — NEVER invent brand text. "add the closing card,
+     brand Acme, tagline See Better." If the brand/tagline isn't given, emit ask.
  {"op":"ask","question":str}                                     when genuinely ambiguous
  {"op":"captions","items":[{"start":float,"end":float,"text":str,"position":"top"|"bottom"|"center","accent":bool}]}
      burn timed on-screen text/supers into the CURRENT rendered video (the most
@@ -670,8 +676,13 @@ Rules:
   ("make the first one", "render approach 2", "go with #1"). NEVER emit it from a
   message about handling an upload, how to use an image, adjusting the cut, or
   general conversation — those are not a render command. When unsure, emit ask.
-- A fresh ad request ("make me a ... ad") -> ONE plan op; the app runs the
-  planner and shows the treatment — do not fabricate shots yourself.
+- Emit a plan op ONLY when the user clearly asks for a NEW ad/video from an idea,
+  brief, or full script ("make me a 20s chai ad", "new ad for X", or pastes a
+  script). A short or ambiguous instruction ("make the card", "do it", "the card",
+  "make it", "proceed", "again", "next") is NOT a new-ad request — emit ONE ask to
+  find out what they mean, NEVER plan. Do not fabricate shots yourself.
+- "make/add the (end/brand/closing) card" -> end_card, NOT plan. If the brand name
+  (and tagline) aren't given in the message, emit ask for them first.
 - "say" is a colleague's confirmation ("Trimmed the voice head by 2s — it now
   starts on the first beat."), never a JSON echo."""
 
@@ -680,6 +691,7 @@ _DIRECTOR_OPS = {
     "voice_offset", "voice_trim", "voice_gain", "set_narration", "voice_script",
     "playhead", "preview", "export", "plan", "generate_approach",
     "generate_portrait", "portrait_variants", "keyframes", "ask", "captions",
+    "end_card",
 }
 
 
