@@ -9,7 +9,7 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { api, GenerateRequest, Job, OutputItem, PlanApproach, StillItem } from "@/lib/api";
+import { api, GenerateRequest, Job, OutputItem, PlanApproach, StillItem, Voice } from "@/lib/api";
 
 const MIN_PPS = 20;
 const MAX_PPS = 200;
@@ -213,6 +213,48 @@ const WELCOME_MSG: ChatMsg = {
   text: "Director here. Tell me what to do — \"cut the first 2s of the voice\", \"use take 2 of scene 3\", \"tighten everything to 2.2s\" — or brief me a new ad.",
 };
 
+// ---- Session Memory -------------------------------------------------------
+// What the conversation is ABOUT, as opposed to what the timeline currently holds.
+// The Director used to get only editor state (clips, voice track, filenames) plus a
+// list of treatment TITLES, so it could not answer "render it" without asking which
+// plan, and it never learned that a product photo had been handed over. This object
+// is written by the flow, read by the brain (shipped first in CONTEXT) and read by
+// the render path (assets carry a ROLE, so a product photo is actually used).
+type AssetRole = "product" | "portrait" | "reference";
+type SessionAsset = {
+  path: string;
+  name: string;
+  role: AssetRole;
+  source: "upload" | "generated";
+  approved: boolean;
+};
+type SessionMemory = {
+  brief: { idea: string; language: string; format: string; duration_s: number } | null;
+  approach: {
+    index: number;        // 1-based, so the brain can fire generate_approach
+    title: string;
+    pipeline: string;
+    shots: string[];      // gists, for "one more like shot 3"
+    script: string;
+    anchor: string;       // shot 1's prompt VERBATIM — the frozen character/setting/look
+    negative: string;     // the canonical negative block, reused by render_shot
+  } | null;
+  assets: SessionAsset[];
+  renders: { job: string; title: string; video: string | null }[];
+  voice: { voice_id: string; name: string; language: string } | null;
+};
+const EMPTY_SESSION: SessionMemory = {
+  brief: null, approach: null, assets: [], renders: [], voice: null,
+};
+
+// Infer what an image is FOR from how it was described/named. Role drives whether a
+// photo can anchor a product beat — brand law: real product pixels must be uploads.
+function assetRole(hint: string): AssetRole {
+  if (/product|pack(age|aging)|label|logo|box\b|bottle|can\b|jar|packet|pouch|sachet|ui\b|mockup|screen/i.test(hint)) return "product";
+  if (/portrait|face|hero|character|person|man|woman|actor|model/i.test(hint)) return "portrait";
+  return "reference";
+}
+
 // The Director conversation persists like the cut does — a refresh must never
 // eat treatments, approvals, or a render's progress card.
 type ChatPersist = {
@@ -221,6 +263,7 @@ type ChatPersist = {
   jobs: Record<string, ChatJobState>;
   lastPlan: { approaches: PlanApproach[]; language: string } | null;
   approved: string[];
+  session?: SessionMemory;
 };
 function readChat(): ChatPersist | null {
   if (typeof window === "undefined") return null;
@@ -559,11 +602,40 @@ function TimelineStudio() {
   const [narrateFor, setNarrateFor] = useState<string | null>(null);
   const [narrateText, setNarrateText] = useState("");
   const renderMetaRef = useRef<Record<string, { script: string; language: string }>>({});
+  // When a treatment is coerced into a sequence to honour a product photo, the
+  // job-level script is ignored by sequence mode — stash it here and lay it on with
+  // the fit-to-length revoice once the render lands, so the ad is never silent.
+  const pendingNarrationRef = useRef("");
   const [chatJobs, setChatJobs] = useState<Record<string, ChatJobState>>(() => chatBoot?.jobs ?? {});
   // live mirror so op handlers can check "is a render already rolling?" without
   // reading stale state captured when sendChat started (the double-render guard).
   const chatJobsRef = useRef(chatJobs);
   useEffect(() => { chatJobsRef.current = chatJobs; }, [chatJobs]);
+  // 🧠 Session Memory — what this conversation is about. Ref-mirrored because op
+  // handlers run inside async callbacks that captured stale state.
+  const [session, setSession] = useState<SessionMemory>(() => ({ ...EMPTY_SESSION, ...(chatBoot?.session ?? {}) }));
+  const sessionRef = useRef(session);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+  useEffect(() => { chatMsgsRef.current = chatMsgs; }, [chatMsgs]);
+  // Chat messages hold the (possibly EDITED) plan — op handlers must read this, not
+  // lastPlanRef, or "make 2" typed in chat would render the planner's original after
+  // a refresh split the two copies apart.
+  const chatMsgsRef = useRef<ChatMsg[]>([]);
+  const patchSession = (p: Partial<SessionMemory>) => setSession((s) => ({ ...s, ...p }));
+  // Voice roster — the Director can only pick a voice by NAME if it knows the names
+  // (an LLM will happily invent a 20-char ElevenLabs id, which fails at render time).
+  // /voices degrades to the server default rather than erroring, so this is safe.
+  const [voices, setVoices] = useState<Voice[]>([]);
+  useEffect(() => {
+    api.voices().then((d) => setVoices(d.voices ?? [])).catch(() => setVoices([]));
+  }, []);
+  // Remember an image AND what it's for. Re-recording the same path updates its
+  // role/approval instead of duplicating it.
+  const rememberAsset = (a: SessionAsset) =>
+    setSession((s) => {
+      const rest = s.assets.filter((x) => x.path !== a.path);
+      return { ...s, assets: [...rest, a].slice(-24) };
+    });
   const [dirW, setDirW] = useState(() => readPanelW("tl.dirW", 320, 260, 460));
   const dirWRef = useRef(dirW);
   const [undoAvailable, setUndoAvailable] = useState(false);
@@ -610,9 +682,19 @@ function TimelineStudio() {
         { path, url, name: f.name, kind: "face", size_bytes: f.size, modified: Date.now() / 1000 } as StillItem,
         ...s,
       ]);
+      // 🧠 Record it in the session WITH A ROLE. Uploads used to land only in the
+      // stills library, which the render path never reads — the reason an uploaded
+      // product photo was asked for and then never used. Role is inferred from the
+      // filename plus whatever the plan said it needed, and an upload counts as
+      // approved immediately: real product pixels outrank generated ones (brand law).
+      const roleHint = `${f.name} ${(lastPlanRef.current?.approaches ?? []).flatMap((a) => a.needs_from_user ?? []).join(" ")}`;
+      const role = assetRole(roleHint);
+      rememberAsset({ path, name: f.name, role, source: "upload", approved: true });
       postChat(
         "assistant",
-        `📎 Got ${f.name}. Say how to use it — "use ${f.name} as the product photo", "make emotion variants of it", or "keyframe her holding ${f.name}".`,
+        role === "product"
+          ? `📎 Got ${f.name} — filed as the product photo. It'll be used for the product shot when you render.`
+          : `📎 Got ${f.name}. Say how to use it — "use ${f.name} as the product photo", "make emotion variants of it", or "keyframe her holding ${f.name}".`,
       );
     } catch (err) {
       postChat("assistant", `❌ upload failed: ${String(err).slice(0, 140)}`);
@@ -741,6 +823,7 @@ function TimelineStudio() {
           v: 1,
           msgs: chatMsgs,
           jobs: chatJobs,
+          session,
           lastPlan: lastPlanRef.current,
           approved: approvedStills,
         } satisfies ChatPersist));
@@ -749,7 +832,7 @@ function TimelineStudio() {
       }
     }, 500);
     return () => clearTimeout(t);
-  }, [chatMsgs, chatJobs, approvedStills]);
+  }, [chatMsgs, chatJobs, approvedStills, session]);
 
   // ✕ close project: clear the timeline + its saved draft (sources untouched).
   // Confirmation is an in-app dialog (never the browser's native alert).
@@ -796,6 +879,7 @@ function TimelineStudio() {
     setChatMsgs([WELCOME_MSG]);
     setChatJobs({});
     setApprovedStills([]);
+    setSession(EMPTY_SESSION); // closing the project forgets what it was about
     lastPlanRef.current = null;
     try {
       window.localStorage.removeItem(chatKeyFor(activePid));
@@ -821,7 +905,7 @@ function TimelineStudio() {
       };
       window.localStorage.setItem(draftKeyFor(activePid), JSON.stringify(d));
       window.localStorage.setItem(chatKeyFor(activePid), JSON.stringify({
-        v: 1, msgs: chatMsgs, jobs: chatJobs, lastPlan: lastPlanRef.current, approved: approvedStills,
+        v: 1, msgs: chatMsgs, jobs: chatJobs, lastPlan: lastPlanRef.current, approved: approvedStills, session,
       } satisfies ChatPersist));
     } catch {
       /* best effort */
@@ -1501,7 +1585,27 @@ function TimelineStudio() {
 
   const postChat = (role: "user" | "assistant", text: string) =>
     setChatMsgs((m) => [...m.slice(-60), { kind: "text", role, text }]);
-  const pushMsg = (msg: ChatMsg) => setChatMsgs((m) => [...m.slice(-60), msg]);
+  // Treatment cards are exempt from the trim: they hold the plan (and any edits to
+  // it), so evicting one silently discards work the user typed.
+  const pushMsg = (msg: ChatMsg) =>
+    setChatMsgs((m) => {
+      if (m.length < 60) return [...m, msg];
+      const keep = m.slice(-60);
+      const rescued = m.slice(0, -60).filter((x) => x.kind === "treatments");
+      return [...rescued, ...keep, msg];
+    });
+
+  // ✎ Edit a planned approach in place. The treatments ChatMsg is the single source
+  // of truth — and because the chat persist effect already depends on chatMsgs, every
+  // edit auto-saves and survives a refresh with no extra storage.
+  const updateApproach = (mi: number, ai: number, patch: Partial<PlanApproach>) =>
+    setChatMsgs((ms) =>
+      ms.map((m, idx) =>
+        idx !== mi || m.kind !== "treatments"
+          ? m
+          : { ...m, approaches: m.approaches.map((a, k) => (k !== ai ? a : { ...a, ...patch })) },
+      ),
+    );
 
   // One-batch undo: sendChat snapshots before state-changing ops; the latest
   // receipt card carries ↩ until the next batch replaces the snapshot.
@@ -1570,6 +1674,29 @@ function TimelineStudio() {
   };
 
   const buildChatContext = () => ({
+    // 🧠 SESSION FIRST — this is what the conversation is about, and llm.py gives it
+    // its own truncation budget so a long clip list can never push it out of view.
+    // Without this the brain saw only editor state plus treatment TITLES, so it had
+    // to ask "which plan?" every turn and never knew a product photo existed.
+    session: {
+      brief: session.brief,
+      approach: session.approach
+        ? {
+            index: session.approach.index,
+            title: session.approach.title,
+            pipeline: session.approach.pipeline,
+            script: session.approach.script.slice(0, 600),
+            shot_list: session.approach.shots.map((g, i) => `${i + 1}. ${g}`),
+          }
+        : null,
+      // roles are what make these usable: "product" pixels anchor the product beat
+      assets: session.assets.map((a) => ({
+        name: a.name, role: a.role, source: a.source, approved: a.approved,
+      })),
+      renders: session.renders.map((r) => ({ title: r.title, done: !!r.video })),
+      voice: session.voice,
+      voices: voices.slice(0, 24).map((v) => v.name),
+    },
     clips: clips.map((c, i) => ({
       i: i + 1,
       label: clipLabel(c),
@@ -1679,6 +1806,9 @@ function TimelineStudio() {
   // the intake card's "Plan it" button).
   const runPlan = async (idea: string, language: string, format: string, duration_s: number) => {
     postChat("assistant", "📝 Briefing the planner…");
+    // the brief IS the session's subject — remember it before the planner answers,
+    // so even a planner failure leaves the Director knowing what we're making
+    patchSession({ brief: { idea, language, format, duration_s } });
     try {
       const res = await api.plan({ idea, language, format, duration_s });
       lastPlanRef.current = { approaches: res.approaches, language };
@@ -1761,13 +1891,53 @@ function TimelineStudio() {
       };
       if (injected) postChat("assistant", `🖼 ${injected} approved still${injected > 1 ? "s" : ""} wired into the character/product shots.`);
     } else if (ap.pipeline === "overlay" || ap.pipeline === "cinematic") {
-      req = {
-        mode: ap.pipeline,
-        shots: (ap.shots ?? []).map((s) => ({ prompt: s.prompt, negative_prompt: s.negative_prompt })),
-        script: ap.narration_script || null,
-        language, quality: "quality",
-        name: pname(ap.title),
-      };
+      // A product photo CANNOT ride the overlay/cinematic lane — both are pure
+      // text-to-video and the backend Shot model has no image field, which is why an
+      // uploaded pack shot was silently dropped. When the session holds a product
+      // image, coerce this treatment into a sequence whose beats keep the SAME engine
+      // (sequence "overlay" segments run wan_t2v, "cinematic" run ltx2_av) and append
+      // one real i2v product beat anchored to that image.
+      const productImg = sessionRef.current.assets
+        .filter((a) => a.role === "product")
+        .sort((a, b) => Number(b.approved) - Number(a.approved))[0]?.path;
+      const shotList = ap.shots ?? [];
+      if (productImg && shotList.length) {
+        req = {
+          mode: "sequence",
+          segments: [
+            ...shotList.map((s) => ({
+              pipeline: ap.pipeline as "overlay" | "cinematic",
+              prompt: s.prompt,
+              negative_prompt: s.negative_prompt,
+            })),
+            {
+              // i2v beat: describe ONLY camera/light — never re-describe the product,
+              // the real pixels come from the image and the backend appends I2V_PRESERVE.
+              pipeline: "product" as const,
+              prompt:
+                "Slow push-in on the product, shallow depth of field, soft directional key light, " +
+                "subtle handheld drift, product held perfectly still and unchanged, photorealistic",
+              image: productImg,
+            },
+          ],
+          language, quality: "quality",
+          name: pname(ap.title),
+        };
+        // sequence ignores the job-level script (each segment carries its own), so the
+        // ad would ship silent — lay the narration on afterwards via the proven
+        // fit-to-length revoice path instead of dropping it.
+        pendingNarrationRef.current = ap.narration_script || "";
+        postChat("assistant",
+          `🖼 Wired your product photo into a real product shot — the other beats keep the ${ap.pipeline} look.`);
+      } else {
+        req = {
+          mode: ap.pipeline,
+          shots: shotList.map((s) => ({ prompt: s.prompt, negative_prompt: s.negative_prompt })),
+          script: ap.narration_script || null,
+          language, quality: "quality",
+          name: pname(ap.title),
+        };
+      }
     }
     if (!req) {
       postChat("assistant",
@@ -1777,10 +1947,27 @@ function TimelineStudio() {
     if (ap.needs_from_user?.length) {
       postChat("assistant", `Note — this plan asked for: ${ap.needs_from_user.join(", ")}. Rendering without them.`);
     }
+    // the Director's chosen voice must reach the render, not just the re-voice
+    if (sessionRef.current.voice?.voice_id) req.voice_id = sessionRef.current.voice.voice_id;
     const { job_id } = await api.generate(req);
     // remember this render's own narration + language so the post-render "Add
     // narration" box can prefill the ad's script (user can still edit/replace).
     renderMetaRef.current[job_id] = { script: ap.narration_script || "", language };
+    // 🧠 THIS is now the ad we are making. Recording it is what stops the Director
+    // asking "which plan?" on every follow-up, and gives render_shot its anchors.
+    const firstPrompt = ap.segments?.[0]?.prompt ?? ap.shots?.[0]?.prompt ?? "";
+    patchSession({
+      approach: {
+        index: Math.max(1, (lastPlanRef.current?.approaches ?? []).findIndex((x) => x.title === ap.title) + 1),
+        title: ap.title,
+        pipeline: ap.pipeline,
+        shots: (ap.segments ?? ap.shots ?? []).map((s) => String(s.prompt ?? "").slice(0, 140)),
+        script: ap.narration_script || "",
+        anchor: firstPrompt,                       // verbatim — the frozen look
+        negative: ap.shots?.[0]?.negative_prompt ?? ap.segments?.[0]?.negative_prompt ?? "",
+      },
+      renders: [...sessionRef.current.renders, { job: job_id, title: ap.title, video: null }].slice(-12),
+    });
     setChatJobs((m) => ({
       ...m,
       [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null },
@@ -1805,7 +1992,10 @@ function TimelineStudio() {
     const language = renderMetaRef.current[jobId]?.language ?? "hi";
     setNarrateFor(null);
     try {
-      const { job_id } = await api.revoice({ video_path: videoPath, script, language });
+      const { job_id } = await api.revoice({
+        video_path: videoPath, script, language,
+        ...(sessionRef.current.voice?.voice_id ? { voice_id: sessionRef.current.voice.voice_id } : {}),
+      });
       renderMetaRef.current[job_id] = { script, language };
       setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
       pushMsg({ kind: "progress", jobId: job_id });
@@ -1852,9 +2042,34 @@ function TimelineStudio() {
           if (["done", "error", "cancelled"].includes(j.status)) {
             if (id === chatJobId) setChatJobId(null);
             if (j.status === "done" && j.video_path) {
-              postChat("assistant", `✅ Landed: ${j.video_path.split("/").pop()} — in the Library; open it here to cut it.`);
+              const landed = j.video_path;
+              postChat("assistant", `✅ Landed: ${landed.split("/").pop()} — in the Library; open it here to cut it.`);
               // the finished render/export belongs in the bin right away
               api.outputs().then((d) => setPool(d.outputs)).catch(() => {});
+              // 🧠 the session remembers what actually shipped
+              setSession((s) => ({
+                ...s,
+                renders: s.renders.map((r) => (r.job === id ? { ...r, video: landed } : r)),
+              }));
+              // A treatment coerced into a sequence (to honour a product photo) ignores
+              // the job-level script, so lay the stashed narration on now — same
+              // fit-to-length path as the manual "Add narration" button.
+              const pending = pendingNarrationRef.current;
+              if (pending && pending.trim().length > 2) {
+                pendingNarrationRef.current = "";
+                api.revoice({
+                  video_path: landed,
+                  script: pending,
+                  language: renderMetaRef.current[id]?.language ?? voiceLang,
+                  ...(sessionRef.current.voice?.voice_id ? { voice_id: sessionRef.current.voice.voice_id } : {}),
+                })
+                  .then(({ job_id }) => {
+                    setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
+                    pushMsg({ kind: "progress", jobId: job_id });
+                    postChat("assistant", "🎙 Laying the narration over it, fitted to length…");
+                  })
+                  .catch((e) => postChat("assistant", `❌ narration failed: ${String(e).slice(0, 120)}`));
+              }
             }
           }
         }
@@ -2137,8 +2352,15 @@ function TimelineStudio() {
           }
           await runPlan(idea, lang, fmt, dur);
         } else if (kind === "generate_approach") {
-          const plan = lastPlanRef.current;
           const idx = (num(op.index) ?? 0) - 1;
+          // the treatments MESSAGE carries any edits the user typed; lastPlanRef is
+          // only a language fallback (the two copies diverge after a refresh)
+          const tm = [...chatMsgsRef.current].reverse().find(
+            (x): x is Extract<ChatMsg, { kind: "treatments" }> => x.kind === "treatments",
+          );
+          const plan = tm
+            ? { approaches: tm.approaches, language: tm.language }
+            : lastPlanRef.current;
           if (!plan || !plan.approaches[idx]) { notes.push("no plan on the table — brief me first"); continue; }
           // Guard: never let a chat message silently start a SECOND render while
           // one is already rolling. This is exactly what happened when "at end to
@@ -2186,6 +2408,64 @@ function TimelineStudio() {
           setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
           pushMsg({ kind: "progress", jobId: job_id });
           postChat("assistant", `🎬 Adding the end card — ${brand}${tagline ? ` · “${tagline}”` : ""}…`);
+        } else if (kind === "set_voice") {
+          // Resolve by NAME against the roster we actually fetched — an LLM will
+          // confabulate a voice id, but not a name that was handed to it in CONTEXT.
+          const wantName = String(op.name ?? "").trim().toLowerCase();
+          const explicitId = String(op.voice_id ?? "").trim();
+          const lang = ["hi", "en"].includes(String(op.language)) ? String(op.language) : undefined;
+          let chosen = explicitId
+            ? voices.find((v) => v.voice_id === explicitId) ?? { voice_id: explicitId, name: explicitId, category: null, labels: {} }
+            : undefined;
+          if (!chosen && wantName) {
+            chosen = voices.find((v) => v.name.toLowerCase() === wantName)
+              ?? voices.find((v) => v.name.toLowerCase().includes(wantName));
+          }
+          if (!chosen && !lang) {
+            notes.push(voices.length
+              ? `no voice named "${op.name ?? op.voice_id ?? "?"}" — try one of: ${voices.slice(0, 5).map((v) => v.name).join(", ")}`
+              : "the voice list is unavailable (the API key lacks voices_read) — the default voice will be used");
+            continue;
+          }
+          patchSession({
+            voice: {
+              voice_id: chosen?.voice_id ?? sessionRef.current.voice?.voice_id ?? "",
+              name: chosen?.name ?? sessionRef.current.voice?.name ?? "default",
+              language: lang ?? sessionRef.current.voice?.language ?? voiceLang,
+            },
+          });
+          if (lang) setVoiceLang(lang);
+          postChat("assistant",
+            `🎙 Voice set to ${chosen?.name ?? "the default"}${lang ? ` (${lang})` : ""} — it'll be used for the next narration.`);
+        } else if (kind === "render_shot") {
+          const appr = sessionRef.current.approach;
+          if (!appr) { notes.push("no ad in progress — brief me or pick a treatment first"); continue; }
+          const action = String(op.action ?? "").trim();
+          if (action.length < 3) { notes.push("render_shot needs to know what happens in the shot"); continue; }
+          const like = num(op.like_shot);
+          const likeGist = like && appr.shots[like - 1] ? appr.shots[like - 1] : "";
+          // Repeat the established shot VERBATIM and name only what changes — verbatim
+          // repetition is what holds the character, wardrobe and grade across clips
+          // (same rule the planner follows). Never re-describe the subject here.
+          const prompt =
+            `${appr.anchor}\n\nSAME character, wardrobe, setting, lighting and grade as above. ` +
+            `The only change: ${action}.` +
+            (likeGist ? ` Frame it like this beat: ${likeGist}` : "");
+          // sequence mode requires segments (a 1-shot `shots` array 422s), so render the
+          // extra clip on the approach's own engine: cinematic -> LTX, everything else -> Wan.
+          const mode = appr.pipeline === "cinematic" ? "cinematic" : "overlay";
+          const { job_id } = await api.generate({
+            mode,
+            shots: [{ prompt, negative_prompt: appr.negative || undefined }],
+            script: null,
+            language: sessionRef.current.voice?.language ?? voiceLang,
+            quality: "quality",
+            name: pname(`${appr.title}-extra`),
+            ...(sessionRef.current.voice?.voice_id ? { voice_id: sessionRef.current.voice.voice_id } : {}),
+          } as GenerateRequest);
+          setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
+          pushMsg({ kind: "progress", jobId: job_id });
+          postChat("assistant", `🎬 Rolling one more shot for "${appr.title}" — same look, ${action.slice(0, 60)}.`);
         } else if (kind === "ask") {
           postChat("assistant", String(op.question || "Which one do you mean?"));
         }
@@ -2265,10 +2545,35 @@ function TimelineStudio() {
     }
     setChatBusy(true);
     try {
+      // History used to be text-only, so every card — the treatments, the stills
+      // grid, the render results — was structurally invisible to the brain. After a
+      // few cards its whole view of the conversation was empty, which is what made
+      // the Director feel like it had restarted. Summarize cards into one line each
+      // so they count as turns.
       const history = chatMsgs
-        .filter((m): m is Extract<ChatMsg, { kind: "text" }> => m.kind === "text")
-        .slice(-6)
-        .map((m) => ({ role: m.role, text: m.text }));
+        .slice(-24)
+        .map((m): { role: "user" | "assistant"; text: string } | null => {
+          if (m.kind === "text") return { role: m.role, text: m.text };
+          if (m.kind === "treatments")
+            return {
+              role: "assistant",
+              text: `[showed ${m.approaches.length} treatments: ${m.approaches
+                .map((a, i) => `${i + 1}. ${a.title} (${a.pipeline})`)
+                .join(" | ")}]`,
+            };
+          if (m.kind === "stills")
+            return { role: "assistant", text: `[showed stills: ${m.title}]` };
+          if (m.kind === "assetask")
+            return { role: "assistant", text: `[asked for assets: ${m.needs.join(", ")}]` };
+          if (m.kind === "progress") {
+            const j = chatJobs[m.jobId];
+            return { role: "assistant", text: `[render ${j?.status ?? "queued"}${j?.video ? ` -> ${j.video.split("/").pop()}` : ""}]` };
+          }
+          if (m.kind === "receipt") return { role: "assistant", text: `[applied: ${m.items.join("; ")}]` };
+          return null;
+        })
+        .filter((h): h is { role: "user" | "assistant"; text: string } => h !== null)
+        .slice(-12);
       const res = await api.directorIntent({ message: msg, context: buildChatContext(), history });
       const stateOps = (res.ops ?? []).filter((o) => STATE_OPS.has(o.op as string));
       // labels + snapshot resolve against PRE-edit state (delete shifts indexes)
@@ -2739,7 +3044,7 @@ function TimelineStudio() {
                     activeJobKey ? "rec-dot bg-red-400" : chatBusy ? "render-breathe bg-accent" : "bg-white/20"
                   }`}
                 />
-                <span className="text-grad text-[11px] font-bold uppercase tracking-[0.18em]">🎬 Director</span>
+                <span className="text-[10px] uppercase tracking-[0.18em] text-text-secondary">Director</span>
                 <span className="text-[9px] text-text-muted">
                   {activeJobKey ? "· rolling" : chatBusy ? "· thinking" : "· standing by"}
                 </span>
@@ -2756,12 +3061,12 @@ function TimelineStudio() {
               {chatMsgs.map((m, i) => {
                 if (m.kind === "assetask") {
                   return (
-                    <div key={i} className="hero-frame deck-in">
-                      <div className="card-raised rounded-xl p-3">
+                    <div key={i} className="deck-in">
+                      <div className="rounded-xl border border-white/6 bg-surface-2/50 p-3.5 font-display">
                         <p className="text-[11px] font-semibold text-text-primary">
                           &quot;{m.title}&quot; needs real pixels first
                         </p>
-                        <ul className="mt-1 space-y-0.5 text-[10px] text-amber-300/90">
+                        <ul className="mt-1.5 space-y-0.5 text-[11px] text-text-muted">
                           {m.needs.map((n, k) => (
                             <li key={k}>• {n}</li>
                           ))}
@@ -2782,7 +3087,7 @@ function TimelineStudio() {
                             📎 Upload your own
                           </button>
                         </div>
-                        <p className="mt-1.5 text-[9px] italic text-text-muted">
+                        <p className="mt-2 text-[11px] text-text-muted">
                           {m.canGenerate && m.isProduct
                             ? "Generate the portrait here; the product / app-UI shots must be uploaded (generated labels & UI text garble)."
                             : m.isProduct
@@ -2803,8 +3108,8 @@ function TimelineStudio() {
                   }
                   const answered = Object.values(intake.answers).filter(Boolean).length;
                   return (
-                    <div key={i} className="hero-frame deck-in">
-                      <div className="card-raised rounded-xl p-3">
+                    <div key={i} className="deck-in">
+                      <div className="rounded-xl border border-white/6 bg-surface-2/50 p-3.5 font-display">
                         <p className="text-[11px] font-semibold text-text-primary">
                           Quick brief — tap what fits, skip what doesn&apos;t
                         </p>
@@ -2867,7 +3172,7 @@ function TimelineStudio() {
                             Skip
                           </button>
                         </div>
-                        <p className="mt-1.5 text-[9px] italic text-text-muted">
+                        <p className="mt-2 text-[11px] text-text-muted">
                           …or add detail in the box below and send — it joins the brief.
                         </p>
                       </div>
@@ -2878,8 +3183,8 @@ function TimelineStudio() {
                   return (
                     <div key={i} className="space-y-2">
                       {m.approaches.map((a, k) => (
-                        <div key={k} className="hero-frame deck-in">
-                          <div className="card-raised rounded-xl p-3">
+                        <div key={k} className="deck-in">
+                          <div className="rounded-xl border border-white/6 bg-surface-2/50 p-3.5 font-display">
                           <div className="flex items-start justify-between gap-2">
                             <p className="text-[12px] font-semibold leading-snug text-text-primary">
                               {k + 1}. {a.title}
@@ -2903,7 +3208,7 @@ function TimelineStudio() {
                               <summary className={`cursor-pointer text-[10px] text-text-muted hover:text-text-secondary ${focusRing}`}>
                                 🎞 view the {a.segments?.length || a.shots?.length} shots
                               </summary>
-                              <ol className="mt-1 max-h-48 space-y-1 overflow-y-auto pr-1">
+                              <ol className="mt-1.5 max-h-64 space-y-1.5 overflow-y-auto pr-1">
                                 {(a.segments?.length
                                   ? a.segments.map((s) => ({
                                       tag: s.pipeline, prompt: s.prompt, script: s.script,
@@ -2912,15 +3217,67 @@ function TimelineStudio() {
                                       tag: a.pipeline, prompt: s.prompt, script: undefined as string | undefined,
                                     }))
                                 ).map((s, si) => (
-                                  <li key={si} className="rounded bg-black/25 px-1.5 py-1 text-[9px] leading-snug text-text-secondary">
-                                    <span className="mr-1 rounded bg-white/10 px-1 text-[8px] uppercase">{s.tag}</span>
-                                    {s.prompt}
-                                    {s.script && (
-                                      <span className="mt-0.5 block text-teal-300/80">🎙 “{s.script}”</span>
+                                  <li key={si} className="border-l border-white/10 pl-2">
+                                    <span className="mb-0.5 block text-[9px] uppercase tracking-wider text-text-muted">
+                                      {si + 1} · {s.tag}
+                                    </span>
+                                    {/* editable: uncontrolled + onBlur so typing doesn't
+                                        re-render the whole rail or fight the debounced save */}
+                                    <textarea
+                                      defaultValue={s.prompt}
+                                      rows={2}
+                                      onBlur={(e) => {
+                                        const v = e.target.value.trim();
+                                        if (!v || v === s.prompt) return;
+                                        if (a.segments?.length) {
+                                          updateApproach(i, k, {
+                                            segments: a.segments.map((x, xi) => (xi === si ? { ...x, prompt: v } : x)),
+                                          });
+                                        } else {
+                                          updateApproach(i, k, {
+                                            shots: (a.shots ?? []).map((x, xi) => (xi === si ? { ...x, prompt: v } : x)),
+                                          });
+                                        }
+                                      }}
+                                      className={`w-full resize-y rounded border border-white/6 bg-black/20 px-1.5 py-1 text-[10px] leading-relaxed text-text-secondary ${focusRing}`}
+                                    />
+                                    {s.script !== undefined && (
+                                      <textarea
+                                        defaultValue={s.script ?? ""}
+                                        rows={1}
+                                        placeholder="spoken line for this beat"
+                                        onBlur={(e) => {
+                                          const v = e.target.value;
+                                          if (v === (s.script ?? "") || !a.segments?.length) return;
+                                          updateApproach(i, k, {
+                                            segments: a.segments.map((x, xi) => (xi === si ? { ...x, script: v } : x)),
+                                          });
+                                        }}
+                                        className={`mt-1 w-full resize-y rounded border border-white/6 bg-black/20 px-1.5 py-1 text-[10px] leading-relaxed text-teal-300/80 ${focusRing}`}
+                                      />
                                     )}
                                   </li>
                                 ))}
                               </ol>
+                              {/* the narration script was never shown at all — it is the
+                                  thing users most want to fix before spending a render */}
+                              {!a.segments?.length && (
+                                <div className="mt-2">
+                                  <span className="mb-0.5 block text-[9px] uppercase tracking-wider text-text-muted">
+                                    narration
+                                  </span>
+                                  <textarea
+                                    defaultValue={a.narration_script ?? ""}
+                                    rows={3}
+                                    placeholder="spoken verbatim — edit before you render"
+                                    onBlur={(e) => {
+                                      const v = e.target.value;
+                                      if (v !== (a.narration_script ?? "")) updateApproach(i, k, { narration_script: v });
+                                    }}
+                                    className={`w-full resize-y rounded border border-white/6 bg-black/20 px-1.5 py-1 text-[10px] leading-relaxed text-text-secondary ${focusRing}`}
+                                  />
+                                </div>
+                              )}
                             </details>
                           )}
                           <button
@@ -2938,7 +3295,7 @@ function TimelineStudio() {
                 }
                 if (m.kind === "receipt") {
                   return (
-                    <div key={i} className="rounded-lg border border-white/5 bg-surface-2/60 px-2.5 py-1.5">
+                    <div key={i} className="border-l border-white/10 py-0.5 pl-2.5">
                       <div className="flex items-start justify-between gap-2">
                         <ul className="space-y-0.5 text-[10px] text-text-secondary">
                           {m.items.map((it, k) => (
@@ -2971,7 +3328,7 @@ function TimelineStudio() {
                   return (
                     <div key={i} className={`card-raised rounded-xl p-3 ${imgs.length ? "glow-burst" : ""}`}>
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">
+                        <span className="text-[10px] uppercase tracking-[0.16em] text-text-muted">
                           🖼 {m.title}
                         </span>
                         <span className="text-[10px] tabular-nums text-text-muted">
@@ -3020,12 +3377,22 @@ function TimelineStudio() {
                                 </span>
                                 <div className="absolute bottom-1 right-1 flex gap-1">
                                   <button
-                                    onClick={() =>
-                                      p &&
+                                    onClick={() => {
+                                      if (!p) return;
+                                      const nowApproved = !approvedStills.includes(p);
                                       setApprovedStills((s) =>
                                         s.includes(p) ? s.filter((x) => x !== p) : [...s, p],
-                                      )
-                                    }
+                                      );
+                                      // mirror into the session so the brain and the
+                                      // render path both see approved pixels + their role
+                                      rememberAsset({
+                                        path: p,
+                                        name: p.split("/").pop() ?? p,
+                                        role: assetRole(`${m.title} ${p}`),
+                                        source: "generated",
+                                        approved: nowApproved,
+                                      });
+                                    }}
                                     title={approved ? "Unapprove" : "Approve — usable as a shot's start image"}
                                     className={`rounded px-1.5 py-0.5 text-[10px] ${
                                       approved
@@ -3054,13 +3421,13 @@ function TimelineStudio() {
                 if (m.kind === "progress") {
                   const pj = chatJobs[m.jobId];
                   return (
-                    <div key={i} className={`card-raised rounded-xl p-3 ${pj?.status === "done" ? "glow-burst" : ""}`}>
+                    <div key={i} className={`rounded-xl border border-white/6 bg-surface-2/50 p-3.5 font-display ${pj?.status === "done" ? "glow-burst" : ""}`}>
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">
+                        <span className="text-[10px] uppercase tracking-[0.16em] text-text-muted">
                           {pj?.status === "done" ? (
-                            "✅ delivered"
+                            "delivered"
                           ) : pj?.status === "error" ? (
-                            "❌ failed"
+                            "failed"
                           ) : (
                             <>
                               <span className="rec-dot text-red-400">●</span> rendering
@@ -3085,9 +3452,9 @@ function TimelineStudio() {
                       </div>
                       <p className="mt-1.5 text-[10px] leading-snug text-text-muted">{pj?.detail}</p>
                       {!!pj?.warnings?.length && (
-                        <ul className="mt-1 space-y-0.5 text-[10px] text-amber-400/90">
+                        <ul className="mt-1.5 list-disc space-y-0.5 pl-3.5 text-[11px] text-amber-300/70 marker:text-amber-300/50">
                           {pj.warnings.slice(-4).map((w, k) => (
-                            <li key={k}>⚠ {w}</li>
+                            <li key={k}>{w}</li>
                           ))}
                           {pj.warnings.length > 4 && (
                             <li className="text-text-muted">+{pj.warnings.length - 4} earlier</li>
@@ -3096,7 +3463,7 @@ function TimelineStudio() {
                       )}
                       {pj?.status === "done" && pj.video && (
                         <>
-                          <p className="mt-1 truncate text-[10px] text-text-secondary">→ {pj.video.split("/").pop()}</p>
+                          <p className="mt-1.5 truncate text-[11px] text-text-muted">→ {pj.video.split("/").pop()}</p>
                           {narrateFor === m.jobId ? (
                             <div className="mt-2 space-y-1.5">
                               <textarea
@@ -3145,7 +3512,9 @@ function TimelineStudio() {
                           : "max-w-[94%] px-0.5 font-display text-text-secondary"
                     }`}
                   >
-                    {m.text}
+                    {m.role === "assistant"
+                      ? m.text.replace(/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2049}\u{203C}]+\s*/u, "")
+                      : m.text}
                   </div>
                 );
               })}
@@ -3166,7 +3535,7 @@ function TimelineStudio() {
                 <button
                   key={c}
                   onClick={() => setChatInput(c)}
-                  className={`seg rounded-full px-2 py-0.5 text-[9px] ${focusRing}`}
+                  className={`rounded-full bg-white/4 px-2.5 py-1 text-[10px] text-text-muted hover:text-text-primary ${focusRing}`}
                 >
                   {c}
                 </button>

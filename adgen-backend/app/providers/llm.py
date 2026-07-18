@@ -646,6 +646,24 @@ Operations (use EXACTLY these shapes; clip = 1-based index from CONTEXT):
      per-shot stills conditioned on named stills from CONTEXT.stills (the
      stills-first flow: approve images, then animate). Write scenes as full
      keyframe descriptions.
+ {"op":"set_voice","name":str|null,"voice_id":str|null,"language":"hi"|"en"|null}
+     choose WHO narrates. Copy `name` EXACTLY from CONTEXT.voices — never invent a
+     voice id (they are opaque 20-char strings; a wrong one fails the render). Use
+     voice_id ONLY if the user pasted one. If the user gives a trait ("a male Hindi
+     voice") and 2+ CONTEXT.voices match, emit ask naming 2-3 candidates instead of
+     guessing. Applies to the NEXT synthesis; to re-voice the existing film the user
+     must say so ("re-do the voice") — then emit set_voice AND voice_script together.
+ {"op":"render_shot","action":str,"like_shot":int|null,"shot_type":str|null}
+     render exactly ONE extra clip into the CURRENT ad, continuing the session's
+     look. Fires only when CONTEXT.session.approach is set. `action` describes ONLY
+     what changes (what happens, and optionally the framing) — do NOT restate the
+     character, wardrobe, setting or grade: the app re-uses the session's frozen
+     anchors verbatim, which is what keeps the same person and world across clips.
+     `like_shot` = a 1-based index from session.shot_list to echo the framing of.
+     Example: "one more of him smiling as he locks up" ->
+     {"op":"render_shot","action":"he smiles and pulls the shutter down","like_shot":4}
+     NEVER emit render_shot more than ONCE per turn, and NEVER emit a series of them
+     to build a whole ad — rendering the whole treatment is generate_approach.
  {"op":"end_card","brand":str,"tagline":str|null,"offer":str|null}
      append a branded END CARD (a few seconds) to the CURRENT rendered video —
      the one place on-screen text belongs (shots ban text; models garble it).
@@ -679,8 +697,22 @@ Rules:
 - Emit a plan op ONLY when the user clearly asks for a NEW ad/video from an idea,
   brief, or full script ("make me a 20s chai ad", "new ad for X", or pastes a
   script). A short or ambiguous instruction ("make the card", "do it", "the card",
-  "make it", "proceed", "again", "next") is NOT a new-ad request — emit ONE ask to
-  find out what they mean, NEVER plan. Do not fabricate shots yourself.
+  "make it", "proceed") is NOT a new-ad request — emit ONE ask to find out what
+  they mean, NEVER plan. Do not fabricate shots yourself.
+- USE THE SESSION. CONTEXT.session carries what this conversation is ABOUT: the
+  original brief, the ACTIVE approach (the treatment already chosen/rendered), its
+  shot list, the approved/uploaded pixels and their roles, and the chosen voice.
+  Never ask "which plan?" when session.approach is set — that IS the plan. Resolve
+  "it" / "this ad" / "the video" / "the same style" against the session instead of
+  asking. Only ask which approach when session.approach is null AND several were
+  shown.
+- WHOLE AD vs ONE CLIP — do not confuse these:
+  * "render it" / "make it" / "go ahead" / "run it" with session.approach set means
+    RE-RENDER THE WHOLE TREATMENT -> ONE generate_approach with
+    index = session.approach.index. It NEVER means a burst of render_shot ops.
+  * "one more clip", "another shot", "again but wider", "add a shot of X" -> exactly
+    ONE render_shot. The session already tells you the look to continue.
+  Only ask which approach when session.approach is null AND several were shown.
 - "make/add the (end/brand/closing) card" -> end_card, NOT plan. If the brand name
   (and tagline) aren't given in the message, emit ask for them first.
 - "say" is a colleague's confirmation ("Trimmed the voice head by 2s — it now
@@ -691,7 +723,7 @@ _DIRECTOR_OPS = {
     "voice_offset", "voice_trim", "voice_gain", "set_narration", "voice_script",
     "playhead", "preview", "export", "plan", "generate_approach",
     "generate_portrait", "portrait_variants", "keyframes", "ask", "captions",
-    "end_card",
+    "end_card", "set_voice", "render_shot",
 }
 
 
@@ -700,10 +732,23 @@ def director_intent(message: str, context: dict, history: list[dict] | None = No
 
     The frontend executes the ops with its existing editor functions — this
     seam only translates intent, it never touches files or jobs itself."""
-    lines = [f"CONTEXT:\n{json.dumps(context, ensure_ascii=False)[:6000]}"]
-    for h in (history or [])[-6:]:
+    # The session block is what the conversation is ABOUT (brief, active approach,
+    # pixels, voice) — it must NEVER be the thing a blunt truncation eats, which is
+    # exactly what happened when everything shared one [:6000] budget and `session`
+    # sorted last. Serialize it first with its own budget, then spend what's left on
+    # the mechanical editor state (clips/voice), which is the safer thing to lose.
+    ctx = dict(context or {})
+    session = ctx.pop("session", None)
+    head = ""
+    if session:
+        head = json.dumps({"session": session}, ensure_ascii=False)[:4000]
+    rest = json.dumps(ctx, ensure_ascii=False)[: max(2000, 9000 - len(head))]
+    lines = [f"CONTEXT:\n{head}\n{rest}" if head else f"CONTEXT:\n{rest}"]
+    # Wider history: cards (treatments/stills/renders) now reach the brain as compact
+    # lines, and 6x300 chars was too small to hold a brief plus its follow-ups.
+    for h in (history or [])[-12:]:
         role = "user" if h.get("role") == "user" else "assistant"
-        lines.append(f"{role}: {str(h.get('text', ''))[:300]}")
+        lines.append(f"{role}: {str(h.get('text', ''))[:400]}")
     lines.append(f"user: {message.strip()[:4000]}")
     out = _gemini_json(DIRECTOR_PROMPT, "\n".join(lines), temperature=0.2, require="say")
     say = str(out.get("say") or "").strip()[:400]

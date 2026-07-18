@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 
 from app import avatars, characters, keyframes, pipeline, postprocess
 from app.assembly import ffmpeg
-from app.config import COMFY_POD_URLS, ELEVENLABS_API_KEY
+from app.config import COMFY_POD_URLS, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 from app.providers import llm
 from app.providers.tts import synthesize_voice
 
@@ -914,6 +914,9 @@ def timeline_export_endpoint(req: TimelineExportRequest):
                         joined, narration_file, music=req.music, out=final_path,
                         narration_delay_ms=req.narration.offset_ms,
                         narration_gain=req.narration.gain, music_gain=req.music_gain,
+                        # the user placed this narration on a timeline they cut by hand —
+                        # never silently shorten their film to match the voice
+                        strict=False,
                         on_warning=lambda w: _warn(job_id, w))
                 elif req.music:
                     _update(job_id, status="assembling", progress=85, detail="music bed")
@@ -1067,6 +1070,8 @@ def reassemble_endpoint(req: ReassembleRequest):
                     joined, narration, music=req.music, out=final_path,
                     narration_delay_ms=req.narration_delay_ms,
                     narration_gain=req.narration_gain, music_gain=req.music_gain,
+                    # re-assembly of a hand-picked clip list — keep the user's full cut
+                    strict=False,
                     on_warning=lambda w: _warn(job_id, w),
                 )
                 Path(joined).unlink(missing_ok=True)
@@ -1329,7 +1334,11 @@ async def create_avatar(
     file: UploadFile | None = File(None),
     image_path: str | None = Form(None),  # server-side face (from /avatars/generate-face)
     name: str = Form(..., min_length=1, max_length=48),
-    voice_id: str = Form(..., min_length=1),
+    # May be empty: when the voice roster is unavailable (a key without the
+    # `voices_read` permission) the UI has nothing to pick from, and a required
+    # field here turned that into a permanently-dead Save button. Fall back to the
+    # configured default voice instead of 422-ing.
+    voice_id: str = Form(""),
     type: str = Form("byo"),
     consent: bool = Form(False),
     language: str = Form("en"),
@@ -1342,6 +1351,10 @@ async def create_avatar(
     """
     if type not in ("library", "byo"):
         raise HTTPException(422, "type must be 'library' or 'byo'")
+    voice_id = (voice_id or "").strip() or (ELEVENLABS_VOICE_ID or "")
+    if not voice_id:
+        raise HTTPException(422, "no voice_id given and ELEVENLABS_VOICE_ID is not set "
+                                 "— add one to adgen-backend/.env")
     if type == "byo" and not consent:
         raise HTTPException(422, "BYO avatars need consent=true — confirm you have "
                                  "permission to use this person's face")
@@ -1613,22 +1626,47 @@ def list_outputs():
     return {"outputs": items}
 
 
+def _default_voice_entry() -> list[dict]:
+    """The configured fallback voice as a one-item roster."""
+    if not ELEVENLABS_VOICE_ID:
+        return []
+    return [{"voice_id": ELEVENLABS_VOICE_ID, "name": "Default voice",
+             "category": "default", "labels": {}}]
+
+
 @app.get("/voices")
 def list_voices():
-    """Proxy the ElevenLabs voice list for the UI's voice picker (key stays server-side)."""
+    """Proxy the ElevenLabs voice list for the UI's voice picker (key stays server-side).
+
+    DEGRADES INSTEAD OF FAILING. A key without the `voices_read` permission (or a
+    dead upstream) used to 502 here — which rendered the voice picker as nothing,
+    which left `voice_id` empty, which permanently disabled the avatar Save button
+    with no message. Speech synthesis needs a different permission and keeps
+    working, so a missing roster must never block a save: fall back to the
+    configured default voice and say so via `degraded`.
+    """
+    reason = ""
     if not ELEVENLABS_API_KEY:
-        raise HTTPException(502, "ELEVENLABS_API_KEY not configured")
-    r = httpx.get("https://api.elevenlabs.io/v2/voices?page_size=100",
-                  headers={"xi-api-key": ELEVENLABS_API_KEY}, timeout=30)
-    if r.status_code != 200:
-        raise HTTPException(502, f"ElevenLabs voices failed: {r.text[:300]}")
-    voices = [{
-        "voice_id": v["voice_id"],
-        "name": v["name"],
-        "category": v.get("category"),
-        "labels": v.get("labels") or {},
-    } for v in r.json().get("voices", [])]
-    return {"voices": voices}
+        reason = "ELEVENLABS_API_KEY not configured"
+    else:
+        try:
+            r = httpx.get("https://api.elevenlabs.io/v2/voices?page_size=100",
+                          headers={"xi-api-key": ELEVENLABS_API_KEY}, timeout=30)
+            if r.status_code == 200:
+                voices = [{
+                    "voice_id": v["voice_id"],
+                    "name": v["name"],
+                    "category": v.get("category"),
+                    "labels": v.get("labels") or {},
+                } for v in r.json().get("voices", [])]
+                if voices:
+                    return {"voices": voices, "degraded": None}
+                reason = "ElevenLabs returned an empty voice list"
+            else:
+                reason = f"ElevenLabs voices failed ({r.status_code}): {r.text[:200]}"
+        except httpx.HTTPError as e:
+            reason = f"ElevenLabs unreachable: {type(e).__name__}"
+    return {"voices": _default_voice_entry(), "degraded": reason}
 
 
 class VoicePreviewRequest(BaseModel):

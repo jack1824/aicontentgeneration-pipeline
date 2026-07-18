@@ -275,6 +275,7 @@ export default function AvatarsPage() {
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   // ✨ generated-face state (Wan renders a 1-frame photoreal still on the pod)
   const [faceSource, setFaceSource] = useState<"upload" | "generate">("upload");
@@ -296,7 +297,10 @@ export default function AvatarsPage() {
 
   useEffect(() => {
     load();
-    api.voices().then((d) => setVoices(d.voices)).catch(() => {});
+    // Don't swallow this: when it fails the picker has nothing to show, and the
+    // user needs to know the default voice is being used rather than see a dead form.
+    api.voices().then((d) => setVoices(d.voices)).catch((e) =>
+      setError(`voice list unavailable (${String(e).slice(0, 90)}) — avatars will use the default voice`));
   }, []);
 
   const pickFile = (f: File | null) => {
@@ -341,12 +345,27 @@ export default function AvatarsPage() {
   };
 
   const face = faceSource === "upload" ? (file ? "file" : null) : genPath ? "gen" : null;
+  // A voice must be CHOSEN only when there are voices to choose from. When the
+  // roster fails to load the server falls back to its configured default voice, so
+  // requiring one here just produced a permanently-grey Save with no explanation.
   const canSave =
     name.trim().length > 0 &&
-    voiceId !== "" &&
+    (voices.length === 0 || voiceId !== "") &&
     face !== null &&
     (face === "file" ? consent : true) && // generated faces are synthetic — no consent needed
     !busy;
+  // Never leave a disabled button mute — say which requirement is outstanding.
+  const saveBlocker = busy
+    ? null
+    : !name.trim()
+      ? "add a name"
+      : face === null
+        ? "upload or generate a face"
+        : voices.length > 0 && voiceId === ""
+          ? "pick a voice"
+          : face === "file" && !consent
+            ? "tick the consent box"
+            : null;
 
   const create = async () => {
     if (!canSave) return;
@@ -489,7 +508,22 @@ export default function AvatarsPage() {
             ) : (
               <div
                 onClick={() => fileRef.current?.click()}
-                className="flex cursor-pointer flex-col items-center gap-1 rounded-btn border border-dashed border-accent/25 bg-black/20 px-4 py-6 text-center transition-colors hover:border-accent/50"
+                // The copy says "drop" — so actually accept a drop. Without these the
+                // browser navigated away to the dropped file, which reads as "I can't
+                // upload". (Dropzone.tsx has had these all along; this one was hand-rolled.)
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  pickFile(e.dataTransfer.files?.[0] ?? null);
+                }}
+                className={`flex cursor-pointer flex-col items-center gap-1 rounded-btn border border-dashed bg-black/20 px-4 py-6 text-center transition-colors ${
+                  dragOver ? "border-accent/70 bg-accent/5" : "border-accent/25 hover:border-accent/50"
+                }`}
               >
                 <span className="text-lg">🧑</span>
                 <p className="text-xs text-text-secondary">drop a clear front-facing photo</p>
@@ -540,6 +574,9 @@ export default function AvatarsPage() {
           >
             {busy ? "saving…" : "Save avatar"}
           </button>
+          {saveBlocker && (
+            <p className="mt-1.5 text-[11px] text-text-muted">{saveBlocker} to save</p>
+          )}
         </section>
 
         {/* ---- Saved avatars ---- */}

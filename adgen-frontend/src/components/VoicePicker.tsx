@@ -56,7 +56,18 @@ export default function VoicePicker({
     }
   };
 
-  if (voices.length === 0) return null;
+  // Never render NOTHING: an empty roster (e.g. an API key without the
+  // `voices_read` permission) used to remove this control entirely, which left
+  // voice_id empty and silently disabled the Save button with no explanation.
+  if (voices.length === 0) {
+    return (
+      <p className="text-[11px] leading-relaxed text-amber-300/80">
+        Voice list unavailable — the server&apos;s default voice will be used. (Enable the
+        <span className="mx-1 font-mono text-[10px]">voices_read</span>
+        permission on the ElevenLabs API key to choose a different one.)
+      </p>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2">

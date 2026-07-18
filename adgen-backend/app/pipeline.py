@@ -316,7 +316,7 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
     final = str(OUTPUT_VIDEO_DIR / f"{name}-final.mp4")
     if narration:
         final = ffmpeg.stitch_and_overlay(clips, narration, music=req.get("music"), out=final,
-                                          on_warning=lambda w: report("assembling", 92, w))
+                                          on_warning=lambda w: report("assembling", 92, f"\u26a0 {w}"))
     elif req.get("music"):
         # No narration but a music bed WAS chosen — it must not silently vanish.
         final = ffmpeg.stitch_music_only(clips, req["music"], out=final)
@@ -841,7 +841,7 @@ def _generate_product(req: dict, name: str, report, on_submit=None) -> str:
     final = str(I2V_VIDEO_DIR / f"{name}-final.mp4")
     if narration:
         final = ffmpeg.stitch_and_overlay(clips, narration, music=req.get("music"), out=final,
-                                          on_warning=lambda w: report("assembling", 92, w))
+                                          on_warning=lambda w: report("assembling", 92, f"\u26a0 {w}"))
     elif req.get("music"):
         final = ffmpeg.stitch_music_only(clips, req["music"], out=final)
     else:
@@ -935,7 +935,7 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
             final = ffmpeg.replace_audio(
                 joined, narration, music=bed, out=final,
                 music_gain=0.25 if bed == joined else 0.15,
-                on_warning=lambda w: report("assembling", 92, w),
+                on_warning=lambda w: report("assembling", 92, f"\u26a0 {w}"),
             )
         finally:
             Path(joined).unlink(missing_ok=True)

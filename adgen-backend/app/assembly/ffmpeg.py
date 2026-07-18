@@ -33,13 +33,27 @@ MUSIC_DUCK_VOLUME = 0.15
 # sync report instead).
 FIT_TAIL_S = 0.45
 FIT_MAX_TEMPO = 1.12
-FIT_MAX_TRIM_S = 4.0
+FIT_MAX_TRIM_S = 4.0   # lenient mode only: keep the full cut past this much dead tail
+# Strict mode never trims an ad below this — a 3s VO on a 30s film must not ship a
+# 3.5s stub. Below this length the tail stays and is flagged instead.
+FIT_MIN_OUT_S = 8.0
 
 
 def _fit_narration(
-    video_dur: float, narr_dur: float, delay_ms: int,
+    video_dur: float, narr_dur: float, delay_ms: int, strict: bool = True,
 ) -> tuple[float | None, float, str | None]:
-    """Return (atempo_or_None, output_duration_s, warning_or_None) for a narration join."""
+    """Return (atempo_or_None, output_duration_s, warning_or_None) for a narration join.
+
+    strict=True (default): the film ends a beat after the voice does — dead tails are
+    CUT, not kept. This is the fix for "29s clip, 20s audio": the old code computed the
+    correct 20.75s cut and then threw it away whenever the gap exceeded FIT_MAX_TRIM_S,
+    so SMALL mismatches were trimmed and the LARGE ones users actually complain about
+    were kept in full. The cap is now a floor on retained length, not an escape hatch.
+
+    strict=False: the legacy lenient behaviour — keep the whole cut past FIT_MAX_TRIM_S
+    and flag it. Correct where the tail is NOT silent (an ambience/music bed rides under
+    it) or where the user deliberately placed the narration (/reassemble, timeline export).
+    """
     delay = delay_ms / 1000.0
     tempo: float | None = None
     warning: str | None = None
@@ -57,11 +71,30 @@ def _fit_narration(
             warning = (f"narration runs ~{overrun:.1f}s past the video even at "
                        f"{FIT_MAX_TEMPO}x — shorten the script")
     out_t = min(video_dur, audio_end + FIT_TAIL_S)
-    if video_dur - out_t > FIT_MAX_TRIM_S:
-        gap = video_dur - audio_end
-        out_t = video_dur
-        warning = (f"narration ends ~{gap:.1f}s before the video — kept the full cut "
-                   f"(Library → ✂ Fix timing to trim it on purpose)")
+    trimmed = video_dur - out_t
+    if trimmed > 0.05:
+        if strict:
+            # never cut below the floor (or below the source, if it's already short)
+            floor = min(video_dur, FIT_MIN_OUT_S)
+            clamped = out_t < floor - 1e-6
+            out_t = max(out_t, floor)
+            trimmed = video_dur - out_t
+            residual = out_t - (audio_end + FIT_TAIL_S)  # tail the floor forced us to keep
+            if clamped and trimmed > 0.05 and residual > 0.5:
+                warning = (f"trimmed {trimmed:.1f}s but held the {FIT_MIN_OUT_S:.0f}s minimum "
+                           f"— ~{residual:.1f}s still plays after the narration; lengthen "
+                           f"the script or cut a shot")
+            elif trimmed > 0.05:
+                warning = (f"trimmed {trimmed:.1f}s of dead tail — the film now ends "
+                           f"with the narration")
+            elif residual > 0.5:
+                warning = (f"~{residual:.1f}s plays after the narration ends — the cut is "
+                           f"already as short as it can go; lengthen the script or cut a shot")
+        elif trimmed > FIT_MAX_TRIM_S:
+            gap = video_dur - audio_end
+            out_t = video_dur
+            warning = (f"narration ends ~{gap:.1f}s before the video — kept the full cut "
+                       f"(Library → ✂ Fix timing to trim it on purpose)")
     return tempo, out_t, warning
 
 
@@ -277,12 +310,16 @@ def stitch_and_overlay(
 
     Auto-fits audio to video: short narration trims the output to voice-end + tail;
     long narration is atempo'd (capped) into the window.
+
+    The clips here are SILENT (Wan t2v), so any tail past the voice is literal dead air —
+    strict fitting unless a music bed is riding under it, in which case the tail is
+    audible by design and gets the lenient treatment.
     """
     stitched = stitch(clips, out=_stitched_path(out))
     try:
         vdur = probe(stitched)["duration"]
         ndur = probe(narration)["duration"]
-        tempo, out_t, warning = _fit_narration(vdur, ndur, 300)
+        tempo, out_t, warning = _fit_narration(vdur, ndur, 300, strict=music is None)
         if warning and on_warning:
             on_warning(warning)
         narr = _narr_filter(300, tempo=tempo)
@@ -349,6 +386,7 @@ def replace_audio(
     narration_gain: float = 1.0,
     music_gain: float = MUSIC_DUCK_VOLUME,
     fit: bool = True,
+    strict: bool = True,
     on_warning=None,
 ) -> str:
     """Replace a video's ENTIRE soundtrack with narration (+ optional ducked music).
@@ -356,11 +394,18 @@ def replace_audio(
     Used by /revoice, /reassemble and sequence segment voiceovers. Video stream is
     copied untouched. With fit=True (default) the output is trimmed to voice-end +
     tail when the narration is short, and the narration atempo'd (capped) when long.
+
+    strict=True cuts a silent dead tail; pass strict=False where the user placed the
+    narration deliberately (/reassemble, timeline export) and the full cut must survive.
+    A music/ambience bed also disables strict automatically — with a bed the tail is
+    audible by design (this is why LTX cinematic never had the dead-air problem: its
+    own native audio rides the music lane).
     """
     vdur = probe(video)["duration"]
     ndur = probe(narration)["duration"]
     if fit:
-        tempo, out_t, warning = _fit_narration(vdur, ndur, narration_delay_ms)
+        tempo, out_t, warning = _fit_narration(
+            vdur, ndur, narration_delay_ms, strict=strict and music is None)
         if warning and on_warning:
             on_warning(warning)
     else:
