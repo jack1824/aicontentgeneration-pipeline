@@ -348,9 +348,14 @@ export default function AvatarsPage() {
   // A voice must be CHOSEN only when there are voices to choose from. When the
   // roster fails to load the server falls back to its configured default voice, so
   // requiring one here just produced a permanently-grey Save with no explanation.
+  // Voice is NOT a save requirement. An empty voice_id means "use the server's
+  // configured default", which the backend resolves — so there is no state the user
+  // can be in where a voice choice is impossible AND the save is blocked. Requiring
+  // one dead-ended the form twice: first when the roster failed to load at all, then
+  // again when the roster degraded to a single unlabelled voice that every gender
+  // filter hides, leaving only the "Default" chip — which sets voice_id to "".
   const canSave =
     name.trim().length > 0 &&
-    (voices.length === 0 || voiceId !== "") &&
     face !== null &&
     (face === "file" ? consent : true) && // generated faces are synthetic — no consent needed
     !busy;
@@ -361,11 +366,9 @@ export default function AvatarsPage() {
       ? "add a name"
       : face === null
         ? "upload or generate a face"
-        : voices.length > 0 && voiceId === ""
-          ? "pick a voice"
-          : face === "file" && !consent
-            ? "tick the consent box"
-            : null;
+        : face === "file" && !consent
+          ? "tick the consent box"
+          : null;
 
   const create = async () => {
     if (!canSave) return;

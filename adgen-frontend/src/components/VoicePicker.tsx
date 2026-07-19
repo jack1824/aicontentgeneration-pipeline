@@ -93,9 +93,10 @@ export default function VoicePicker({
       <div className="flex max-h-28 flex-wrap content-start gap-1.5 overflow-y-auto pr-1">
         <button
           onClick={() => onChange("")}
+          title="Use the voice configured on the server"
           className={`rounded-full px-3 py-1.5 text-[11px] ${value === "" ? "seg-on" : "seg"}`}
         >
-          Default
+          Default voice
         </button>
         {list.map((v) => (
           <span
@@ -118,7 +119,10 @@ export default function VoicePicker({
           </span>
         ))}
         {list.length === 0 && (
-          <p className="p-1 text-[11px] text-text-muted">no voices match this filter</p>
+          <p className="p-1 text-[11px] text-text-muted">
+            no voices match this filter — clear it, or keep{" "}
+            <span className="text-text-secondary">Default voice</span> (that saves fine)
+          </p>
         )}
       </div>
     </div>
