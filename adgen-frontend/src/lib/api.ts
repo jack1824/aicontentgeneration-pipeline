@@ -185,6 +185,8 @@ export type PlanRequest = {
   duration_s: number;
   avoid?: string[]; // rejected approach titles — Regenerate steers away from them
   cast_ids?: string[]; // saved characters the plan must build shots around
+  script?: string;     // a script the USER wrote
+  verbatim?: boolean;  // true = reproduce `script` word-for-word, size the film to it
 };
 
 export type PlanApproach = {
@@ -315,6 +317,8 @@ export const api = {
     idea: string;
     language?: string;
     turns?: number;
+    script?: string;
+    verbatim?: boolean;
     regenerate?: boolean;
   }): Promise<DialoguePlan> =>
     fetch(`${BASE}/plan-dialogue`, {

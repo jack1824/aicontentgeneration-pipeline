@@ -15,6 +15,7 @@ import {
   SequenceSegment,
   Voice,
 } from "@/lib/api";
+import { looksLikeScript } from "@/lib/script";
 import Dropzone, { Uploaded } from "@/components/Dropzone";
 import VoicePicker from "@/components/VoicePicker";
 import { usePersistentState } from "@/lib/usePersistentState";
@@ -81,6 +82,9 @@ export default function SequencePage() {
     setPlanning(true);
     setPlanNote(null);
     try {
+      // A pasted script is reproduced, not re-authored — the segments carry the
+      // user's own words split in order.
+      const isScript = looksLikeScript(idea);
       const res = await api.plan({
         idea: `${idea} — plan this as a SEQUENCE (mixed timeline).`,
         language,
@@ -88,6 +92,7 @@ export default function SequencePage() {
         duration_s: 30,
         avoid: [],
         cast_ids: [],
+        ...(isScript ? { script: idea.trim(), verbatim: true } : {}),
       });
       const seq =
         res.approaches.find((a) => a.pipeline === "sequence" && a.segments?.length) ??

@@ -10,6 +10,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api, GenerateRequest, Job, OutputItem, PlanApproach, StillItem, Voice } from "@/lib/api";
+import { looksLikeScript, scriptSignals, spokenSeconds } from "@/lib/script";
 
 const MIN_PPS = 20;
 const MAX_PPS = 200;
@@ -143,6 +144,7 @@ type ChatMsg =
   | { kind: "progress"; jobId: string }
   | { kind: "stills"; jobId: string; title: string; params: StillsParams }
   | { kind: "questions" } // renders the ACTIVE intake card (state lives in `intake`)
+  | { kind: "scriptask"; idea: string; language: string; format: string; duration_s: number; signals: string[]; secs: number } // pasted a finished script: use verbatim or improve?
   | { kind: "assetask"; title: string; needs: string[]; description: string; isProduct: boolean; canGenerate: boolean; subject: "person" | "product" }; // gate card: ⚡ generate (person) and/or 📎 upload (product/UI are upload-only — brand law); a mixed card offers BOTH
 
 type Intake = {
@@ -1872,8 +1874,13 @@ function TimelineStudio() {
 
   // Run the planner and pitch the treatments (shared by the direct path and
   // the intake card's "Plan it" button).
-  const runPlan = async (idea: string, language: string, format: string, duration_s: number) => {
-    postChat("assistant", "📝 Briefing the planner…");
+  const runPlan = async (
+    idea: string, language: string, format: string, duration_s: number,
+    opts?: { script?: string; verbatim?: boolean },
+  ) => {
+    postChat("assistant",
+      opts?.verbatim ? "📝 Planning the pictures around your script — the words stay exactly as written…"
+                     : "📝 Briefing the planner…");
     // the brief IS the session's subject — remember it before the planner answers,
     // so even a planner failure leaves the Director knowing what we're making
     patchSession({ brief: { idea, language, format, duration_s } });
@@ -1881,6 +1888,7 @@ function TimelineStudio() {
       const res = await api.plan({
         idea, language, format, duration_s,
         ...(cast.length ? { cast_ids: cast.map((c) => c.id) } : {}),
+        ...(opts?.script ? { script: opts.script, verbatim: !!opts.verbatim } : {}),
       });
       lastPlanRef.current = { approaches: res.approaches, language };
       pushMsg({ kind: "treatments", approaches: res.approaches, language });
@@ -2495,6 +2503,15 @@ function TimelineStudio() {
           // tappable suggestions), exactly like the Create page. A detailed
           // brief (or full script) skips straight to treatments — the user
           // already answered everything by writing it.
+          // A finished script must never be silently rewritten — that discards work
+          // the user already did. Ask which they want; the answer drives verbatim mode.
+          if (looksLikeScript(idea)) {
+            pushMsg({
+              kind: "scriptask", idea, language: lang, format: fmt, duration_s: dur,
+              signals: scriptSignals(idea), secs: spokenSeconds(idea, lang),
+            });
+            continue;
+          }
           if (idea.trim().length < 240) {
             try {
               const qres = await api.planQuestions(idea, lang);
@@ -3278,6 +3295,48 @@ function TimelineStudio() {
                             : m.isProduct
                               ? "Product / app-UI photos must always be uploads — generated text garbles."
                               : "✓-approve what you like in the grid, then press ▶ Make this again."}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
+                if (m.kind === "scriptask") {
+                  return (
+                    <div key={i} className="deck-in">
+                      <div className="rounded-xl border border-white/6 bg-surface-2/50 p-3.5 font-display">
+                        <p className="text-[11px] font-semibold text-text-primary">
+                          That reads like a finished script
+                        </p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
+                          {m.signals.join(" · ")} · speaks for about {m.secs}s. Use your words
+                          exactly as written, or let me punch them up first?
+                        </p>
+                        <div className="mt-2.5 flex flex-wrap gap-2">
+                          <button
+                            onClick={() =>
+                              runPlan(m.idea, m.language, m.format, m.duration_s, {
+                                script: m.idea, verbatim: true,
+                              })
+                            }
+                            className={`rounded-btn border border-[rgba(255,77,61,0.5)] bg-[rgba(255,77,61,0.12)] px-3 py-1.5 text-[11px] font-semibold text-text-primary hover:bg-[rgba(255,77,61,0.22)] ${focusRing}`}
+                          >
+                            Use my script as-is
+                          </button>
+                          <button
+                            onClick={() =>
+                              runPlan(m.idea, m.language, m.format, m.duration_s, {
+                                script: m.idea, verbatim: false,
+                              })
+                            }
+                            className={`seg rounded-btn px-3 py-1.5 text-[11px] ${focusRing}`}
+                          >
+                            Improve it
+                          </button>
+                        </div>
+                        <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
+                          As-is keeps every word and sizes the film to the script
+                          (~{Math.max(2, Math.round(m.secs / 5))} shots). I still design the
+                          pictures — a render needs them.
                         </p>
                       </div>
                     </div>

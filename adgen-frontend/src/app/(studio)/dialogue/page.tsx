@@ -17,6 +17,7 @@ import {
   PresetKey,
   Voice,
 } from "@/lib/api";
+import { looksLikeScript } from "@/lib/script";
 import Dropzone, { Uploaded } from "@/components/Dropzone";
 import VoicePicker from "@/components/VoicePicker";
 import { usePersistentState } from "@/lib/usePersistentState";
@@ -77,11 +78,14 @@ export default function DialoguePage() {
     setThinking(true);
     setError(null);
     try {
+      // pasted a two-hander? reproduce the lines, only assign the speakers
+      const isScript = looksLikeScript(idea);
       const p = await api.planDialogue({
         idea: idea.trim(),
         language,
         turns: planTurns,
         regenerate,
+        ...(isScript ? { script: idea.trim(), verbatim: true } : {}),
       });
       setSpeakers((sp) => [
         {

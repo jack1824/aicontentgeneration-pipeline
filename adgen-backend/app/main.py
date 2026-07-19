@@ -221,6 +221,10 @@ class PlanRequest(BaseModel):
     avoid: list[str] = Field(default_factory=list, max_length=12)
     # Saved cast: the plan must reuse these characters' anchors VERBATIM.
     cast_ids: list[str] = Field(default_factory=list, max_length=4)
+    # A script the USER wrote. With verbatim=True it is reproduced byte-identically
+    # and the film is sized to it; otherwise it is treated as a draft to improve.
+    script: str | None = Field(default=None, max_length=12000)
+    verbatim: bool = False
 
 
 class PlanQuestionsRequest(BaseModel):
@@ -258,7 +262,8 @@ def plan_endpoint(req: PlanRequest):
             _update(job_id, status="planning", progress=25, detail="writing treatments")
             result = llm.plan(req.idea, language=req.language, ad_format=req.format,
                               duration_s=req.duration_s, avoid=req.avoid or None,
-                              cast=cast or None)
+                              cast=cast or None, script=req.script,
+                              verbatim=req.verbatim)
             _update(job_id, status="done", progress=100, detail="", plan=result)
         except llm.PlanError as e:
             _update(job_id, status="error", error=str(e))
@@ -275,6 +280,8 @@ class DialoguePlanRequest(BaseModel):
     language: str = "en"
     turns: int = Field(default=2, ge=2, le=6)
     regenerate: bool = False  # true = "fresh take" re-roll, runs hotter
+    script: str | None = Field(default=None, max_length=12000)
+    verbatim: bool = False
 
 
 @app.post("/plan-dialogue")
@@ -282,7 +289,8 @@ def plan_dialogue_endpoint(req: DialoguePlanRequest):
     """The Dialogue page's brain: idea -> two speakers + alternating turns."""
     try:
         return llm.plan_dialogue(req.idea, language=req.language,
-                                 turns=req.turns, regenerate=req.regenerate)
+                                 turns=req.turns, regenerate=req.regenerate,
+                                 script=req.script, verbatim=req.verbatim)
     except llm.PlanError as e:
         raise HTTPException(502, str(e))
 

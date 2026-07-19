@@ -549,9 +549,27 @@ def plan_questions(idea: str, language: str = "en") -> dict:
     return {"questions": clean}
 
 
+# Speaking rates measured against ElevenLabs output on this platform's ad copy.
+# Hindi/Devanagari reads slower per word than English. Used to size a film to a
+# supplied script BEFORE any GPU spend — a real TTS probe would add an API call and
+# seconds of latency to every plan, and the assembly-time fit corrects the residue.
+WORDS_PER_SEC = {"hi": 2.1, "en": 2.6}
+
+
+def spoken_seconds(script: str, language: str = "en") -> float:
+    """Rough spoken duration of a script, +0.35s breathing per sentence break."""
+    words = len([w for w in re.split(r"\s+", script.strip()) if w])
+    if not words:
+        return 0.0
+    rate = WORDS_PER_SEC.get((language or "en")[:2], 2.4)
+    breaths = 0.35 * max(0, len(re.findall(r"[.!?।]+", script)) - 1)
+    return round(words / rate + breaths, 1)
+
+
 def plan(idea: str, language: str = "en", ad_format: str = "9:16",
          duration_s: int = 15, avoid: list[str] | None = None,
-         cast: list[dict] | None = None) -> dict:
+         cast: list[dict] | None = None, script: str | None = None,
+         verbatim: bool = False) -> dict:
     """Ask Gemini for 3 proposed ad approaches. Returns the parsed proposals dict.
 
     `avoid` carries the titles of directions the user already rejected (the
@@ -575,6 +593,34 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
             f"(never paraphrase an anchor — verbatim repetition is what keeps the "
             f"same actor across cuts):\n{lines}"
         )
+    if script and script.strip():
+        spoken = spoken_seconds(script, language)
+        shots_needed = max(2, round(spoken / 5.0))
+        if verbatim:
+            # The hard contract. Without this the planner AUTHORS narration_script
+            # (the system prompt tells it to), which silently discards a script the
+            # user already wrote — the single most valuable thing they hand us.
+            user_msg += (
+                f"\n\n=== THE USER'S SCRIPT — REPRODUCE IT EXACTLY ===\n{script.strip()}\n"
+                f"=== END OF SCRIPT ===\n"
+                f"NON-NEGOTIABLE: copy the spoken words above into narration_script "
+                f"BYTE-IDENTICALLY. Do not rewrite, translate, shorten, lengthen, "
+                f"reorder, 'improve', or fix so much as a comma. If the script marks "
+                f"scenes or shots, lift those descriptions verbatim into the shot "
+                f"prompts too. Your ONLY creative job is designing the pictures that "
+                f"carry these exact words.\n"
+                f"For a SEQUENCE proposal, split the SAME words across segments in "
+                f"order — every word must appear exactly once, none added or dropped.\n"
+                f"This script speaks for about {spoken}s, so plan about {shots_needed} "
+                f"shots (~5s each). Size the film to the SCRIPT, not to the requested "
+                f"duration — the words are fixed, the picture count is what flexes."
+            )
+        else:
+            user_msg += (
+                f"\n\nThe user supplied this draft script — improve it, but keep its "
+                f"meaning, offer and calls to action:\n{script.strip()}\n"
+                f"It currently speaks for about {spoken}s (~{shots_needed} shots)."
+            )
     if avoid:
         rejected = "; ".join(a.strip() for a in avoid if a.strip())
         user_msg += (
@@ -582,11 +628,49 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
             f"them; propose 3 clearly different creative directions: {rejected}"
         )
     # Regenerates run hotter — the user explicitly wants different ideas.
-    proposals = _gemini_json(SYSTEM_PROMPT, user_msg,
-                             temperature=0.9 if avoid else 0.7, require="approaches")
+    proposals = _gemini_json(
+        SYSTEM_PROMPT, user_msg,
+        temperature=0.2 if verbatim else (0.9 if avoid else 0.7), require="approaches")
     if "approaches" not in proposals or not proposals["approaches"]:
         raise PlanError("Gemini returned no approaches.")
+    if verbatim and script and script.strip():
+        _enforce_verbatim(proposals, script.strip())
     return proposals
+
+
+def _words(t: str) -> list[str]:
+    return [w for w in re.split(r"\s+", (t or "").strip()) if w]
+
+
+def _enforce_verbatim(proposals: dict, script: str) -> None:
+    """Make the user's script survive the round trip, in code rather than on trust.
+
+    A prompt asking a model not to rewrite is a request, not a guarantee — and the
+    system prompt elsewhere instructs it to AUTHOR narration. So after planning we
+    simply put the user's words back:
+
+    * shot-based approaches (overlay/cinematic/product/lipsync) get narration_script
+      replaced with the original, byte for byte.
+    * sequence approaches carry the script split across segments. We keep the model's
+      split ONLY if it preserved the words; if it dropped or invented more than 15%,
+      we re-split the original evenly across the segments so nothing is lost.
+    """
+    original = _words(script)
+    if not original:
+        return
+    lowered = [w.lower() for w in original]
+    for ap in proposals.get("approaches") or []:
+        segments = ap.get("segments") or []
+        if segments:
+            got = [w.lower() for seg in segments for w in _words(seg.get("script") or "")]
+            kept = sum(1 for w in lowered if w in got)
+            if kept >= 0.85 * len(lowered):
+                continue  # the model's split preserved the words — leave its phrasing
+            per = max(1, -(-len(original) // len(segments)))  # ceil
+            for i, seg in enumerate(segments):
+                seg["script"] = " ".join(original[i * per:(i + 1) * per])
+        else:
+            ap["narration_script"] = script
 
 
 DIRECTOR_PROMPT = """\
@@ -788,17 +872,31 @@ def director_intent(message: str, context: dict, history: list[dict] | None = No
 
 
 def plan_dialogue(idea: str, language: str = "en", turns: int = 2,
-                  regenerate: bool = False) -> dict:
-    """Ask Gemini for one two-speaker dialogue ad (speakers + alternating turns)."""
+                  regenerate: bool = False, script: str | None = None,
+                  verbatim: bool = False) -> dict:
+    """Ask Gemini for one two-speaker dialogue ad (speakers + alternating turns).
+
+    With verbatim=True the supplied script's LINES are reproduced word-for-word and
+    only split between the two speakers — same contract as plan().
+    """
     user_msg = (
         f"Ad idea: {idea}\n"
         f"Language for the dialogue: {language}\n"
         f"Number of turns: {turns}"
     )
+    if script and script.strip() and verbatim:
+        user_msg += (
+            f"\n\n=== THE USER'S DIALOGUE — REPRODUCE IT EXACTLY ===\n{script.strip()}\n"
+            f"=== END ===\nNON-NEGOTIABLE: every spoken line above must appear in `turns` "
+            f"WORD-FOR-WORD. Do not rewrite, translate, shorten or add lines. Your only job "
+            f"is assigning each existing line to speaker a or b and naming the two speakers."
+        )
     if regenerate:
         user_msg += "\nWrite a FRESH take — different angle and lines than an earlier draft."
-    result = _gemini_json(DIALOGUE_SYSTEM_PROMPT, user_msg,
-                          temperature=0.9 if regenerate else 0.7, require="turns")
+    result = _gemini_json(
+        DIALOGUE_SYSTEM_PROMPT, user_msg,
+        temperature=0.2 if (verbatim and script) else (0.9 if regenerate else 0.7),
+        require="turns")
     if not result.get("turns") or len(result.get("speakers", [])) != 2:
         raise PlanError("Gemini returned an incomplete dialogue plan.")
     return result

@@ -33,6 +33,7 @@ import {
 } from "@/lib/api";
 import Dropzone, { Uploaded } from "@/components/Dropzone";
 import { usePersistentState } from "@/lib/usePersistentState";
+import { looksLikeScript } from "@/lib/script";
 import { USECASES } from "@/lib/usecases";
 import BriefChat from "@/components/create/BriefChat";
 import PitchDeck from "@/components/create/PitchDeck";
@@ -101,18 +102,22 @@ function GeminiPanel({
   const autoRan = useRef(false);
 
   const runPlan = useCallback(
-    async (ideaText: string, dur: number, lang: string, avoid?: string[]) => {
+    async (ideaText: string, dur: number, lang: string, avoid?: string[], verbatim?: boolean) => {
       if (ideaText.trim().length < 3) return;
       setThinking(true);
       setError(null);
       setApproaches(null);
       try {
+        // A finished script is finished work: hand it over AS a script so the planner
+        // reproduces it instead of authoring its own narration over the top.
+        const isScript = looksLikeScript(ideaText);
         const res = await api.plan({
           idea: ideaText.trim(),
           language: lang,
           format: aspect,
           duration_s: dur,
           ...(avoid?.length ? { avoid } : {}),
+          ...(isScript ? { script: ideaText.trim(), verbatim: verbatim !== false } : {}),
         });
         setApproaches(res.approaches);
         onPlanned();
@@ -552,7 +557,14 @@ function CreateStudio() {
       negative_prompt: s.negative_prompt ?? "",
     }));
     setShots(a.pipeline === "lipsync" || a.pipeline === "longcat" ? planShots.slice(0, 1) : planShots);
-    setScript(a.narration_script ?? "");
+    // Do NOT overwrite a script the user wrote. Adopting a treatment replaced the
+    // script box wholesale, so anyone who typed their own copy first lost it the
+    // moment they picked an approach.
+    setScript((prev) => {
+      const mine = (prev || "").trim();
+      if (mine && looksLikeScript(mine)) return prev;
+      return a.narration_script ?? prev;
+    });
     editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
