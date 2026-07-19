@@ -89,11 +89,19 @@ def _warn(job_id: str, msg: str) -> None:
         job.setdefault("warnings", []).append(msg)
 
 
-def _attach_sync(job_id: str, video_path: str, ok_tail_s: float = 1.0) -> None:
+def _attach_sync(job_id: str, video_path: str, ok_tail_s: float = 1.0,
+                 narration_path: str | None = None) -> None:
     """Post-assembly ground truth: silence-analyze the final and flag anything a
     client would hear as 'no voice' (mid-video gaps, long silent tails). Stores
     the full report on the job as `sync`. Analysis must never fail the render.
-    ok_tail_s: tail silence that's by design (an end card's read time) isn't flagged."""
+    ok_tail_s: tail silence that's by design (an end card's read time) isn't flagged.
+
+    narration_path closes the MUSIC-BED BLIND SPOT. Every metric here derives from
+    silencedetect at -45dB, but a ducked bed sits at 0.15 gain — far above that — so
+    on a mixed render `tail` reads 0 and a film that keeps playing long after the VO
+    stops is silently declared clean. When the narration file is known we can measure
+    the speech directly and flag the gap regardless of what the bed is covering.
+    """
     try:
         rep = ffmpeg.sync_report(video_path)
     except Exception:
@@ -110,6 +118,17 @@ def _attach_sync(job_id: str, video_path: str, ok_tail_s: float = 1.0) -> None:
         _warn(job_id, f"video runs {rep['tail']}s past the last sound — Library → ✂ Fix timing")
     if rep.get("lead_in", 0) > 2.5:
         _warn(job_id, f"first sound arrives at {rep['lead_in']}s — silent open")
+    # narration-aware tail check: works even when a bed masks the silence
+    if narration_path and rep.get("tail", 0) <= ok_tail_s:
+        try:
+            ndur = ffmpeg.probe(narration_path)["duration"]
+            vdur = float(rep.get("duration") or 0.0)
+            speech_gap = vdur - ndur
+            if vdur > 0 and speech_gap > max(ok_tail_s, 1.5):
+                _warn(job_id, f"the narration ends {speech_gap:.1f}s before the film — "
+                              f"music covers the tail, but no one is speaking over it")
+        except Exception:
+            pass
 
 
 def _voice_locked(path: Path) -> bool:
@@ -590,7 +609,7 @@ def revoice_endpoint(req: RevoiceRequest):
                 k += 1
             final = ffmpeg.replace_audio(str(src), narration, music=req.music, out=str(out),
                                          on_warning=lambda w: _warn(job_id, w))
-            _attach_sync(job_id, final)
+            _attach_sync(job_id, final, narration_path=narration)
             _update(job_id, status="done", progress=100, video_path=final)
         except Exception as e:
             _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
@@ -926,7 +945,7 @@ def timeline_export_endpoint(req: TimelineExportRequest):
                     final = final_path
             if any(_voice_locked(Path(c.path)) for c in req.clips):
                 Path(final).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
-            _attach_sync(job_id, final)
+            _attach_sync(job_id, final, narration_path=narration_file)
             _update(job_id, status="done", progress=100, detail="", video_path=final)
         except Exception as e:
             _update(job_id, status="error", error=f"{type(e).__name__}: {e}")

@@ -220,7 +220,10 @@ const WELCOME_MSG: ChatMsg = {
 // plan, and it never learned that a product photo had been handed over. This object
 // is written by the flow, read by the brain (shipped first in CONTEXT) and read by
 // the render path (assets carry a ROLE, so a product photo is actually used).
-type AssetRole = "product" | "portrait" | "reference";
+// "ui" is deliberately NOT "product": a screen recording or app mockup must never
+// be animated as an i2v product beat (I2V_PRESERVE on a UI screenshot produces a
+// drifting screenshot, not a shot). It is an insert, and only "product" anchors i2v.
+type AssetRole = "product" | "ui" | "portrait" | "reference";
 type SessionAsset = {
   path: string;
   name: string;
@@ -242,17 +245,33 @@ type SessionMemory = {
   assets: SessionAsset[];
   renders: { job: string; title: string; video: string | null }[];
   voice: { voice_id: string; name: string; language: string } | null;
+  cast: string[];   // saved character ids — the EXISTING inject_cast anchor system
 };
 const EMPTY_SESSION: SessionMemory = {
-  brief: null, approach: null, assets: [], renders: [], voice: null,
+  brief: null, approach: null, assets: [], renders: [], voice: null, cast: [],
 };
 
 // Infer what an image is FOR from how it was described/named. Role drives whether a
 // photo can anchor a product beat — brand law: real product pixels must be uploads.
+// Classify from the FILE's own name only. An earlier version folded the plan's
+// needs_from_user into this hint, so one treatment mentioning "app UI" re-labelled
+// EVERY upload as a product — including faces.
 function assetRole(hint: string): AssetRole {
-  if (/product|pack(age|aging)|label|logo|box\b|bottle|can\b|jar|packet|pouch|sachet|ui\b|mockup|screen/i.test(hint)) return "product";
-  if (/portrait|face|hero|character|person|man|woman|actor|model/i.test(hint)) return "portrait";
+  // screens first: "app ui mockup" also contains no product word, but "ui" used to
+  // fall into the product bucket and get wired into an i2v beat
+  if (/\bui\b|mockup|screen[ _-]?(shot|grab|record|cap)|app[ _-]?screen|interface|dashboard|footage/i.test(hint)) return "ui";
+  if (/product|pack(age|aging)|label|logo|box\b|bottle|can\b|jar|packet|pouch|sachet|tube|carton|wrapper|packshot/i.test(hint)) return "product";
+  if (/portrait|face|hero|character|person|man|woman|actor|model|selfie|headshot/i.test(hint)) return "portrait";
   return "reference";
+}
+
+// Planner drift guard, mirrored from create/page.tsx adopt(): only these four
+// pipelines are valid inside a sequence segment.
+function segPipeline(p: string): "overlay" | "cinematic" | "product" | "lipsync" {
+  if (["overlay", "cinematic", "product", "lipsync"].includes(p)) {
+    return p as "overlay" | "cinematic" | "product" | "lipsync";
+  }
+  return p === "longcat" ? "lipsync" : "cinematic";
 }
 
 // The Director conversation persists like the cut does — a refresh must never
@@ -626,8 +645,16 @@ function TimelineStudio() {
   // (an LLM will happily invent a 20-char ElevenLabs id, which fails at render time).
   // /voices degrades to the server default rather than erroring, so this is safe.
   const [voices, setVoices] = useState<Voice[]>([]);
+  // Saved Characters carry a verbatim `anchor` the backend injects into EVERY shot
+  // (inject_cast). The Create page has always used it; the Director never did — so
+  // a cast the user saved simply did not reach the ad. Wire it here rather than
+  // deriving a second, parallel anchor scheme.
+  const [cast, setCast] = useState<{ id: string; name: string; anchor: string }[]>([]);
   useEffect(() => {
     api.voices().then((d) => setVoices(d.voices ?? [])).catch(() => setVoices([]));
+    api.characters()
+      .then((d) => setCast((d.characters ?? []).map((c) => ({ id: c.id, name: c.name, anchor: c.anchor }))))
+      .catch(() => setCast([]));
   }, []);
   // Remember an image AND what it's for. Re-recording the same path updates its
   // role/approval instead of duplicating it.
@@ -677,7 +704,6 @@ function TimelineStudio() {
     postChat("assistant", `📎 uploading ${f.name}…`);
     try {
       const { path, url } = await api.uploadAsset(f);
-      sessionUploadRef.current += 1; // an attached photo satisfies the render gate
       setStills((s) => [
         { path, url, name: f.name, kind: "face", size_bytes: f.size, modified: Date.now() / 1000 } as StillItem,
         ...s,
@@ -687,14 +713,15 @@ function TimelineStudio() {
       // product photo was asked for and then never used. Role is inferred from the
       // filename plus whatever the plan said it needed, and an upload counts as
       // approved immediately: real product pixels outrank generated ones (brand law).
-      const roleHint = `${f.name} ${(lastPlanRef.current?.approaches ?? []).flatMap((a) => a.needs_from_user ?? []).join(" ")}`;
-      const role = assetRole(roleHint);
+      const role = assetRole(f.name);
       rememberAsset({ path, name: f.name, role, source: "upload", approved: true });
       postChat(
         "assistant",
         role === "product"
-          ? `📎 Got ${f.name} — filed as the product photo. It'll be used for the product shot when you render.`
-          : `📎 Got ${f.name}. Say how to use it — "use ${f.name} as the product photo", "make emotion variants of it", or "keyframe her holding ${f.name}".`,
+          ? `📎 Got ${f.name} — filed as the product photo. It'll anchor the product shot when you render.`
+          : role === "ui"
+            ? `📎 Got ${f.name} — filed as a screen/UI insert. Say "cut it in after scene 2" to place it (it won't be animated as a product shot).`
+            : `📎 Got ${f.name}. Say how to use it — "use ${f.name} as the product photo", "make emotion variants of it", or "keyframe her holding ${f.name}".`,
       );
     } catch (err) {
       postChat("assistant", `❌ upload failed: ${String(err).slice(0, 140)}`);
@@ -1696,6 +1723,8 @@ function TimelineStudio() {
       renders: session.renders.map((r) => ({ title: r.title, done: !!r.video })),
       voice: session.voice,
       voices: voices.slice(0, 24).map((v) => v.name),
+      // saved characters whose anchors the backend pastes into every shot
+      cast: cast.map((c) => c.name),
     },
     clips: clips.map((c, i) => ({
       i: i + 1,
@@ -1810,7 +1839,10 @@ function TimelineStudio() {
     // so even a planner failure leaves the Director knowing what we're making
     patchSession({ brief: { idea, language, format, duration_s } });
     try {
-      const res = await api.plan({ idea, language, format, duration_s });
+      const res = await api.plan({
+        idea, language, format, duration_s,
+        ...(cast.length ? { cast_ids: cast.map((c) => c.id) } : {}),
+      });
       lastPlanRef.current = { approaches: res.approaches, language };
       pushMsg({ kind: "treatments", approaches: res.approaches, language });
     } catch (e) {
@@ -1822,7 +1854,9 @@ function TimelineStudio() {
   // must not silently render without them. First press explains what to
   // attach/generate/approve; pressing again renders anyway (user's call).
   const gatedRef = useRef<Set<string>>(new Set());
-  const sessionUploadRef = useRef(0); // 📎 uploads this session count as "gave images"
+  // NOTE: "have they given pixels?" is answered from session.assets, which is
+  // PERSISTED. It used to be a bare in-memory counter, so a refresh forgot every
+  // upload and the gate re-closed — the "I gave you the photo" loop, again.
 
   // Fire a planned approach as a real render (D1). Sequence/overlay/cinematic
   // coerce cleanly; asset-gated pipelines route the user to Create for now.
@@ -1838,7 +1872,7 @@ function TimelineStudio() {
     // for the zero-pixel case.
     const assetNeeds = ap.needs_from_user ?? [];
     const haveProvidedPixels =
-      approvedRef.current.length > 0 || sessionUploadRef.current > 0;
+      approvedRef.current.length > 0 || sessionRef.current.assets.length > 0;
     if (assetNeeds.length && !haveProvidedPixels && !gatedRef.current.has(ap.title)) {
       gatedRef.current.add(ap.title);
       // brand law: real product pixels AND app UI / screen recordings / mockups
@@ -1881,7 +1915,11 @@ function TimelineStudio() {
           const img = s.pipeline === "product" && appr.length ? appr[k++ % appr.length] : undefined;
           if (img) injected++;
           return {
-            pipeline: s.pipeline, prompt: s.prompt,
+            // same sanitation the Create page's adopt() does: Gemini sometimes
+            // drifts to a non-segment pipeline — coerce talking-head types to
+            // lipsync and anything unrecognised to b-roll rather than 422/misroute.
+            pipeline: segPipeline(s.pipeline),
+            prompt: s.prompt,
             negative_prompt: s.negative_prompt, script: s.script,
             ...(img ? { image: img } : {}),
           };
@@ -1913,6 +1951,14 @@ function TimelineStudio() {
             {
               // i2v beat: describe ONLY camera/light — never re-describe the product,
               // the real pixels come from the image and the backend appends I2V_PRESERVE.
+              //
+              // SCOPE: this animates the packshot itself — a product hero shot. It is
+              // NOT the "contact beat" (a person handling the product), which doctrine
+              // says needs a COMPOSITED keyframe (character still + product photo) built
+              // via the keyframes op and approved first. Wiring that in here would mean
+              // an approval round-trip mid-render, so contact beats stay a deliberate
+              // keyframes flow; this path exists so a supplied product photo is USED
+              // rather than silently dropped.
               pipeline: "product" as const,
               prompt:
                 "Slow push-in on the product, shallow depth of field, soft directional key light, " +
@@ -1949,6 +1995,8 @@ function TimelineStudio() {
     }
     // the Director's chosen voice must reach the render, not just the re-voice
     if (sessionRef.current.voice?.voice_id) req.voice_id = sessionRef.current.voice.voice_id;
+    // inject_cast pastes each saved anchor verbatim into every shot, for every mode
+    if (cast.length) req.character_ids = cast.map((c) => c.id);
     const { job_id } = await api.generate(req);
     // remember this render's own narration + language so the post-render "Add
     // narration" box can prefill the ad's script (user can still edit/replace).
@@ -2709,6 +2757,8 @@ function TimelineStudio() {
               narration: {
                 ...(narr.path ? { path: narr.path } : {}),
                 ...(narr.script ? { script: narr.script, language: narr.language ?? "hi" } : {}),
+                ...(sessionRef.current.voice?.voice_id
+                  ? { voice_id: sessionRef.current.voice.voice_id } : {}),
                 offset_ms: Math.round(narr.offset * 1000),
                 gain: narr.gain,
                 ...(narr.path && narr.in > 0.05 ? { in_s: +narr.in.toFixed(2) } : {}),
