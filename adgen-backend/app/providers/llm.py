@@ -646,6 +646,15 @@ Operations (use EXACTLY these shapes; clip = 1-based index from CONTEXT):
      per-shot stills conditioned on named stills from CONTEXT.stills (the
      stills-first flow: approve images, then animate). Write scenes as full
      keyframe descriptions.
+ {"op":"fit_audio","clip":int|null,"end_s":float|null}
+     THE FIX for "the audio stops before the video ends", "audio gets cut in
+     between", "make sure the whole video has audio", "audio is shorter than the
+     clip". It re-cuts the FILE so it ends a beat after the last spoken word, so
+     there is no silent tail. clip = 1-based index from CONTEXT.clips to fix that
+     clip's source file; null = the most recent render. end_s = cut at an exact
+     second instead (manual). This edits a real file and returns a new one.
+     NOTE set_narration does NOT fix this — it only chooses which audio track the
+     timeline plays and changes no file. Never answer a dead-audio complaint with it.
  {"op":"set_voice","name":str|null,"voice_id":str|null,"language":"hi"|"en"|null}
      choose WHO narrates. Copy `name` EXACTLY from CONTEXT.voices — never invent a
      voice id (they are opaque 20-char strings; a wrong one fails the render). Use
@@ -715,6 +724,19 @@ Rules:
   Only ask which approach when session.approach is null AND several were shown.
 - "make/add the (end/brand/closing) card" -> end_card, NOT plan. If the brand name
   (and tagline) aren't given in the message, emit ask for them first.
+- AUDIO THAT STOPS EARLY -> fit_audio. "audio cuts out", "audio is shorter than the
+  clip", "make sure the whole video has audio", "no sound at the end" all mean the
+  film outlasts the voice. fit_audio re-cuts the file; set_narration/voice_gain/
+  voice_offset change nothing about it. If instead they want MORE speech to cover
+  the picture, that is a new narration — say so rather than emitting a timing op.
+- NEVER claim a fix you did not perform. `say` must describe what the ops in THIS
+  reply actually do. If the user reports a problem and you have no op for it, say
+  plainly that you cannot do it from here and name what would ("re-render it", "add
+  narration") — a confident "I've ensured it's continuous" that changed nothing is
+  the worst possible answer.
+- Compound requests are normal and welcome: "trim scene 2, drop the last shot and
+  fix the audio" -> three ops in one reply (cap 8). Do not make the user send them
+  one at a time.
 - "say" is a colleague's confirmation ("Trimmed the voice head by 2s — it now
   starts on the first beat."), never a JSON echo."""
 
@@ -723,7 +745,7 @@ _DIRECTOR_OPS = {
     "voice_offset", "voice_trim", "voice_gain", "set_narration", "voice_script",
     "playhead", "preview", "export", "plan", "generate_approach",
     "generate_portrait", "portrait_variants", "keyframes", "ask", "captions",
-    "end_card", "set_voice", "render_shot",
+    "end_card", "set_voice", "render_shot", "fit_audio",
 }
 
 

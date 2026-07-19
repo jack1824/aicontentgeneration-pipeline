@@ -210,7 +210,7 @@ const noopSubscribe = () => () => {};
 const WELCOME_MSG: ChatMsg = {
   kind: "text",
   role: "assistant",
-  text: "Director here. Tell me what to do — \"cut the first 2s of the voice\", \"use take 2 of scene 3\", \"tighten everything to 2.2s\" — or brief me a new ad.",
+  text: "Director here. Tell me what to change, or brief me a new ad.",
 };
 
 // ---- Session Memory -------------------------------------------------------
@@ -625,6 +625,10 @@ function TimelineStudio() {
   // job-level script is ignored by sequence mode — stash it here and lay it on with
   // the fit-to-length revoice once the render lands, so the ad is never silent.
   const pendingNarrationRef = useRef("");
+  // fit job -> the clip id it is repairing, so the trimmed file can replace the old
+  // one on the timeline the moment it lands (otherwise "fix the audio" succeeds but
+  // the user is still looking at the broken cut).
+  const fitJobsRef = useRef<Record<string, string>>({});
   const [chatJobs, setChatJobs] = useState<Record<string, ChatJobState>>(() => chatBoot?.jobs ?? {});
   // live mirror so op handlers can check "is a render already rolling?" without
   // reading stale state captured when sendChat started (the double-render guard).
@@ -2094,6 +2098,33 @@ function TimelineStudio() {
               postChat("assistant", `✅ Landed: ${landed.split("/").pop()} — in the Library; open it here to cut it.`);
               // the finished render/export belongs in the bin right away
               api.outputs().then((d) => setPool(d.outputs)).catch(() => {});
+              // a repaired clip replaces the broken one in place, keeping its slot
+              const fitClipId = fitJobsRef.current[id];
+              if (fitClipId) {
+                delete fitJobsRef.current[id];
+                api.outputs()
+                  .then((d) => {
+                    const fresh = d.outputs.find((o) => o.path === landed);
+                    const dur = fresh?.duration ?? null;
+                    setClips((cs) =>
+                      cs.map((c) =>
+                        c.id !== fitClipId
+                          ? c
+                          : {
+                              ...c,
+                              path: landed,
+                              url: fresh?.url ?? c.url,
+                              name: fresh?.name ?? landed.split("/").pop() ?? c.name,
+                              src: dur ?? c.src,
+                              in_s: 0,
+                              out_s: dur ?? c.out_s,
+                            },
+                      ),
+                    );
+                    postChat("assistant", "The trimmed clip is on the timeline now — press play.");
+                  })
+                  .catch(() => {});
+              }
               // 🧠 the session remembers what actually shipped
               setSession((s) => ({
                 ...s,
@@ -2456,6 +2487,34 @@ function TimelineStudio() {
           setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
           pushMsg({ kind: "progress", jobId: job_id });
           postChat("assistant", `🎬 Adding the end card — ${brand}${tagline ? ` · “${tagline}”` : ""}…`);
+        } else if (kind === "fit_audio") {
+          // Re-cut the FILE so it ends just after the last spoken word. This is the
+          // only op that actually fixes "the audio stops before the video does" —
+          // set_narration merely picks a track and changes no pixels or samples.
+          const ci = num(op.clip);
+          const target =
+            ci !== null && working[ci - 1]
+              ? working[ci - 1].path
+              : working.length === 1
+                ? working[0].path
+                : findLastRenderedVideo();
+          if (!target) {
+            notes.push("which clip? name it, or render/open one first");
+            continue;
+          }
+          const endS = num(op.end_s);
+          const { job_id } = await api.fit({
+            video_path: target,
+            ...(endS !== null && endS > 0.5 ? { mode: "manual" as const, end_s: endS } : { mode: "auto" as const }),
+          });
+          const fitClip = working.find((c) => c.path === target);
+          if (fitClip) fitJobsRef.current[job_id] = fitClip.id;
+          setChatJobs((m) => ({ ...m, [job_id]: { progress: 0, detail: "queued", warnings: [], status: "queued", video: null } }));
+          pushMsg({ kind: "progress", jobId: job_id });
+          postChat("assistant",
+            endS !== null && endS > 0.5
+              ? `✂ Cutting ${target.split("/").pop()} at ${endS}s…`
+              : `✂ Trimming ${target.split("/").pop()} to end with the narration — the silent tail goes.`);
         } else if (kind === "set_voice") {
           // Resolve by NAME against the roster we actually fetched — an LLM will
           // confabulate a voice id, but not a name that was handed to it in CONTEXT.
@@ -2926,7 +2985,7 @@ function TimelineStudio() {
             className={`inline-flex items-center gap-1.5 rounded-btn border border-white/10 bg-surface-2 px-2.5 py-1.5 text-xs text-text-primary hover:border-white/20 ${focusRing}`}
           >
             <span className="text-[rgba(255,140,130,1)]">📁</span>
-            <span className="max-w-[160px] truncate">{activeProject?.name ?? "Project"}</span>
+            <span className="max-w-40 truncate">{activeProject?.name ?? "Project"}</span>
             <span className="text-text-muted">▾</span>
           </button>
           {projMenuOpen && (
@@ -3107,7 +3166,7 @@ function TimelineStudio() {
                 ✕
               </button>
             </div>
-            <div className="mt-3 flex-1 space-y-3 overflow-y-auto px-3.5 pb-2">
+            <div className="mt-3 flex-1 space-y-2.5 overflow-y-auto px-3.5 pb-2">
               {chatMsgs.map((m, i) => {
                 if (m.kind === "assetask") {
                   return (
@@ -3347,7 +3406,7 @@ function TimelineStudio() {
                   return (
                     <div key={i} className="border-l border-white/10 py-0.5 pl-2.5">
                       <div className="flex items-start justify-between gap-2">
-                        <ul className="space-y-0.5 text-[10px] text-text-secondary">
+                        <ul className="space-y-0.5 text-[10px] text-text-muted">
                           {m.items.map((it, k) => (
                             <li key={k}>{it}</li>
                           ))}
@@ -3554,7 +3613,7 @@ function TimelineStudio() {
                 return (
                   <div
                     key={i}
-                    className={`bubble-in whitespace-pre-wrap text-[12px] leading-relaxed ${
+                    className={`bubble-in whitespace-pre-wrap text-[11.5px] leading-[1.6] ${
                       m.role === "user"
                         ? "ml-auto max-w-[88%] rounded-2xl bg-[rgba(255,77,61,0.10)] px-3 py-2 text-text-primary"
                         : m.text.startsWith("⚠")
@@ -3815,7 +3874,7 @@ function TimelineStudio() {
                   className="pointer-events-none absolute bottom-0 top-0 z-10"
                   style={{ left: GUTTER + playT * pps }}
                 >
-                  <div className="absolute -left-[5px] top-0 h-0 w-0 border-x-[5px] border-t-[7px] border-x-transparent border-t-accent" />
+                  <div className="absolute -left-1.25 top-0 h-0 w-0 border-x-[5px] border-t-[7px] border-x-transparent border-t-accent" />
                   <div className="absolute bottom-0 top-0 w-px bg-accent" />
                 </div>
 
@@ -4157,7 +4216,7 @@ function TimelineStudio() {
         >
           <div className="absolute inset-0 bg-black/70" onClick={() => setConfirmClose(false)} />
           <div className="hero-frame relative w-full max-w-sm">
-            <div className="card-raised rounded-[12px] p-5">
+            <div className="card-raised rounded-xl p-5">
               <div className="flex items-start gap-3">
                 <span className="brand-tile flex h-9 w-9 shrink-0 items-center justify-center rounded-btn text-sm">
                   ✕
