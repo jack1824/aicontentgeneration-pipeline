@@ -234,6 +234,7 @@ type SessionAsset = {
 type SessionMemory = {
   brief: { idea: string; language: string; format: string; duration_s: number } | null;
   approach: {
+    focused: boolean;     // selected in the UI but not rendered yet — still "this"
     index: number;        // 1-based, so the brain can fire generate_approach
     title: string;
     pipeline: string;
@@ -1626,6 +1627,40 @@ function TimelineStudio() {
       return [...rescued, ...keep, msg];
     });
 
+  // Selecting a treatment = opening or editing it. This is what gives "make this" /
+  // "render it" a referent BEFORE anything has been rendered — previously
+  // session.approach was only written on fire, so the brain had no choice but to ask
+  // "which one?" every time.
+  const focusApproach = (ap: PlanApproach, idx: number) => {
+    if (sessionRef.current.approach?.title === ap.title) return; // already the one
+    patchSession({
+      approach: {
+        focused: true,
+        index: idx + 1,
+        title: ap.title,
+        pipeline: ap.pipeline,
+        shots: (ap.segments ?? ap.shots ?? []).map((x) => String(x.prompt ?? "").slice(0, 140)),
+        script: ap.narration_script || "",
+        anchor: ap.segments?.[0]?.prompt ?? ap.shots?.[0]?.prompt ?? "",
+        negative: ap.shots?.[0]?.negative_prompt ?? ap.segments?.[0]?.negative_prompt ?? "",
+      },
+    });
+  };
+
+  // ▶ Make this, safely. The shot/narration fields are uncontrolled and commit on
+  // BLUR via setChatMsgs, which is async — so a click straight after typing used to
+  // fire with the approach captured in this render's closure, i.e. the text BEFORE
+  // the edit. Blur the active field first, then resolve the approach out of the
+  // live message state on the next frame so the edit is definitely in.
+  const fireApproachFresh = (mi: number, ai: number, language: string) => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    requestAnimationFrame(() => {
+      const msg = chatMsgsRef.current[mi];
+      const ap = msg && msg.kind === "treatments" ? msg.approaches[ai] : null;
+      if (ap) void fireApproach(ap, language);
+    });
+  };
+
   // ✎ Edit a planned approach in place. The treatments ChatMsg is the single source
   // of truth — and because the chat persist effect already depends on chatMsgs, every
   // edit auto-saves and survives a refresh with no extra storage.
@@ -1862,6 +1897,21 @@ function TimelineStudio() {
   // PERSISTED. It used to be a bare in-memory counter, so a refresh forgot every
   // upload and the gate re-closed — the "I gave you the photo" loop, again.
 
+  // Every image the session knows about, with its role. Uploads outrank generated
+  // pixels for products (brand law: real labels must be real). Approved stills that
+  // predate the session are folded in as "portrait" — that is what the approval grid
+  // produces — so nothing that used to work stops working.
+  const imagePool = (): { path: string; role: AssetRole }[] => {
+    const out: { path: string; role: AssetRole }[] = sessionRef.current.assets
+      .filter((a) => a.approved)
+      .sort((a, b) => Number(b.source === "upload") - Number(a.source === "upload"))
+      .map((a) => ({ path: a.path, role: a.role }));
+    for (const p of approvedRef.current) {
+      if (!out.some((x) => x.path === p)) out.push({ path: p, role: assetRole(p) === "product" ? "product" : "portrait" });
+    }
+    return out;
+  };
+
   // Fire a planned approach as a real render (D1). Sequence/overlay/cinematic
   // coerce cleanly; asset-gated pipelines route the user to Create for now.
   const fireApproach = async (ap: PlanApproach, language: string) => {
@@ -1908,16 +1958,28 @@ function TimelineStudio() {
     }
     let req: GenerateRequest | null = null;
     if (ap.pipeline === "sequence" && ap.segments?.length) {
-      // approved stills feed the i2v lanes: product segments each get the next
-      // approved keyframe as their start image (the stills-first handoff)
-      const appr = approvedRef.current;
-      let k = 0;
+      // Images feed the i2v lanes BY ROLE. Two bugs lived here: the pool was
+      // approvedRef only — so an UPLOADED photo (which never enters that list) was
+      // silently ignored on exactly this plan shape — and stills were cycled
+      // round-robin regardless of what they depicted, so a face could land on a
+      // product beat. A plan asking for BOTH a packshot and a reference face
+      // (needs_from_user with two entries) could not be satisfied at all.
+      const pool = imagePool();
+      const pickFor = (segPipe: string): string | undefined => {
+        const want: AssetRole = segPipe === "product" ? "product" : "portrait";
+        return (
+          pool.find((x) => x.role === want && !usedImgs.has(x.path))?.path ??
+          pool.find((x) => x.role === want)?.path
+        );
+      };
+      const usedImgs = new Set<string>();
       let injected = 0;
       req = {
         mode: "sequence",
         segments: ap.segments.map((s) => {
-          const img = s.pipeline === "product" && appr.length ? appr[k++ % appr.length] : undefined;
-          if (img) injected++;
+          // product beats need a packshot; lipsync/avatar beats need the face
+          const img = ["product", "lipsync"].includes(s.pipeline) ? pickFor(s.pipeline) : undefined;
+          if (img) { injected++; usedImgs.add(img); }
           return {
             // same sanitation the Create page's adopt() does: Gemini sometimes
             // drifts to a non-segment pipeline — coerce talking-head types to
@@ -1994,8 +2056,21 @@ function TimelineStudio() {
         `"${ap.title}" needs assets (${(ap.needs_from_user ?? []).join(", ") || ap.pipeline}) — fire it from Create where you can attach them.`);
       return;
     }
+    // Say WHICH need is unmet and why, instead of a blanket "rendering without them"
+    // that fires even when the assets were supplied. Roles make this checkable.
     if (ap.needs_from_user?.length) {
-      postChat("assistant", `Note — this plan asked for: ${ap.needs_from_user.join(", ")}. Rendering without them.`);
+      const have = new Set(imagePool().map((x) => x.role));
+      const unmet = ap.needs_from_user.filter((n) => {
+        const want = assetRole(n);
+        return want === "reference" ? false : !have.has(want);
+      });
+      if (unmet.length) {
+        postChat("assistant",
+          `⚠ No ${unmet.map((n) => assetRole(n)).join(" or ")} image yet — rendering without: ${unmet.join("; ")}. Upload one and re-run to wire it in.`);
+      } else {
+        const wired = [...have].filter((r) => r !== "reference");
+        postChat("assistant", `✅ Using your ${wired.join(" + ")} image${wired.length > 1 ? "s" : ""} for this render.`);
+      }
     }
     // the Director's chosen voice must reach the render, not just the re-voice
     if (sessionRef.current.voice?.voice_id) req.voice_id = sessionRef.current.voice.voice_id;
@@ -2010,6 +2085,7 @@ function TimelineStudio() {
     const firstPrompt = ap.segments?.[0]?.prompt ?? ap.shots?.[0]?.prompt ?? "";
     patchSession({
       approach: {
+        focused: false,
         index: Math.max(1, (lastPlanRef.current?.approaches ?? []).findIndex((x) => x.title === ap.title) + 1),
         title: ap.title,
         pipeline: ap.pipeline,
@@ -3291,14 +3367,28 @@ function TimelineStudio() {
                 if (m.kind === "treatments") {
                   return (
                     <div key={i} className="space-y-2">
-                      {m.approaches.map((a, k) => (
+                      {m.approaches.map((a, k) => {
+                        const isFocused = session.approach?.title === a.title;
+                        return (
                         <div key={k} className="deck-in">
-                          <div className="rounded-xl border border-white/6 bg-surface-2/50 p-3.5 font-display">
+                          <div
+                            onFocusCapture={() => focusApproach(a, k)}
+                            className={`rounded-xl border bg-surface-2/50 p-3.5 font-display ${
+                              isFocused ? "border-[rgba(255,77,61,0.45)]" : "border-white/6"
+                            }`}
+                          >
                           <div className="flex items-start justify-between gap-2">
                             <p className="text-[12px] font-semibold leading-snug text-text-primary">
                               {k + 1}. {a.title}
                             </p>
-                            <span className="seg shrink-0 rounded px-1.5 py-0.5 text-[9px]">{a.pipeline}</span>
+                            <span className="flex shrink-0 items-center gap-1.5">
+                              {isFocused && (
+                                <span className="rounded px-1.5 py-0.5 text-[9px] text-[rgba(255,140,130,1)]">
+                                  ● this one
+                                </span>
+                              )}
+                              <span className="seg rounded px-1.5 py-0.5 text-[9px]">{a.pipeline}</span>
+                            </span>
                           </div>
                           <p className="mt-1 text-[11px] leading-relaxed text-text-muted">{a.why}</p>
                           {!!a.needs_from_user?.length && (
@@ -3313,7 +3403,9 @@ function TimelineStudio() {
                           {/* fidelity check: the actual shots that will render —
                               inspect BEFORE firing, catch paraphrased anchors */}
                           {(!!a.segments?.length || !!a.shots?.length) && (
-                            <details className="mt-1.5">
+                            <details className="mt-1.5" onToggle={(e) => {
+                              if ((e.currentTarget as HTMLDetailsElement).open) focusApproach(a, k);
+                            }}>
                               <summary className={`cursor-pointer text-[10px] text-text-muted hover:text-text-secondary ${focusRing}`}>
                                 🎞 view the {a.segments?.length || a.shots?.length} shots
                               </summary>
@@ -3390,7 +3482,7 @@ function TimelineStudio() {
                             </details>
                           )}
                           <button
-                            onClick={() => fireApproach(a, m.language)}
+                            onClick={() => fireApproachFresh(i, k, m.language)}
                             disabled={a.available === false || !!chatJobId}
                             className={`mt-2 rounded-btn border border-[rgba(255,77,61,0.5)] bg-[rgba(255,77,61,0.12)] px-3 py-1.5 text-[11px] font-semibold text-text-primary hover:bg-[rgba(255,77,61,0.22)] disabled:opacity-40 ${focusRing}`}
                           >
@@ -3398,7 +3490,8 @@ function TimelineStudio() {
                           </button>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   );
                 }

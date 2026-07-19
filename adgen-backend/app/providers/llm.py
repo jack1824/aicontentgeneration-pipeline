@@ -716,9 +716,13 @@ Rules:
   asking. Only ask which approach when session.approach is null AND several were
   shown.
 - WHOLE AD vs ONE CLIP — do not confuse these:
-  * "render it" / "make it" / "go ahead" / "run it" with session.approach set means
-    RE-RENDER THE WHOLE TREATMENT -> ONE generate_approach with
-    index = session.approach.index. It NEVER means a burst of render_shot ops.
+  * "render it" / "make it" / "make this" / "go ahead" / "run it" with
+    session.approach set means RENDER THAT WHOLE TREATMENT -> ONE generate_approach
+    with index = session.approach.index. It NEVER means a burst of render_shot ops.
+    session.approach.focused=true means the user has SELECTED that card (opened or
+    edited it) without rendering yet — it is still exactly what "this" refers to, so
+    render it rather than asking which card. Asking "which plan?" when
+    session.approach exists is always wrong.
   * "one more clip", "another shot", "again but wider", "add a shot of X" -> exactly
     ONE render_shot. The session already tells you the look to continue.
   Only ask which approach when session.approach is null AND several were shown.
