@@ -145,7 +145,12 @@ type ChatMsg =
   | { kind: "stills"; jobId: string; title: string; params: StillsParams }
   | { kind: "questions" } // renders the ACTIVE intake card (state lives in `intake`)
   | { kind: "scriptask"; idea: string; language: string; format: string; duration_s: number; signals: string[]; secs: number } // pasted a finished script: use verbatim or improve?
-  | { kind: "assetask"; title: string; needs: string[]; description: string; isProduct: boolean; canGenerate: boolean; subject: "person" | "product" }; // gate card: ⚡ generate (person) and/or 📎 upload (product/UI are upload-only — brand law); a mixed card offers BOTH
+  | { kind: "assetask"; title: string; needs: string[]; description: string; isProduct: boolean; canGenerate: boolean; subject: "person" | "product" }
+  // Everything the plan needs, in ONE card with a slot per requirement. Uploading
+  // INTO a named slot means the role is known from the requirement text instead of
+  // guessed from the filename — which is what made an oddly-named file get ignored.
+  | { kind: "assetlist"; title: string; language: string; description: string;
+      needs: { text: string; role: AssetRole; canGenerate: boolean; path: string | null; name: string | null }[] }; // gate card: ⚡ generate (person) and/or 📎 upload (product/UI are upload-only — brand law); a mixed card offers BOTH
 
 type Intake = {
   idea: string;
@@ -720,11 +725,18 @@ function TimelineStudio() {
       // product photo was asked for and then never used. Role is inferred from the
       // filename plus whatever the plan said it needed, and an upload counts as
       // approved immediately: real product pixels outrank generated ones (brand law).
-      const role = assetRole(f.name);
+      const slot = pendingSlotRef.current;
+      pendingSlotRef.current = null;
+      // Uploading INTO a requirement slot means we KNOW what it is; only fall back to
+      // guessing from the filename for a loose drag-and-drop upload.
+      const role = slot ? slot.role : assetRole(f.name);
+      if (slot) updateNeed(slot.mi, slot.ni, { path, name: f.name });
       rememberAsset({ path, name: f.name, role, source: "upload", approved: true });
       postChat(
         "assistant",
-        role === "product"
+        slot
+          ? `📎 ${f.name} attached — filed as the ${role} for that requirement.`
+          : role === "product"
           ? `📎 Got ${f.name} — filed as the product photo. It'll anchor the product shot when you render.`
           : role === "ui"
             ? `📎 Got ${f.name} — filed as a screen/UI insert. Say "cut it in after scene 2" to place it (it won't be animated as a product shot).`
@@ -1663,6 +1675,18 @@ function TimelineStudio() {
     });
   };
 
+  // Fill one requirement slot. Lives in the message so it persists with the chat.
+  const updateNeed = (mi: number, ni: number, patch: Partial<{ path: string | null; name: string | null }>) =>
+    setChatMsgs((ms) =>
+      ms.map((m, idx) =>
+        idx !== mi || m.kind !== "assetlist"
+          ? m
+          : { ...m, needs: m.needs.map((n, k) => (k !== ni ? n : { ...n, ...patch })) },
+      ),
+    );
+  // which slot the next file picker result belongs to
+  const pendingSlotRef = useRef<{ mi: number; ni: number; role: AssetRole } | null>(null);
+
   // ✎ Edit a planned approach in place. The treatments ChatMsg is the single source
   // of truth — and because the chat persist effect already depends on chatMsgs, every
   // edit auto-saves and survives a refresh with no extra storage.
@@ -1955,7 +1979,21 @@ function TimelineStudio() {
       // server caps this at 800 chars — budget the source text so a rich shot
       // prompt's first two sentences plus the suffix never overrun it.
       const desc = rawSrc.slice(0, 800 - suffix.length) + suffix;
-      pushMsg({ kind: "assetask", title: ap.title, needs: assetNeeds, description: desc, isProduct, canGenerate, subject });
+      pushMsg({
+        kind: "assetlist",
+        title: ap.title,
+        language,
+        description: desc,
+        needs: assetNeeds.map((n) => ({
+          text: n,
+          // role comes from the REQUIREMENT, not a filename guess
+          role: assetRole(n),
+          // brand law: only a person may be generated; products/UI must be real pixels
+          canGenerate: GEN_PERSON_NEED.test(n) && !UPLOAD_ONLY_NEED.test(n),
+          path: null,
+          name: null,
+        })),
+      });
       if (ap.pipeline === "cinematic") {
         postChat(
           "assistant",
@@ -2060,8 +2098,39 @@ function TimelineStudio() {
       }
     }
     if (!req) {
+      // LAST-RESORT COERCION. The planner's own contract says a "sequence" returns
+      // segments and leaves shots empty — but it drifts, and a sequence carrying
+      // SHOTS matched neither branch above, so the render never started and the user
+      // was told to "fire it from Create" no matter how many images they attached.
+      // The same dead end swallowed lipsync/product/longcat. Anything with prompts
+      // is renderable: shots become segments for a sequence, everything else runs on
+      // the closest built lane.
+      const anyShots = (ap.shots ?? []).filter((x) => (x?.prompt ?? "").trim());
+      if (ap.pipeline === "sequence" && anyShots.length) {
+        req = {
+          mode: "sequence",
+          segments: anyShots.map((x) => ({
+            pipeline: "cinematic" as const,
+            prompt: x.prompt,
+            negative_prompt: x.negative_prompt,
+          })),
+          language, quality: "quality", name: pname(ap.title),
+        };
+        pendingNarrationRef.current = ap.narration_script || "";
+      } else if (anyShots.length) {
+        // lipsync/product/longcat/multitalk with no attachable lane here — render the
+        // pictures on the b-roll lane and lay the narration on afterwards.
+        req = {
+          mode: "overlay",
+          shots: anyShots.map((x) => ({ prompt: x.prompt, negative_prompt: x.negative_prompt })),
+          script: ap.narration_script || null,
+          language, quality: "quality", name: pname(ap.title),
+        };
+      }
+    }
+    if (!req) {
       postChat("assistant",
-        `"${ap.title}" needs assets (${(ap.needs_from_user ?? []).join(", ") || ap.pipeline}) — fire it from Create where you can attach them.`);
+        `"${ap.title}" has no shots to render — re-plan it, or open it in Create.`);
       return;
     }
     // Say WHICH need is unmet and why, instead of a blanket "rendering without them"
@@ -2765,6 +2834,13 @@ function TimelineStudio() {
             return { role: "assistant", text: `[showed stills: ${m.title}]` };
           if (m.kind === "assetask")
             return { role: "assistant", text: `[asked for assets: ${m.needs.join(", ")}]` };
+          if (m.kind === "assetlist") {
+            const done = m.needs.filter((n) => n.path).length;
+            return {
+              role: "assistant",
+              text: `[asset checklist for "${m.title}": ${done}/${m.needs.length} provided — ${m.needs.map((n) => `${n.text}${n.path ? " ✓" : ""}`).join("; ")}]`,
+            };
+          }
           if (m.kind === "progress") {
             const j = chatJobs[m.jobId];
             return { role: "assistant", text: `[render ${j?.status ?? "queued"}${j?.video ? ` -> ${j.video.split("/").pop()}` : ""}]` };
@@ -3296,6 +3372,91 @@ function TimelineStudio() {
                               ? "Product / app-UI photos must always be uploads — generated text garbles."
                               : "✓-approve what you like in the grid, then press ▶ Make this again."}
                         </p>
+                      </div>
+                    </div>
+                  );
+                }
+                if (m.kind === "assetlist") {
+                  // a slot counts as ready if it holds a file OR the session already
+                  // has an approved image of that role (generate-then-approve path)
+                  const haveRoles = new Set(
+                    session.assets.filter((x) => x.approved).map((x) => x.role),
+                  );
+                  const ready = m.needs.filter((n) => n.path || haveRoles.has(n.role));
+                  return (
+                    <div key={i} className="deck-in">
+                      <div className="rounded-xl border border-white/6 bg-surface-2/50 p-3.5 font-display">
+                        <p className="text-[11px] font-semibold text-text-primary">
+                          &quot;{m.title}&quot; needs {m.needs.length} thing{m.needs.length > 1 ? "s" : ""}
+                        </p>
+                        <div className="mt-2 space-y-2">
+                          {m.needs.map((n, ni) => {
+                            const filled = !!n.path || haveRoles.has(n.role);
+                            return (
+                              <div key={ni} className="flex items-start gap-2">
+                                <span className={`mt-0.5 text-[11px] ${filled ? "text-[rgba(120,220,150,1)]" : "text-text-muted"}`}>
+                                  {filled ? "✓" : "○"}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-[11px] leading-snug text-text-secondary">{n.text}</p>
+                                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                    {n.path ? (
+                                      <>
+                                        <span className="truncate text-[10px] text-text-muted">{n.name}</span>
+                                        <button
+                                          onClick={() => updateNeed(i, ni, { path: null, name: null })}
+                                          className={`rounded px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-primary ${focusRing}`}
+                                        >
+                                          ×
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <button
+                                          onClick={() => {
+                                            pendingSlotRef.current = { mi: i, ni, role: n.role };
+                                            fileRef.current?.click();
+                                          }}
+                                          className={`seg rounded-btn px-2.5 py-1 text-[10px] ${focusRing}`}
+                                        >
+                                          📎 Upload
+                                        </button>
+                                        {n.canGenerate && (
+                                          <button
+                                            onClick={() => generatePortrait(m.description, "person")}
+                                            className={`rounded-btn border border-[rgba(255,77,61,0.4)] px-2.5 py-1 text-[10px] text-text-secondary hover:text-text-primary ${focusRing}`}
+                                          >
+                                            ⚡ Generate
+                                          </button>
+                                        )}
+                                        {!n.canGenerate && (
+                                          <span className="text-[10px] text-text-muted">upload only — generated labels garble</span>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              const plan = lastPlanRef.current;
+                              const ap = plan?.approaches.find((x) => x.title === m.title);
+                              if (!ap) { postChat("assistant", "that plan is gone — brief me again"); return; }
+                              gatedRef.current.add(ap.title); // already asked; go straight through
+                              void fireApproach(ap, m.language);
+                            }}
+                            className={`rounded-btn border border-[rgba(255,77,61,0.5)] bg-[rgba(255,77,61,0.12)] px-3 py-1.5 text-[11px] font-semibold text-text-primary hover:bg-[rgba(255,77,61,0.22)] ${focusRing}`}
+                          >
+                            ▶ Start creation
+                          </button>
+                          <span className="text-[10px] text-text-muted">
+                            {ready.length} of {m.needs.length} ready
+                          </span>
+                        </div>
                       </div>
                     </div>
                   );

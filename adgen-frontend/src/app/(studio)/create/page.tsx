@@ -299,6 +299,9 @@ function CreateStudio() {
   // lipsync + longcat share the avatar UX: one scene, script + face required.
   const [script, setScript] = usePersistentState("adgen-create-script", "", keep);
   const [language, setLanguage] = usePersistentState("adgen-create-lang", "en", keep);
+  // What the adopted treatment said it needs — a live checklist by the fire button,
+  // so every requirement is visible at once instead of discovered one refusal at a time.
+  const [adoptedNeeds, setAdoptedNeeds] = useState<string[]>([]);
   const [image, setImage] = usePersistentState<Uploaded | null>("adgen-create-image", null, keep);
   const [music, setMusic] = usePersistentState<Uploaded | null>("adgen-create-music", null, keep);
   // Ingredients: the reference sheet (image + what its panels contain).
@@ -557,6 +560,7 @@ function CreateStudio() {
       negative_prompt: s.negative_prompt ?? "",
     }));
     setShots(a.pipeline === "lipsync" || a.pipeline === "longcat" ? planShots.slice(0, 1) : planShots);
+    setAdoptedNeeds(a.needs_from_user ?? []);
     // Do NOT overwrite a script the user wrote. Adopting a treatment replaced the
     // script box wholesale, so anyone who typed their own copy first lost it the
     // moment they picked an approach.
@@ -1154,6 +1158,24 @@ function CreateStudio() {
             {running ? "Rendering…" : "Generate ad"}
           </button>
           {blocked && !running && <p className="text-[11px] text-text-muted">→ {blocked}</p>}
+          {!running && adoptedNeeds.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {adoptedNeeds.map((n) => {
+                // tick against what Create actually holds for that kind of asset
+                const wantsProduct = /product|pack(age|aging)|label|logo|box\b|bottle|packshot/i.test(n);
+                const wantsFace = /portrait|face|character|person|avatar|reference face/i.test(n);
+                const done = wantsProduct ? !!image : wantsFace ? !!(image || avatarId) : true;
+                return (
+                  <p key={n} className="text-[11px] leading-snug text-text-muted">
+                    <span className={done ? "text-[rgba(120,220,150,1)]" : "text-amber-300/70"}>
+                      {done ? "✓" : "○"}
+                    </span>{" "}
+                    {n}
+                  </p>
+                );
+              })}
+            </div>
+          )}
           {error && <p className="text-xs text-accent">{error}</p>}
 
           {/* The stage: phone-frame preview, render theater, and the finished ad */}
