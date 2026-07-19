@@ -3377,28 +3377,22 @@ function TimelineStudio() {
                               isFocused ? "border-[rgba(255,77,61,0.45)]" : "border-white/6"
                             }`}
                           >
-                          <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-baseline justify-between gap-2">
                             <p className="text-[12px] font-semibold leading-snug text-text-primary">
+                              {isFocused && (
+                                <span className="mr-1 text-[rgba(255,110,95,1)]" title="this one">●</span>
+                              )}
                               {k + 1}. {a.title}
                             </p>
-                            <span className="flex shrink-0 items-center gap-1.5">
-                              {isFocused && (
-                                <span className="rounded px-1.5 py-0.5 text-[9px] text-[rgba(255,140,130,1)]">
-                                  ● this one
-                                </span>
-                              )}
-                              <span className="seg rounded px-1.5 py-0.5 text-[9px]">{a.pipeline}</span>
+                            <span className="shrink-0 text-[9px] uppercase tracking-wider text-text-muted">
+                              {a.pipeline}
                             </span>
                           </div>
-                          <p className="mt-1 text-[11px] leading-relaxed text-text-muted">{a.why}</p>
+                          <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-text-muted" title={a.why}>{a.why}</p>
                           {!!a.needs_from_user?.length && (
-                            <div className="mt-1.5 flex flex-wrap gap-1">
-                              {a.needs_from_user.map((n) => (
-                                <span key={n} className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] text-amber-300">
-                                  needs: {n}
-                                </span>
-                              ))}
-                            </div>
+                            <p className="mt-1.5 text-[10px] leading-relaxed text-amber-300/60">
+                              needs {a.needs_from_user.join(" · ")}
+                            </p>
                           )}
                           {/* fidelity check: the actual shots that will render —
                               inspect BEFORE firing, catch paraphrased anchors */}
@@ -3406,10 +3400,10 @@ function TimelineStudio() {
                             <details className="mt-1.5" onToggle={(e) => {
                               if ((e.currentTarget as HTMLDetailsElement).open) focusApproach(a, k);
                             }}>
-                              <summary className={`cursor-pointer text-[10px] text-text-muted hover:text-text-secondary ${focusRing}`}>
-                                🎞 view the {a.segments?.length || a.shots?.length} shots
+                              <summary className={`cursor-pointer list-none text-[10px] text-text-muted hover:text-text-secondary ${focusRing}`}>
+                                {a.segments?.length || a.shots?.length} shots — tap to read or edit
                               </summary>
-                              <ol className="mt-1.5 max-h-64 space-y-1.5 overflow-y-auto pr-1">
+                              <ol className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1">
                                 {(a.segments?.length
                                   ? a.segments.map((s) => ({
                                       tag: s.pipeline, prompt: s.prompt, script: s.script,
@@ -3440,7 +3434,7 @@ function TimelineStudio() {
                                           });
                                         }
                                       }}
-                                      className={`w-full resize-y rounded border border-white/6 bg-black/20 px-1.5 py-1 text-[10px] leading-relaxed text-text-secondary ${focusRing}`}
+                                      className={`w-full resize-y rounded bg-transparent px-1.5 py-1 text-[10px] leading-relaxed text-text-secondary transition-colors hover:bg-white/[0.03] focus:bg-black/25 ${focusRing}`}
                                     />
                                     {s.script !== undefined && (
                                       <textarea
@@ -3454,7 +3448,7 @@ function TimelineStudio() {
                                             segments: a.segments.map((x, xi) => (xi === si ? { ...x, script: v } : x)),
                                           });
                                         }}
-                                        className={`mt-1 w-full resize-y rounded border border-white/6 bg-black/20 px-1.5 py-1 text-[10px] leading-relaxed text-teal-300/80 ${focusRing}`}
+                                        className={`mt-0.5 w-full resize-y rounded bg-transparent px-1.5 py-1 text-[10px] leading-relaxed text-teal-300/70 transition-colors hover:bg-white/[0.03] focus:bg-black/25 ${focusRing}`}
                                       />
                                     )}
                                   </li>
@@ -3475,7 +3469,7 @@ function TimelineStudio() {
                                       const v = e.target.value;
                                       if (v !== (a.narration_script ?? "")) updateApproach(i, k, { narration_script: v });
                                     }}
-                                    className={`w-full resize-y rounded border border-white/6 bg-black/20 px-1.5 py-1 text-[10px] leading-relaxed text-text-secondary ${focusRing}`}
+                                    className={`w-full resize-y rounded bg-transparent px-1.5 py-1 text-[10px] leading-relaxed text-text-secondary transition-colors hover:bg-white/[0.03] focus:bg-black/25 ${focusRing}`}
                                   />
                                 </div>
                               )}
@@ -3711,7 +3705,10 @@ function TimelineStudio() {
                         ? "ml-auto max-w-[88%] rounded-2xl bg-[rgba(255,77,61,0.10)] px-3 py-2 text-text-primary"
                         : m.text.startsWith("⚠")
                           ? "max-w-[94%] px-0.5 font-display text-[11px] text-amber-400/90"
-                          : "max-w-[94%] px-0.5 font-display text-text-secondary"
+                          : /^(❌|Error:)/.test(m.text)
+                            // failures read as failures instead of floating as prose
+                            ? "max-w-[94%] rounded-lg border-l-2 border-red-400/50 bg-red-400/5 px-2.5 py-1.5 font-display text-[11px] text-red-300/90"
+                            : "max-w-[94%] px-0.5 font-display text-text-secondary"
                     }`}
                   >
                     {m.role === "assistant"
