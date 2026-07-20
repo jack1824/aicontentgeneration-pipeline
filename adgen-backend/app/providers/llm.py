@@ -673,6 +673,193 @@ def _enforce_verbatim(proposals: dict, script: str) -> None:
             ap["narration_script"] = script
 
 
+EPISODE_PROMPT = """\
+You are the SHOT PLANNER of an episodic AD studio. A "Show" is a locked template:
+a fixed CAST (named characters with verbatim look-anchors), fixed ROOMS (named
+environments), and a fixed LOOK. Every episode reuses all of that unchanged — the
+ONLY new thing is the script. Your job: break ONE episode's script into a sequence
+of short BEATS (shots), each 3-6 seconds, that a video pipeline will render.
+
+Hard rules:
+* VERBATIM SCRIPT. The spoken words are the user's, already written. Split them
+  across the beats' `line` fields IN ORDER — every word appears exactly once,
+  none added, dropped, translated, reordered or "improved".
+* CAST BY NAME. When a character speaks, `speaker` MUST be one of the given cast
+  names, spelled exactly. Never invent a character.
+* ROOMS BY NAME. `room` MUST be one of the given room names, spelled exactly (or
+  null only if truly locationless). Keep a scene in ONE room across its beats.
+* DIALOGUE IS CUT, NOT COMPOSITED. Two people talking = shot / reverse-shot:
+  separate beats, one speaker each, alternating, with gaze direction in `action`
+  ("looking camera-right" vs "camera-left") so the cuts obey the 180-degree line.
+  Never put two people speaking in one beat.
+* IDENTITY BEATS ARE CLOSE/MID. Put a speaking or emotional beat at "close-up" or
+  "mid"; reserve "wide" for establishing the room (faces small, the ROOM carries
+  the shot). This is where identity holds best.
+
+Beat types: "speak" (a character delivers a line), "wide" (establishing the room),
+"action" (a character does something, may carry VO), "broll" (object/detail/insert).
+
+Return STRICT JSON only:
+{"beats": [
+  {"type":"speak"|"wide"|"action"|"broll",
+   "speaker": "<cast name>"|null,
+   "room": "<room name>"|null,
+   "line": "<the exact spoken words for THIS beat, or \\"\\" if silent>",
+   "action": "<what we SEE: blocking, gaze direction, camera move — no dialogue here>",
+   "camera": "close-up"|"mid"|"wide",
+   "duration_s": <number 3-6>}
+]}
+Order the beats as the episode plays. Aim for ~one beat per 4-5s of speech."""
+
+
+def plan_episode(script: str, cast: list[dict], rooms: list[dict],
+                 language: str = "hi", style: str = "") -> dict:
+    """Split ONE episode's script into typed beats for a locked Show.
+
+    `cast`  = [{name, anchor}]  the show's characters (names the planner must use).
+    `rooms` = [{name, anchor}]  the show's environments.
+    `style` = free text ("2D flat-vector cartoon", "photoreal") folded into the brief
+              so beats read for the show's art direction; identity/engine routing is
+              decided by the compiler, not here.
+
+    Returns {beats: [...], spoken_s, target_beats}. The word-for-word guarantee is
+    enforced in code afterwards, exactly like /plan's verbatim mode.
+    """
+    if not script or not script.strip():
+        raise PlanError("plan_episode needs a script")
+    spoken = spoken_seconds(script, language)
+    target = max(2, round(spoken / 4.5))
+    cast_lines = "\n".join(f'- {c["name"]}: "{c.get("anchor", "")}"' for c in cast) \
+        or "- (no named cast — narration/VO show)"
+    room_lines = "\n".join(f'- {r["name"]}: "{r.get("anchor", "")}"' for r in rooms) \
+        or "- (no fixed rooms)"
+    user_msg = (
+        f"Narration language: {language}\n"
+        f"Art style (for the pictures): {style or 'as the show defines'}\n\n"
+        f"CAST (use these names exactly):\n{cast_lines}\n\n"
+        f"ROOMS (use these names exactly):\n{room_lines}\n\n"
+        f"=== THE EPISODE SCRIPT — REPRODUCE THE WORDS EXACTLY ===\n{script.strip()}\n"
+        f"=== END OF SCRIPT ===\n"
+        f"This speaks for about {spoken}s, so plan roughly {target} beats (~4-5s each). "
+        f"Size the episode to the SCRIPT — the words are fixed, the beat count flexes."
+    )
+    out = _gemini_json(EPISODE_PROMPT, user_msg, temperature=0.3, require="beats")
+    beats = out.get("beats") or []
+    if not beats:
+        raise PlanError("planner returned no beats")
+    _clamp_episode_beats(beats, cast, rooms)
+    _enforce_episode_verbatim(beats, script.strip())
+    return {"beats": beats, "spoken_s": spoken, "target_beats": target}
+
+
+_BEAT_TYPES = {"speak", "wide", "action", "broll"}
+_BEAT_CAMERAS = {"close-up", "mid", "wide"}
+
+
+def _clamp_episode_beats(beats: list[dict], cast: list[dict], rooms: list[dict]) -> None:
+    """Snap model output back onto the show's vocabulary: known type/camera values,
+    cast/room names that actually exist, sane durations. A hallucinated speaker or
+    room would break identity injection at render time, so we null it rather than
+    trust it."""
+    cast_names = {c["name"] for c in cast}
+    room_names = {r["name"] for r in rooms}
+    for b in beats:
+        b["type"] = b.get("type") if b.get("type") in _BEAT_TYPES else "action"
+        b["camera"] = b.get("camera") if b.get("camera") in _BEAT_CAMERAS else "mid"
+        sp = b.get("speaker")
+        b["speaker"] = sp if sp in cast_names else None
+        rm = b.get("room")
+        b["room"] = rm if rm in room_names else None
+        try:
+            b["duration_s"] = min(6.0, max(3.0, float(b.get("duration_s") or 5.0)))
+        except (TypeError, ValueError):
+            b["duration_s"] = 5.0
+        b["line"] = (b.get("line") or "").strip()
+        b["action"] = (b.get("action") or "").strip()
+
+
+def _enforce_episode_verbatim(beats: list[dict], script: str) -> None:
+    """Same guarantee as /plan: the user's words survive in code, not on trust.
+    Keep the model's split of `line` across beats ONLY if it preserved the words;
+    if it dropped/invented more than 15%, re-split the original evenly across the
+    beats so nothing spoken is lost."""
+    original = _words(script)
+    if not original:
+        return
+    lowered = [w.lower() for w in original]
+    got = [w.lower() for b in beats for w in _words(b.get("line") or "")]
+    kept = sum(1 for w in lowered if w in got)
+    if kept >= 0.85 * len(lowered):
+        return  # the model's split preserved the words — leave its phrasing
+    per = max(1, -(-len(original) // len(beats)))  # ceil
+    for i, b in enumerate(beats):
+        b["line"] = " ".join(original[i * per:(i + 1) * per])
+
+
+DRAFT_SHOW_PROMPT = """\
+You design a reusable SHOW template for an episodic ad series (Indian SMB ads,
+English + Hindi). The user describes their show in one line; you STRUCTURE their
+description into a locked-once template — you are organizing THEIR idea, not
+inventing a new one. Every episode will reuse this cast, these rooms and this look
+unchanged, so write them to be RE-USED across many scripts.
+
+Produce, from the brief:
+* CAST — the recurring characters (usually 1-3). Each gets a `name` and a verbatim
+  `anchor`: a ~20-word physical description the pipeline pastes WORD-FOR-WORD into
+  every shot to keep the same actor across cuts and episodes. The anchor must be
+  concrete and fixed: age, face, skin tone, hair, and EXACT clothing with colors.
+  Casting rule: every character is INDIAN unless the brief clearly says otherwise.
+* ROOMS — the recurring places (usually 1-3). Each gets a `name` and a verbatim
+  `anchor`: a ~20-word setting description — the space, its light, its palette,
+  key furnishings. Indian settings unless the brief says otherwise.
+* LOOK — `style` (the art direction, e.g. "warm 2D storybook cartoon", "photoreal
+  documentary", "3D Pixar-style"; take it from the brief — cartoon if they ask for
+  cartoon), `grade` (color mood in a few words), and `negative` (a short comma list
+  of what to avoid, e.g. "blurry, deformed, extra fingers, warped face").
+* A short `name` for the show.
+* 2-3 one-line `episode_ideas` — examples of episodes this template could make, so
+  the user sees what it's for. (Ideas only — the user always writes the real script.)
+
+Return STRICT JSON only:
+{"name": "<short show name>",
+ "cast": [{"name": "<character name>", "anchor": "<~20-word verbatim look>"}],
+ "rooms": [{"name": "<room name>", "anchor": "<~20-word verbatim setting>"}],
+ "look": {"style": "<art direction>", "grade": "<color mood>", "negative": "<avoid list>"},
+ "episode_ideas": ["<one-line idea>", "..."]}
+Write the names/ideas in the user's language; keep anchors in vivid English (the
+image models read English best). Keep it tight — this is a reusable skeleton."""
+
+
+def draft_show(brief: str, language: str = "hi") -> dict:
+    """Turn a one-line show description into a full proposed template (cast +
+    rooms + look). Pod-free (Gemini). The user reviews/edits the cards before
+    anything is saved — this only removes the blank-form typing, it does not
+    lock anything or invent ad scripts."""
+    if not brief or not brief.strip():
+        raise PlanError("draft_show needs a description")
+    user_msg = (
+        f"Show description: {brief.strip()}\n"
+        f"Series language: {language}\n"
+        f"Structure this into a reusable show template (cast, rooms, look)."
+    )
+    out = _gemini_json(DRAFT_SHOW_PROMPT, user_msg, temperature=0.5, require="cast")
+    # Normalize shape so the frontend can trust it.
+    out.setdefault("name", brief.strip()[:60])
+    out.setdefault("cast", [])
+    out.setdefault("rooms", [])
+    out.setdefault("look", {})
+    out.setdefault("episode_ideas", [])
+    for grp in ("cast", "rooms"):
+        out[grp] = [
+            {"name": str(x.get("name", "")).strip()[:64],
+             "anchor": str(x.get("anchor", "")).strip()}
+            for x in (out.get(grp) or []) if x.get("name") and x.get("anchor")
+        ]
+    if not out["cast"] and not out["rooms"]:
+        raise PlanError("draft returned no cast or rooms")
+    return out
+
+
 DIRECTOR_PROMPT = """\
 You are the DIRECTOR'S ASSISTANT of an AI ad studio's timeline editor. The user
 speaks like a director ("cut the first 2 seconds of the voice", "use the other

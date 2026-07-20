@@ -43,6 +43,89 @@ export type Character = {
   created_at: number;
 };
 
+// ---- Show Templates (episodic ads) ----
+
+// A reusable room. Its plates are the stills a keyframe pass composites the cast
+// INTO, so Ep2's classroom matches Ep1's.
+export type Environment = {
+  id: string;
+  name: string;
+  anchor: string;
+  plate_wide: string | null;
+  plate_reverse: string | null;
+  plate_detail: string | null;
+  plate_wide_url: string | null;
+  plate_reverse_url: string | null;
+  plate_detail_url: string | null;
+  primary_plate: string | null;
+  created_at: number;
+};
+
+// The frozen LOOK of a show — the blocks re-applied to every episode's shots.
+export type ShowLook = {
+  character_block?: string;
+  setting_block?: string;
+  look_block?: string;
+  negative?: string;
+  grade?: string;
+  style?: string; // art direction, e.g. "warm 2D storybook cartoon" | "photoreal"
+};
+
+export type ShowGrammar = {
+  language?: string;
+  aspect?: string;
+  quality?: "quality" | "fast";
+  engine?: "ltx" | "smart"; // ltx = cheapest/native-audio; smart = mix Wan for hero beats
+  duration_target?: number;
+  width?: number;
+  height?: number;
+};
+
+// A locked production recipe. status: draft -> validated -> locked (immutable).
+export type Show = {
+  id: string;
+  name: string;
+  character_ids: string[];
+  environment_ids: string[];
+  look: ShowLook;
+  grammar: ShowGrammar;
+  status: "draft" | "validated" | "locked";
+  version: number;
+  parent_id: string | null;
+  calibration: Record<string, unknown>;
+  keyframe_bank: unknown[];
+  created_at: number;
+  locked_at: number | null;
+  cast?: Character[]; // resolved by the backend for the board's asset pane
+  rooms?: Environment[];
+};
+
+// One shot of an episode: type + who + where + the VERBATIM line + timing.
+export type EpisodeBeat = {
+  type: "speak" | "wide" | "action" | "broll";
+  speaker: string | null; // a cast character's name
+  room: string | null; // an environment's name
+  line: string; // the exact spoken words for this beat
+  action: string; // what we SEE (blocking, gaze, camera move)
+  camera: "close-up" | "mid" | "wide";
+  duration_s: number;
+};
+
+export type Episode = {
+  id: string;
+  show_id: string;
+  number: number;
+  title: string;
+  script: string;
+  language: string;
+  beats: EpisodeBeat[];
+  seeds: Record<string, unknown>;
+  outputs: { job_id?: string; final?: string; report?: unknown };
+  adherence: Record<string, unknown>;
+  status: "draft" | "planned" | "rendering" | "done" | "error";
+  created_at: number;
+};
+
 export type GenerateRequest = {
   mode: "overlay" | "lipsync" | "product" | "cinematic" | "longcat" | "ingredients" | "sequence" | "redub";
   shots?: Shot[];
@@ -82,6 +165,28 @@ export type Job = {
   keyframe_paths?: string[]; // keyframe jobs: server paths (feed to sequence segments)
   warnings?: string[]; // accumulating assembly warnings (gaps, tails, overruns)
   sync?: SyncReport; // auto silence analysis of the finished video
+  beats?: EpisodeBeat[]; // episode-plan jobs: the split beats
+  spoken_s?: number; // episode-plan jobs: estimated spoken length
+  draft?: ShowDraft; // show-draft jobs: the brain's proposed template
+};
+
+// The brain's proposed template from a one-line brief (nothing saved yet).
+export type ShowDraft = {
+  name: string;
+  cast: { name: string; anchor: string; voice_id?: string }[];
+  rooms: { name: string; anchor: string }[];
+  look: ShowLook;
+  episode_ideas: string[];
+};
+
+// A generic archetype scaffold — a head start, fully editable.
+export type ShowStarter = {
+  key: string;
+  title: string;
+  blurb: string;
+  cast: { name: string; anchor: string }[];
+  rooms: { name: string; anchor: string }[];
+  look: ShowLook;
 };
 
 // Where the sound lives in a video: audible span, silent lead-in/tail, and any
@@ -571,4 +676,140 @@ export const api = {
   },
   fileUrl: (item: OutputItem) => `${BASE}${item.url}`,
   assetUrl: (url: string) => `${BASE}${url}`,
+
+  // ---- Show Templates: environments ----
+  environments: (): Promise<{ environments: Environment[] }> =>
+    fetch(`${BASE}/environments`).then(jsonOrThrow),
+  createEnvironment: (body: { name: string; anchor: string }): Promise<Environment> =>
+    fetch(`${BASE}/environments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  updateEnvironment: (
+    id: string,
+    body: Partial<{ name: string; anchor: string; plate_wide: string; plate_reverse: string; plate_detail: string }>,
+  ): Promise<Environment> =>
+    fetch(`${BASE}/environments/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  deleteEnvironment: (id: string): Promise<{ ok: boolean }> =>
+    fetch(`${BASE}/environments/${id}`, { method: "DELETE" }).then(jsonOrThrow),
+  // angle: wide | reverse | detail. Async render job (needs pod) — poll the job_id.
+  generateEnvironmentPlate: (id: string, angle: "wide" | "reverse" | "detail" = "wide"): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/environments/${id}/generate-plate?angle=${angle}`, { method: "POST" }).then(jsonOrThrow),
+
+  // ---- Show Templates: shows ----
+  shows: (): Promise<{ shows: Show[] }> => fetch(`${BASE}/shows`).then(jsonOrThrow),
+  show: (id: string): Promise<Show> => fetch(`${BASE}/shows/${id}`).then(jsonOrThrow),
+  createShow: (body: {
+    name: string;
+    character_ids?: string[];
+    environment_ids?: string[];
+    look?: ShowLook;
+    grammar?: ShowGrammar;
+  }): Promise<Show> =>
+    fetch(`${BASE}/shows`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  updateShow: (
+    id: string,
+    body: Partial<{ name: string; character_ids: string[]; environment_ids: string[]; look: ShowLook; grammar: ShowGrammar }>,
+  ): Promise<Show> =>
+    fetch(`${BASE}/shows/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  validateShow: (id: string): Promise<Show> =>
+    fetch(`${BASE}/shows/${id}/validate`, { method: "POST" }).then(jsonOrThrow),
+  lockShow: (id: string): Promise<Show> =>
+    fetch(`${BASE}/shows/${id}/lock`, { method: "POST" }).then(jsonOrThrow),
+  forkShow: (id: string): Promise<Show> =>
+    fetch(`${BASE}/shows/${id}/fork`, { method: "POST" }).then(jsonOrThrow),
+  deleteShow: (id: string): Promise<{ ok: boolean }> =>
+    fetch(`${BASE}/shows/${id}`, { method: "DELETE" }).then(jsonOrThrow),
+  // The brain drafts a whole template from a one-line brief (ASYNC, pod-free).
+  draftShow: async (brief: string, language = "hi"): Promise<ShowDraft> => {
+    const { job_id } = await fetch(`${BASE}/shows/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brief, language }),
+    }).then(jsonOrThrow);
+    for (let i = 0; i < 90; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const j: Job = await fetch(`${BASE}/jobs/${job_id}`).then(jsonOrThrow);
+      if (j.status === "done") {
+        if (j.draft) return j.draft;
+        throw new Error("draft returned nothing");
+      }
+      if (j.status === "error") throw new Error(j.error || "draft failed");
+    }
+    throw new Error("draft timed out");
+  },
+  showStarters: (): Promise<{ starters: ShowStarter[] }> =>
+    fetch(`${BASE}/show-starters`).then(jsonOrThrow),
+  // Create the whole show (cast + rooms + show) from an approved draft/starter.
+  instantiateShow: (body: {
+    name: string;
+    cast: { name: string; anchor: string; voice_id?: string }[];
+    rooms: { name: string; anchor: string }[];
+    look?: ShowLook;
+    grammar?: ShowGrammar;
+  }): Promise<Show> =>
+    fetch(`${BASE}/shows/instantiate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  // One-click: render every missing cast face + room plate (needs pod). Poll job.
+  generateShowAssets: (id: string): Promise<{ job_id: string; faces: number; plates: number }> =>
+    fetch(`${BASE}/shows/${id}/generate-assets`, { method: "POST" }).then(jsonOrThrow),
+
+  // ---- Show Templates: episodes ----
+  episodes: (showId?: string): Promise<{ episodes: Episode[] }> =>
+    fetch(`${BASE}/episodes${showId ? `?show_id=${showId}` : ""}`).then(jsonOrThrow),
+  episode: (id: string): Promise<Episode> => fetch(`${BASE}/episodes/${id}`).then(jsonOrThrow),
+  createEpisode: (body: { show_id: string; title?: string; script?: string; language?: string }): Promise<Episode> =>
+    fetch(`${BASE}/episodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  updateEpisode: (
+    id: string,
+    body: Partial<{ title: string; script: string; language: string; beats: EpisodeBeat[]; status: string }>,
+  ): Promise<Episode> =>
+    fetch(`${BASE}/episodes/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  deleteEpisode: (id: string): Promise<{ ok: boolean }> =>
+    fetch(`${BASE}/episodes/${id}`, { method: "DELETE" }).then(jsonOrThrow),
+  // ASYNC: split the script into beats (pod-free, Gemini). Poll the job for `beats`.
+  planEpisode: async (id: string, script?: string): Promise<{ beats: EpisodeBeat[]; spoken_s: number }> => {
+    const { job_id } = await fetch(`${BASE}/episodes/${id}/plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ script }),
+    }).then(jsonOrThrow);
+    for (let i = 0; i < 90; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const j: Job = await fetch(`${BASE}/jobs/${job_id}`).then(jsonOrThrow);
+      if (j.status === "done") {
+        if (j.beats) return { beats: j.beats, spoken_s: j.spoken_s ?? 0 };
+        throw new Error("planner returned no beats");
+      }
+      if (j.status === "error") throw new Error(j.error || "episode planner failed");
+    }
+    throw new Error("episode planner timed out");
+  },
+  // Compile beats -> sequence render (needs pod). Returns the render job_id.
+  renderEpisode: (id: string): Promise<{ job_id: string; name: string; segments: number }> =>
+    fetch(`${BASE}/episodes/${id}/render`, { method: "POST" }).then(jsonOrThrow),
 };

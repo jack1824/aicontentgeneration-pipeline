@@ -76,6 +76,16 @@ const NAV_GROUPS: { label: string | null; items: NavItem[] }[] = [
         ),
       },
       {
+        href: "/episodes",
+        label: "Episodes",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4.5">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+      {
         href: "/remix",
         label: "Remix",
         icon: (

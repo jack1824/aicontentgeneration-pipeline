@@ -31,7 +31,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import avatars, characters, keyframes, pipeline, postprocess
+from app import (avatars, characters, environments, episodes, keyframes,
+                 pipeline, postprocess, shows, starters)
 from app.assembly import ffmpeg
 from app.config import COMFY_POD_URLS, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 from app.providers import llm
@@ -1715,3 +1716,550 @@ def voice_preview(req: VoicePreviewRequest):
         except Exception as e:
             raise HTTPException(502, f"preview failed: {e}")
     return FileResponse(str(dest), media_type="audio/mpeg")
+
+
+# ====================================================================
+# SHOW TEMPLATES — episodic ads (2026-07-20)
+# A Show = a locked recipe (cast + rooms + look + grammar). An Episode =
+# that Show + a new script. Consistency lives in stored artifacts, not chat
+# memory: the cast's anchors/faces and the rooms' plates are re-injected on
+# every episode so Ep2's teacher/classroom match Ep1's.
+# The identity-keyframe pass (Qwen-Edit composite) + ltx2_i2v lane are the
+# pod-day upgrade; today's compile uses the mechanisms already live —
+# per-segment lipsync from a character's face+voice, brand-lock room plates,
+# and verbatim anchor injection.
+# ====================================================================
+
+# ---- Environments (rooms) ----
+
+class EnvironmentCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    anchor: str = Field(min_length=10, max_length=400)
+    plate_wide: str | None = None
+    plate_reverse: str | None = None
+    plate_detail: str | None = None
+
+
+class EnvironmentUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    anchor: str | None = Field(default=None, min_length=10, max_length=400)
+    plate_wide: str | None = None
+    plate_reverse: str | None = None
+    plate_detail: str | None = None
+
+
+@app.get("/environments")
+def list_environments_endpoint():
+    return {"environments": environments.list_environments()}
+
+
+@app.post("/environments")
+def create_environment_endpoint(req: EnvironmentCreateRequest):
+    for lbl, p in (("plate_wide", req.plate_wide), ("plate_reverse", req.plate_reverse),
+                   ("plate_detail", req.plate_detail)):
+        _check_asset_path(lbl, p)
+    return environments.create_environment(
+        name=req.name, anchor=req.anchor.strip(), plate_wide=req.plate_wide,
+        plate_reverse=req.plate_reverse, plate_detail=req.plate_detail)
+
+
+@app.patch("/environments/{env_id}")
+def update_environment_endpoint(env_id: str, req: EnvironmentUpdateRequest):
+    if environments.get_environment(env_id) is None:
+        raise HTTPException(404, f"unknown environment_id {env_id}")
+    for lbl, p in (("plate_wide", req.plate_wide), ("plate_reverse", req.plate_reverse),
+                   ("plate_detail", req.plate_detail)):
+        _check_asset_path(lbl, p)
+    return environments.update_environment(
+        env_id, name=req.name, anchor=req.anchor and req.anchor.strip(),
+        plate_wide=req.plate_wide, plate_reverse=req.plate_reverse,
+        plate_detail=req.plate_detail)
+
+
+@app.delete("/environments/{env_id}")
+def delete_environment_endpoint(env_id: str):
+    if not environments.delete_environment(env_id):
+        raise HTTPException(404, f"unknown environment_id {env_id}")
+    return {"ok": True}
+
+
+@app.post("/environments/{env_id}/generate-plate")
+def environment_plate_endpoint(env_id: str, angle: str = "wide"):
+    """Render one room plate from the environment's anchor (1-frame Wan still)
+    and attach it as the wide/reverse/detail plate. NEEDS THE POD."""
+    env = environments.get_environment(env_id)
+    if env is None:
+        raise HTTPException(404, f"unknown environment_id {env_id}")
+    if angle not in ("wide", "reverse", "detail"):
+        raise HTTPException(422, "angle must be wide|reverse|detail")
+    job_id = _new_job("generate", f"plate-{env['name']}-{angle}")
+    hint = {"wide": "wide establishing shot of the empty room, no people",
+            "reverse": "reverse angle of the same room, no people",
+            "detail": "close detail insert of the room, no people"}[angle]
+
+    def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+        try:
+            _update(job_id, status="generating", progress=15,
+                    detail=f"rendering {angle} plate (1-frame Wan, 20 steps)")
+            seed = (int(uuid.uuid4().hex[:6], 16) % 900000) + 1
+            environments.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            png = pipeline.generate_scene(
+                f"{env['anchor']}. {hint}", seed=seed,
+                out_stem=f"env-{env_id}-{angle}", on_submit=on_submit)
+            dest = environments.IMAGES_DIR / Path(png).name
+            Path(png).replace(dest)
+            environments.update_environment(env_id, **{f"plate_{angle}": str(dest)})
+            _update(job_id, status="done", progress=100, detail="", video_path=str(dest),
+                    image_url=f"/assets-files/environments/{dest.name}")
+        except JobCancelled:
+            pass
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+# ---- Shows (templates) ----
+
+class ShowCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    character_ids: list[str] = Field(default_factory=list, max_length=6)
+    environment_ids: list[str] = Field(default_factory=list, max_length=8)
+    look: dict = Field(default_factory=dict)      # character/setting/look/negative/grade/style
+    grammar: dict = Field(default_factory=dict)   # language/aspect/quality/engine/duration
+
+
+class ShowUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    character_ids: list[str] | None = None
+    environment_ids: list[str] | None = None
+    look: dict | None = None
+    grammar: dict | None = None
+
+
+def _resolve_show_assets(show: dict) -> dict:
+    """Attach the show's live cast + rooms (fully resolved) for the board's
+    right-hand pane — ids alone can't be rendered as cards."""
+    cast = [c for c in (characters.get_character(cid) for cid in show["character_ids"]) if c]
+    rooms = [e for e in (environments.get_environment(eid) for eid in show["environment_ids"]) if e]
+    return {**show, "cast": cast, "rooms": rooms}
+
+
+@app.get("/shows")
+def list_shows_endpoint():
+    return {"shows": [_resolve_show_assets(s) for s in shows.list_shows()]}
+
+
+@app.get("/shows/{show_id}")
+def get_show_endpoint(show_id: str):
+    show = shows.get_show(show_id)
+    if show is None:
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    return _resolve_show_assets(show)
+
+
+@app.post("/shows")
+def create_show_endpoint(req: ShowCreateRequest):
+    for cid in req.character_ids:
+        if characters.get_character(cid) is None:
+            raise HTTPException(404, f"unknown character_id {cid}")
+    for eid in req.environment_ids:
+        if environments.get_environment(eid) is None:
+            raise HTTPException(404, f"unknown environment_id {eid}")
+    show = shows.create_show(name=req.name, character_ids=req.character_ids,
+                             environment_ids=req.environment_ids, look=req.look,
+                             grammar=req.grammar)
+    return _resolve_show_assets(show)
+
+
+@app.patch("/shows/{show_id}")
+def update_show_endpoint(show_id: str, req: ShowUpdateRequest):
+    show = shows.get_show(show_id)
+    if show is None:
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    if show["status"] == "locked":
+        raise HTTPException(409, "this show is LOCKED — fork a new version to edit "
+                                 "(POST /shows/{id}/fork). Locked shows stay immutable "
+                                 "so shipped episodes remain reproducible.")
+    for cid in (req.character_ids or []):
+        if characters.get_character(cid) is None:
+            raise HTTPException(404, f"unknown character_id {cid}")
+    for eid in (req.environment_ids or []):
+        if environments.get_environment(eid) is None:
+            raise HTTPException(404, f"unknown environment_id {eid}")
+    # Editing a validated show drops it back to draft — the baselines no longer apply.
+    patch = req.model_dump(exclude_none=True)
+    if show["status"] == "validated":
+        patch["status"] = "draft"
+        patch["calibration"] = {}
+    show = shows.update_show(show_id, **patch)
+    return _resolve_show_assets(show)
+
+
+@app.post("/shows/{show_id}/validate")
+def validate_show_endpoint(show_id: str):
+    """Mark a show validated (draft -> validated). The measured lock-time batch
+    lands in `calibration` on pod day; today this is the manual gate."""
+    show = shows.get_show(show_id)
+    if show is None:
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    if not show["character_ids"] and not show["environment_ids"]:
+        raise HTTPException(422, "a show needs at least one character or room before validation")
+    return _resolve_show_assets(shows.set_status(show_id, "validated"))
+
+
+@app.post("/shows/{show_id}/lock")
+def lock_show_endpoint(show_id: str):
+    show = shows.get_show(show_id)
+    if show is None:
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    return _resolve_show_assets(shows.set_status(show_id, "locked"))
+
+
+@app.post("/shows/{show_id}/fork")
+def fork_show_endpoint(show_id: str):
+    """Clone a show into a fresh draft v(n+1) so a locked show can be revised
+    without breaking the episodes already rendered on it."""
+    forked = shows.fork_version(show_id)
+    if forked is None:
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    return _resolve_show_assets(forked)
+
+
+@app.delete("/shows/{show_id}")
+def delete_show_endpoint(show_id: str):
+    if not shows.delete_show(show_id):
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    return {"ok": True}
+
+
+# ---- Show automation: the brain drafts a template, starters, batch assets ----
+
+class ShowDraftRequest(BaseModel):
+    brief: str = Field(min_length=3, max_length=2000)
+    language: str = "hi"
+
+
+@app.post("/shows/draft")
+def draft_show_endpoint(req: ShowDraftRequest):
+    """ASYNC (Gemini, pod-free): turn a one-line show description into a full
+    proposed template — cast + rooms + look + example episode ideas. Nothing is
+    saved; the frontend shows editable cards, then calls /shows/instantiate on
+    approval. Poll GET /jobs/{id} (field `draft`)."""
+    job_id = _new_job("plan", "show draft")
+
+    def run() -> None:
+        try:
+            _update(job_id, status="planning", progress=25, detail="designing the template")
+            result = llm.draft_show(req.brief, language=req.language)
+            _update(job_id, status="done", progress=100, detail="", draft=result)
+        except llm.PlanError as e:
+            _update(job_id, status="error", error=str(e))
+        except Exception as e:
+            traceback.print_exc()
+            _update(job_id, status="error", error=f"draft error ({type(e).__name__}): {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+# NOTE: distinct path (not /shows/starters) so it can't be swallowed by the
+# /shows/{show_id} route matcher.
+@app.get("/show-starters")
+def list_starters_endpoint():
+    """Generic archetype scaffolds — a head start, fully editable. Instantiating
+    one is identical to a brain-drafted or hand-built show."""
+    return {"starters": starters.STARTERS}
+
+
+class ShowInstantiateRequest(BaseModel):
+    """Create a whole show in one call from an approved draft/starter: the cast
+    become characters, the rooms become environments, and the show ties them
+    together as a draft. This is the 'approve' click — no per-asset round trips."""
+    name: str = Field(min_length=1, max_length=80)
+    cast: list[dict] = Field(default_factory=list, max_length=6)      # [{name, anchor, voice_id?}]
+    rooms: list[dict] = Field(default_factory=list, max_length=8)     # [{name, anchor}]
+    look: dict = Field(default_factory=dict)
+    grammar: dict = Field(default_factory=dict)
+
+
+@app.post("/shows/instantiate")
+def instantiate_show_endpoint(req: ShowInstantiateRequest):
+    char_ids: list[str] = []
+    for c in req.cast:
+        name, anchor = str(c.get("name", "")).strip(), str(c.get("anchor", "")).strip()
+        if not name or len(anchor) < 10:
+            continue  # skip incomplete cards rather than fail the whole show
+        ch = characters.create_character(name=name, anchor=anchor,
+                                         voice_id=(c.get("voice_id") or None))
+        char_ids.append(ch["id"])
+    env_ids: list[str] = []
+    for r in req.rooms:
+        name, anchor = str(r.get("name", "")).strip(), str(r.get("anchor", "")).strip()
+        if not name or len(anchor) < 10:
+            continue
+        en = environments.create_environment(name=name, anchor=anchor)
+        env_ids.append(en["id"])
+    show = shows.create_show(name=req.name, character_ids=char_ids,
+                             environment_ids=env_ids, look=req.look, grammar=req.grammar)
+    return _resolve_show_assets(show)
+
+
+@app.post("/shows/{show_id}/generate-assets")
+def generate_show_assets_endpoint(show_id: str):
+    """ONE-CLICK batch: render every MISSING cast face and room plate for a show,
+    in sequence, on the pod. Returns a job_id whose progress narrates each asset;
+    the characters/environments are updated as each finishes. NEEDS THE POD."""
+    show = shows.get_show(show_id)
+    if show is None:
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    cast = [c for c in (characters.get_character(cid) for cid in show["character_ids"]) if c]
+    rooms = [e for e in (environments.get_environment(eid) for eid in show["environment_ids"]) if e]
+    todo_faces = [c for c in cast if not c["face_image"]]
+    todo_plates = [r for r in rooms if not r["primary_plate"]]
+    if not todo_faces and not todo_plates:
+        raise HTTPException(422, "every cast face and room plate already exists")
+    job_id = _new_job("generate", f"assets-{show['name']}")
+    total = len(todo_faces) + len(todo_plates)
+
+    def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+        done = 0
+        try:
+            for c in todo_faces:
+                if JOBS.get(job_id, {}).get("status") == "cancelled":
+                    raise JobCancelled()
+                _update(job_id, status="generating", progress=int(10 + 80 * done / total),
+                        detail=f"portrait: {c['name']}")
+                seed = (int(uuid.uuid4().hex[:6], 16) % 900000) + 1
+                characters.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+                png = pipeline.generate_face(c["anchor"], seed=seed,
+                                             out_stem=f"char-{c['id']}", on_submit=on_submit)
+                dest = characters.IMAGES_DIR / Path(png).name
+                Path(png).replace(dest)
+                characters.update_character(c["id"], face_image=str(dest))
+                done += 1
+            for r in todo_plates:
+                if JOBS.get(job_id, {}).get("status") == "cancelled":
+                    raise JobCancelled()
+                _update(job_id, status="generating", progress=int(10 + 80 * done / total),
+                        detail=f"room plate: {r['name']}")
+                seed = (int(uuid.uuid4().hex[:6], 16) % 900000) + 1
+                environments.IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+                png = pipeline.generate_scene(
+                    f"{r['anchor']}. wide establishing shot of the empty room, no people",
+                    seed=seed, out_stem=f"env-{r['id']}-wide", on_submit=on_submit)
+                dest = environments.IMAGES_DIR / Path(png).name
+                Path(png).replace(dest)
+                environments.update_environment(r["id"], plate_wide=str(dest))
+                done += 1
+            _update(job_id, status="done", progress=100, detail=f"{done} assets ready")
+        except JobCancelled:
+            pass
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id, "faces": len(todo_faces), "plates": len(todo_plates)}
+
+
+# ---- Episodes ----
+
+class EpisodeCreateRequest(BaseModel):
+    show_id: str
+    title: str = Field(default="", max_length=120)
+    script: str = Field(default="", max_length=12000)
+    language: str = "hi"
+
+
+class EpisodeUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
+    script: str | None = Field(default=None, max_length=12000)
+    language: str | None = None
+    beats: list[dict] | None = None
+    status: str | None = None
+
+
+class EpisodePlanRequest(BaseModel):
+    script: str | None = Field(default=None, max_length=12000)  # override the stored script
+
+
+@app.get("/episodes")
+def list_episodes_endpoint(show_id: str | None = None):
+    return {"episodes": episodes.list_episodes(show_id)}
+
+
+@app.get("/episodes/{ep_id}")
+def get_episode_endpoint(ep_id: str):
+    ep = episodes.get_episode(ep_id)
+    if ep is None:
+        raise HTTPException(404, f"unknown episode_id {ep_id}")
+    return ep
+
+
+@app.post("/episodes")
+def create_episode_endpoint(req: EpisodeCreateRequest):
+    if shows.get_show(req.show_id) is None:
+        raise HTTPException(404, f"unknown show_id {req.show_id}")
+    return episodes.create_episode(show_id=req.show_id, title=req.title,
+                                   script=req.script, language=req.language)
+
+
+@app.patch("/episodes/{ep_id}")
+def update_episode_endpoint(ep_id: str, req: EpisodeUpdateRequest):
+    if episodes.get_episode(ep_id) is None:
+        raise HTTPException(404, f"unknown episode_id {ep_id}")
+    return episodes.update_episode(ep_id, **req.model_dump(exclude_none=True))
+
+
+@app.delete("/episodes/{ep_id}")
+def delete_episode_endpoint(ep_id: str):
+    if not episodes.delete_episode(ep_id):
+        raise HTTPException(404, f"unknown episode_id {ep_id}")
+    return {"ok": True}
+
+
+@app.post("/episodes/{ep_id}/plan")
+def plan_episode_endpoint(ep_id: str, req: EpisodePlanRequest):
+    """ASYNC: split the episode's script into typed beats for its Show's cast/rooms.
+    Pod-free (Gemini only). Returns a job_id; poll GET /jobs/{id} (field `beats`).
+    The stored episode is updated with the beats + status=planned when done."""
+    ep = episodes.get_episode(ep_id)
+    if ep is None:
+        raise HTTPException(404, f"unknown episode_id {ep_id}")
+    show = shows.get_show(ep["show_id"])
+    if show is None:
+        raise HTTPException(404, f"episode's show {ep['show_id']} is gone")
+    script = (req.script if req.script is not None else ep["script"]) or ""
+    if not script.strip():
+        raise HTTPException(422, "this episode has no script to plan")
+    cast = [{"name": c["name"], "anchor": c["anchor"]}
+            for c in (characters.get_character(cid) for cid in show["character_ids"]) if c]
+    rooms = [{"name": e["name"], "anchor": e["anchor"]}
+             for e in (environments.get_environment(eid) for eid in show["environment_ids"]) if e]
+    style = (show.get("look") or {}).get("style", "")
+    job_id = _new_job("plan", f"episode {ep['number']} beats")
+
+    def run() -> None:
+        try:
+            _update(job_id, status="planning", progress=25, detail="breaking the script into beats")
+            result = llm.plan_episode(script, cast, rooms, language=ep["language"], style=style)
+            episodes.update_episode(ep_id, script=script, beats=result["beats"], status="planned")
+            _update(job_id, status="done", progress=100, detail="", beats=result["beats"],
+                    spoken_s=result["spoken_s"])
+        except llm.PlanError as e:
+            _update(job_id, status="error", error=str(e))
+        except Exception as e:
+            traceback.print_exc()
+            _update(job_id, status="error", error=f"episode planner error ({type(e).__name__}): {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+def _slug(text: str, fallback: str) -> str:
+    import re as _re
+    s = _re.sub(r"[^a-zA-Z0-9._-]+", "-", (text or "").strip()).strip("-")
+    return s[:40] or fallback
+
+
+def _beat_prompt(beat: dict, speaker: dict | None, room: dict | None, look: dict) -> str:
+    """Assemble one beat's shot prompt from the FROZEN template constants —
+    the speaker's verbatim anchor, the room's verbatim anchor, the beat's own
+    action/camera, and the show's look/grade/style. Verbatim repetition of the
+    anchors is the same-actor / same-room consistency mechanism (inject_cast
+    doctrine), now sourced from the locked Show instead of retyped per ad."""
+    parts: list[str] = []
+    if speaker and speaker.get("anchor"):
+        parts.append(f"Featuring {speaker['anchor']}.")
+    if room and room.get("anchor"):
+        parts.append(room["anchor"])
+    if beat.get("action"):
+        parts.append(beat["action"])
+    cam = beat.get("camera")
+    if cam:
+        parts.append(f"{cam} shot")
+    if look.get("style"):
+        parts.append(look["style"])
+    if look.get("look_block"):
+        parts.append(look["look_block"])
+    if look.get("grade"):
+        parts.append(look["grade"])
+    return " ".join(p.strip().rstrip(".") + "." for p in parts if p and p.strip())
+
+
+def _compile_episode_segments(show: dict, ep: dict) -> list[dict]:
+    """Turn approved beats into sequence segments the existing pipeline renders.
+
+    Today's routing (pod-day adds the Qwen-Edit keyframe pass + ltx2_i2v lane):
+      * a SPEAK beat whose character has a saved face -> lipsync (that face + voice
+        deliver the exact line);
+      * any other beat in a room WITH a plate -> cinematic brand-lock (the plate
+        locks the room, LTX native audio carries any VO line);
+      * otherwise -> cinematic from the assembled prompt.
+    Verbatim `line` becomes the segment script; the frozen negative rides along.
+    """
+    look = show.get("look") or {}
+    negative = look.get("negative") or None
+    by_name_char = {c["name"]: c for c in
+                    (characters.get_character(cid) for cid in show["character_ids"]) if c}
+    by_name_room = {e["name"]: e for e in
+                    (environments.get_environment(eid) for eid in show["environment_ids"]) if e}
+    segments: list[dict] = []
+    for beat in ep.get("beats") or []:
+        speaker = by_name_char.get(beat.get("speaker") or "")
+        room = by_name_room.get(beat.get("room") or "")
+        prompt = _beat_prompt(beat, speaker, room, look) or "cinematic advertisement shot."
+        line = (beat.get("line") or "").strip() or None
+        if beat.get("type") == "speak" and speaker and speaker.get("face_image"):
+            seg = {"pipeline": "lipsync", "prompt": prompt, "negative_prompt": negative,
+                   "script": line or "", "image": speaker["face_image"],
+                   "voice_id": speaker.get("voice_id")}
+        elif room and room.get("primary_plate"):
+            seg = {"pipeline": "cinematic", "prompt": prompt, "negative_prompt": negative,
+                   "script": line, "image": room["primary_plate"],
+                   "image_description": room["anchor"],
+                   "voice_id": speaker.get("voice_id") if speaker else None}
+        else:
+            seg = {"pipeline": "cinematic", "prompt": prompt, "negative_prompt": negative,
+                   "script": line,
+                   "voice_id": speaker.get("voice_id") if speaker else None}
+        segments.append(seg)
+    return segments
+
+
+@app.post("/episodes/{ep_id}/render")
+def render_episode_endpoint(ep_id: str):
+    """Compile the episode's approved beats into a sequence render and fire it
+    through the existing pipeline. NEEDS THE POD. Returns the render job_id;
+    the frontend polls it and PATCHes the episode's output when done."""
+    ep = episodes.get_episode(ep_id)
+    if ep is None:
+        raise HTTPException(404, f"unknown episode_id {ep_id}")
+    if not ep.get("beats"):
+        raise HTTPException(422, "plan this episode into beats before rendering "
+                                 "(POST /episodes/{id}/plan)")
+    show = shows.get_show(ep["show_id"])
+    if show is None:
+        raise HTTPException(404, f"episode's show {ep['show_id']} is gone")
+    segments = _compile_episode_segments(show, ep)
+    if not segments:
+        raise HTTPException(422, "no renderable beats")
+    grammar = show.get("grammar") or {}
+    name = f"ep{ep['number']}-{_slug(show['name'], show['id'])}"
+    gen = GenerateRequest(
+        mode="sequence", segments=[Segment(**s) for s in segments],
+        language=ep["language"], name=name,
+        quality=grammar.get("quality", "quality"),
+        width=grammar.get("width"), height=grammar.get("height"),
+    )
+    result = generate_endpoint(gen)  # reuses all validation + cast/avatar resolution + sync
+    episodes.update_episode(ep_id, status="rendering",
+                            outputs={**(ep.get("outputs") or {}), "job_id": result["job_id"]})
+    return {"job_id": result["job_id"], "name": name, "segments": len(segments)}
