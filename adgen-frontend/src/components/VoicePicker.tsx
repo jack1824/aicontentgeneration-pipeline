@@ -1,12 +1,15 @@
 "use client";
 
-// One voice picker for the whole app. Free-tier honest: ElevenLabs blocks
-// LIBRARY voices via API on the free plan, so we default to premade voices
-// ("plan-safe") and keep a toggle for the rest once the paid plan is active.
-// Facets: gender chips; every voice has an inline ▶ preview.
+// One voice picker for the whole app. On the paid ElevenLabs plan every voice
+// is reachable (premade + professional/library), so we show them ALL and let
+// the user filter by language and gender. The language facet defaults to the
+// surface's own language (a Hindi ad opens on the Hindi voices). Every voice
+// has an inline ▶ preview.
 
 import { useMemo, useState } from "react";
 import { api, Voice } from "@/lib/api";
+
+const LANG_LABEL: Record<string, string> = { hi: "हिन्दी", en: "English" };
 
 export default function VoicePicker({
   voices,
@@ -22,20 +25,29 @@ export default function VoicePicker({
   onPreviewingChange?: (playing: boolean) => void;
 }) {
   const [gender, setGender] = useState<"all" | "female" | "male">("all");
-  const [showLibrary, setShowLibrary] = useState(false);
   const [playing, setPlaying] = useState<string | null>(null);
+
+  // Languages actually present in the roster (so we never show a dead filter).
+  const langs = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of voices) {
+      const l = (v.labels?.language ?? "").slice(0, 2);
+      if (l) s.add(l);
+    }
+    return [...s];
+  }, [voices]);
+
+  // Default the language filter to this surface's language if that language has
+  // voices — otherwise show all (never strand the user on an empty list).
+  const wanted = (language || "").slice(0, 2);
+  const [lang, setLang] = useState<string>(langs.includes(wanted) ? wanted : "all");
 
   const list = useMemo(() => {
     let l = voices;
-    if (!showLibrary) {
-      const premade = voices.filter((v) => v.category === "premade");
-      if (premade.length > 0) l = premade;
-    }
-    if (gender !== "all") {
-      l = l.filter((v) => (v.labels?.gender ?? "").toLowerCase() === gender);
-    }
+    if (lang !== "all") l = l.filter((v) => (v.labels?.language ?? "").slice(0, 2) === lang);
+    if (gender !== "all") l = l.filter((v) => (v.labels?.gender ?? "").toLowerCase() === gender);
     return l;
-  }, [voices, gender, showLibrary]);
+  }, [voices, gender, lang]);
 
   const preview = async (id: string) => {
     if (playing) return;
@@ -71,7 +83,7 @@ export default function VoicePicker({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         {(["all", "female", "male"] as const).map((g) => (
           <button
             key={g}
@@ -81,13 +93,25 @@ export default function VoicePicker({
             {g === "all" ? "All" : g}
           </button>
         ))}
-        <button
-          onClick={() => setShowLibrary((s) => !s)}
-          title="Library voices need the paid ElevenLabs plan — premade voices always work"
-          className={`ml-auto rounded-btn px-2.5 py-1 text-[10px] ${showLibrary ? "seg-on" : "seg"}`}
-        >
-          {showLibrary ? "showing all voices" : "plan-safe voices"}
-        </button>
+        {langs.length > 1 && (
+          <span className="ml-auto flex items-center gap-1.5">
+            <button
+              onClick={() => setLang("all")}
+              className={`rounded-btn px-2.5 py-1 text-[10px] ${lang === "all" ? "seg-on" : "seg"}`}
+            >
+              All langs
+            </button>
+            {langs.map((l) => (
+              <button
+                key={l}
+                onClick={() => setLang(l)}
+                className={`rounded-btn px-2.5 py-1 text-[10px] ${lang === l ? "seg-on" : "seg"}`}
+              >
+                {LANG_LABEL[l] ?? l.toUpperCase()}
+              </button>
+            ))}
+          </span>
+        )}
       </div>
 
       <div className="flex max-h-28 flex-wrap content-start gap-1.5 overflow-y-auto pr-1">

@@ -22,6 +22,13 @@ import {
   ShowStarter,
   Voice,
 } from "@/lib/api";
+import VoicePicker from "@/components/VoicePicker";
+
+// Resolve a stored voice_id to its display name (for the cast panel).
+function voiceName(voices: Voice[], id: string | null | undefined): string {
+  if (!id) return "no voice";
+  return voices.find((v) => v.voice_id === id)?.name.split(" - ")[0] ?? "custom voice";
+}
 
 const BEAT_TYPES: EpisodeBeat["type"][] = ["speak", "wide", "action", "broll"];
 const CAMERAS: EpisodeBeat["camera"][] = ["close-up", "mid", "wide"];
@@ -184,6 +191,7 @@ export default function EpisodesPage() {
         {/* ---- RIGHT: show assets ---- */}
         <AssetsPane
           show={selectedShow}
+          voices={voices}
           onError={setError}
           onAssetsChanged={() => {
             loadShows();
@@ -477,12 +485,18 @@ function EpisodeBoard({
 
       {/* Beat table */}
       {beats.length > 0 && (
-        <BeatTable
-          beats={beats}
-          castNames={castNames}
-          roomNames={roomNames}
-          onChange={saveBeats}
-        />
+        <>
+          <BeatTable
+            beats={beats}
+            castNames={castNames}
+            roomNames={roomNames}
+            onChange={saveBeats}
+          />
+          <p className="text-[10px] text-text-muted">
+            🔊 Each speaking beat is voiced by its character&apos;s voice — set or preview it in the
+            cast panel on the right.
+          </p>
+        </>
       )}
 
       {/* Render */}
@@ -662,18 +676,32 @@ function BeatTable({
 // ---------------------------------------------------------------------------
 function AssetsPane({
   show,
+  voices,
   onError,
   onAssetsChanged,
 }: {
   show: Show | null;
+  voices: Voice[];
   onError: (e: string) => void;
   onAssetsChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [gen, setGen] = useState<string | null>(null);
   const [batch, setBatch] = useState<string | null>(null);
+  const [voiceEditId, setVoiceEditId] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  // Set/change a cast member's voice — it flows to every one of their speaking
+  // beats automatically (the episode compiler reads speaker.voice_id).
+  const setVoice = async (charId: string, voiceId: string) => {
+    try {
+      await api.updateCharacter(charId, { voice_id: voiceId });
+      onAssetsChanged();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
 
   if (!show) {
     return (
@@ -784,24 +812,43 @@ function AssetsPane({
         </button>
       )}
 
-      {/* Cast */}
+      {/* Cast — each member's voice is choosable + previewable here */}
       <div className="flex flex-col gap-1.5">
         <span className="text-[10px] uppercase text-text-muted">Cast</span>
         {(show.cast ?? []).length === 0 && <p className="text-xs text-text-muted">no cast</p>}
         {(show.cast ?? []).map((c) => (
-          <div key={c.id} className="flex items-center gap-2 rounded-btn bg-surface-2 p-1.5">
-            {c.image_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={api.assetUrl(c.image_url)} alt={c.name} className="size-8 shrink-0 rounded-full object-cover ring-1 ring-white/10" />
-            ) : (
-              <div className="grid size-8 shrink-0 place-items-center rounded-full bg-surface-3 text-[10px] text-text-muted">?</div>
-            )}
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium">{c.name}</p>
-              <p className="truncate text-[10px] text-text-muted">
-                {c.face_image ? "face ✓" : "no face"} · {c.voice_id ? "voice ✓" : "no voice"}
-              </p>
+          <div key={c.id} className="flex flex-col gap-1.5 rounded-btn bg-surface-2 p-1.5">
+            <div className="flex items-center gap-2">
+              {c.image_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={api.assetUrl(c.image_url)} alt={c.name} className="size-8 shrink-0 rounded-full object-cover ring-1 ring-white/10" />
+              ) : (
+                <div className="grid size-8 shrink-0 place-items-center rounded-full bg-surface-3 text-[10px] text-text-muted">?</div>
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium">{c.name}</p>
+                <p className="truncate text-[10px] text-text-muted">
+                  {c.face_image ? "face ✓" : "no face"} · 🔊 {voiceName(voices, c.voice_id)}
+                </p>
+              </div>
+              <button
+                onClick={() => setVoiceEditId((id) => (id === c.id ? null : c.id))}
+                className="shrink-0 rounded px-1.5 py-1 text-[10px] text-text-muted hover:text-text-primary"
+                title="Choose this character's voice"
+              >
+                {voiceEditId === c.id ? "✕" : "voice"}
+              </button>
             </div>
+            {voiceEditId === c.id && (
+              <div className="border-t border-white/5 pt-1.5">
+                <VoicePicker
+                  voices={voices}
+                  value={c.voice_id ?? ""}
+                  language={show.grammar.language ?? "hi"}
+                  onChange={(id) => setVoice(c.id, id)}
+                />
+              </div>
+            )}
           </div>
         ))}
       </div>
