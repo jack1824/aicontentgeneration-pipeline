@@ -470,7 +470,7 @@
       ],
       "normalize_loudness": true,
       "num_frames": 1000,
-      "fps": 32,
+      "fps": 16,
       "audio_scale": 1,
       "audio_cfg_scale": 2,
       "multi_audio_type": "para",
@@ -513,7 +513,7 @@
       "base_precision": "bf16",
       "quantization": "fp8_e4m3fn",
       "load_device": "offload_device",
-      "attention_mode": "sageattn",
+      "attention_mode": "sdpa",
       "rms_norm_function": "default"
     }
   },

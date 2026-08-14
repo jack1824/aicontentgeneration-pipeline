@@ -223,6 +223,167 @@ def derive_keyframe(scene: str, out_path: str, character_image: str | None = Non
     return _derive_keyframe_gemini(scene, out_path, character_image, product_image)
 
 
+# --- Character-into-room composite (episode background lock, 2026-08-08) ------
+# Wan S2V animates its ref_image as the WHOLE frame, so a bare face portrait lets
+# it reinvent the backdrop every take (the shop drifts between cuts). Compositing
+# the EXACT character into the EXACT room plate FIRST — plate as image1 so the
+# output inherits the room's aspect (the S2V frame) — hands S2V a full-scene
+# reference: same room, same person, every beat. Identity + background locked in
+# image space, exactly the stills-first doctrine this module is built on.
+_COMPOSITE_TEMPLATE = """\
+Create ONE {realism} keyframe for a video ad shot.
+
+Reference image 1: the ROOM/SET — reuse this exact environment: same shelves, props, colours and lighting.
+Reference image 2: {subject_desc}
+
+SCENE FOR THIS KEYFRAME: {place_line} inside the room from reference image 1, {framing}, as if actually filmed standing there and looking toward the camera, ready to speak.
+
+STRICT RULES:
+- {identity_rule}
+- The room's layout, shelves, products, colours and lighting stay IDENTICAL to reference image 1 — do not redraw or restyle the environment.
+- {count_rule}
+- {style_line}
+- No borders, no split panels, no text overlays, no watermark; clean composition with headroom for a talking shot."""
+
+# One or two people composited from the SAME reference — a two-person still composites
+# BOTH characters into the scene so a both-in-frame ad animates ONE locked keyframe
+# every beat (identity + background locked, no take-to-take drift).
+_COMPOSITE_PEOPLE = {
+    "one": {
+        "subject_desc": "the PERSON — reuse this exact person: same face, hairstyle and clothing.",
+        "place_line": "Place the person from reference image 2 naturally",
+        "identity_rule": ("The person's face, hairstyle and every garment stay IDENTICAL to "
+                          "reference image 2 — same colours, same fabrics, nothing added or removed."),
+        "count_rule": "Exactly ONE person, upper body clearly visible, natural eyeline to camera.",
+    },
+    "two": {
+        "subject_desc": ("the TWO PEOPLE — reuse these exact people: same faces, hairstyles and "
+                         "clothing, keeping the same left/right arrangement."),
+        "place_line": "Place BOTH people from reference image 2 naturally, side by side,",
+        "identity_rule": ("Each person's face, hairstyle and every garment stay IDENTICAL to "
+                          "reference image 2 — same colours, same fabrics, nothing added or removed, "
+                          "and keep them in the same left/right positions."),
+        "count_rule": ("BOTH people clearly visible, side by side, upper bodies in frame, both "
+                       "facing toward the camera."),
+    },
+}
+
+# The looks the client asked for. realistic = photoreal ad; animated = full 2D cartoon;
+# cartoon_real = the mixed brief — a REAL photographic background with CARTOON characters
+# in it. Each look must NOT ban its own style in the negative, or the edit fights the brief.
+_COMPOSITE_STYLE = {
+    "realistic": {
+        "realism": "photorealistic",
+        "style_line": "Photorealistic advertising photography: sharp focus, natural light logic.",
+        "negative": _KEYFRAME_NEGATIVE,
+    },
+    "animated": {
+        "realism": "2D animated, stylized cartoon-illustration",
+        "style_line": ("Flat 2D animated cartoon-illustration look, clean line art, bright "
+                       "cel shading — deliberately NOT photographic."),
+        "negative": ("photorealistic, photograph, realistic skin pores, 3D render, split "
+                     "panels, collage, borders, text, watermark, blurry, low quality"),
+    },
+    "cartoon_real": {
+        "realism": "mixed-media (photorealistic background + cartoon characters)",
+        "style_line": ("Render the PEOPLE as lively 2D/3D cartoon characters — stylised, clean, "
+                       "expressive — while keeping their faces, hairstyles and clothing clearly "
+                       "recognisable; keep the ROOM/background exactly as the PHOTOREALISTIC "
+                       "reference (a real-photo backdrop with cartoon characters standing in it). "
+                       "The contrast is intentional: real place, cartoon cast."),
+        "negative": ("photorealistic people, realistic human skin pores on the characters, "
+                     "cartoon background, flattened illustrated backdrop, split panels, collage, "
+                     "borders, text, watermark, blurry, low quality"),
+    },
+}
+
+
+def composite_into_scene(character_image: str, plate_image: str, out_path: str,
+                         framing: str = "medium shot, upper body in frame",
+                         style: str = "realistic", people: str = "one",
+                         seed: int | None = None, on_submit=None) -> str:
+    """Composite an EXACT character (or a two-person still, people="two") into an
+    EXACT room plate -> one locked keyframe the S2V lane animates, pinning identity +
+    background across cuts. image1 = the PLATE (output inherits the room aspect = the
+    S2V frame), image2 = the character/two-person still.
+    `style` picks the look (realistic | animated | cartoon_real = real bg + cartoon cast).
+    Pod Qwen-Image-Edit first; Gemini image API as the pod-less fallback."""
+    if not character_image or not plate_image:
+        raise ValueError("composite needs both a character image and a room plate")
+    conf = _COMPOSITE_STYLE.get(style, _COMPOSITE_STYLE["realistic"])
+    who = _COMPOSITE_PEOPLE.get(people, _COMPOSITE_PEOPLE["one"])
+    prompt = _COMPOSITE_TEMPLATE.format(realism=conf["realism"], framing=framing,
+                                        style_line=conf["style_line"], **who)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    pod = _pod()
+    if pod:
+        wf = copy.deepcopy(comfy.load_workflow("qwen_image_edit"))
+        inputs = {
+            "prompt": prompt,
+            "negative_prompt": conf["negative"],
+            "seed": seed if seed is not None else random.randint(1, 2**31),
+            # plate = image1 (drives output size/aspect), character = image2
+            "image1": comfy.upload_file(
+                pod, plate_image,
+                remote_name=f"kf-{uuid.uuid4().hex[:8]}-1{Path(plate_image).suffix}"),
+            "image2": comfy.upload_file(
+                pod, character_image,
+                remote_name=f"kf-{uuid.uuid4().hex[:8]}-2{Path(character_image).suffix}"),
+        }
+        tmp_png = str(Path(out_path).with_suffix(".tmp.png"))
+        try:
+            comfy.comfy_generate(pod, wf, inputs, QWEN_EDIT_MAPPING,
+                                 out_path=tmp_png, timeout=600, on_submit=on_submit)
+            Path(tmp_png).replace(out_path)
+        finally:
+            Path(tmp_png).unlink(missing_ok=True)
+        return str(out_path)
+    return _composite_into_scene_gemini(character_image, plate_image, out_path,
+                                        prompt, conf["negative"])
+
+
+def _composite_into_scene_gemini(character_image: str, plate_image: str, out_path: str,
+                                 prompt: str, negative: str) -> str:
+    """API fallback for the room composite (image1 = plate, image2 = person)."""
+    key = QC_GEMINI_API_KEY or GEMINI_API_KEY
+    if not key:
+        raise RuntimeError("no pod reachable and no Gemini API key for keyframe composite")
+    body = {
+        "contents": [{"role": "user", "parts": [
+            {"text": prompt + f"\n\nAvoid: {negative}"},
+            _img_part(plate_image), _img_part(character_image),
+        ]}],
+        "generationConfig": {"responseModalities": ["IMAGE"]},
+    }
+    last = ""
+    for attempt in range(3):
+        try:
+            r = httpx.post(_URL.format(model=KEYFRAME_MODEL),
+                           headers={"x-goog-api-key": key}, json=body, timeout=120)
+            r.raise_for_status()
+            for part in r.json()["candidates"][0]["content"]["parts"]:
+                blob = part.get("inlineData") or part.get("inline_data")
+                if blob and blob.get("data"):
+                    out = Path(out_path)
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_bytes(base64.b64decode(blob["data"]))
+                    return str(out)
+            last = "response contained no image part"
+        except httpx.HTTPStatusError as e:
+            last = f"{e.response.status_code}: {e.response.text[:300]}"
+            if e.response.status_code == 429:
+                m = re.search(r"retry in ([0-9.]+)s", e.response.text)
+                time.sleep(min(float(m.group(1)) + 1.0 if m else 20.0, 40.0))
+                continue
+            if e.response.status_code not in (500, 503):
+                break
+            time.sleep(2 * (attempt + 1))
+        except (httpx.HTTPError, KeyError, IndexError) as e:
+            last = str(e)
+            time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"keyframe composite failed: {last}")
+
+
 def derive_set(scenes: list[str], name: str, character_image: str | None,
                product_image: str | None, on_progress=None) -> list[str]:
     """One keyframe per scene, all conditioned on the SAME references —

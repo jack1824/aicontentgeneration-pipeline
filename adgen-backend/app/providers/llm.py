@@ -566,10 +566,45 @@ def spoken_seconds(script: str, language: str = "en") -> float:
     return round(words / rate + breaths, 1)
 
 
+# Per-MODE director personas. When the user is on a specific mode's surface we force
+# every approach onto that pipeline and put the brain in that director's chair, instead
+# of the generic 3-approach planner that MAY pick the pipeline. This is the "each brain
+# acts in character" seam — the pipeline-specific craft already lives in SYSTEM_PROMPT;
+# these just commit to one lane and lead with its priorities.
+MODE_DIRECTIVES = {
+    "cinematic": (
+        "DIRECTOR MODE — CINEMATIC. You are a cinematic director. ALL 3 approaches MUST "
+        "use pipeline \"cinematic\" (LTX story ad). Think in cohesive scenes with real "
+        "coverage and mood; END every shot prompt with one sentence describing its "
+        "SOUNDSCAPE (ambience/SFX). Do not propose any other pipeline."),
+    "sequence": (
+        "DIRECTOR MODE — SEQUENCE. You are an ad editor cutting a mixed-engine timeline. "
+        "ALL 3 approaches MUST use pipeline \"sequence\" and return a `segments` list — a "
+        "problem→turn→solution→CTA arc across short segments, each with its own pipeline "
+        "(lipsync for talking beats, product/overlay/cinematic for the rest). Do not "
+        "propose a single-pipeline approach."),
+    "product": (
+        "DIRECTOR MODE — PRODUCT. You are a product-film director. ALL 3 approaches MUST "
+        "use pipeline \"product\" (animate the product photo). Vary camera moves and "
+        "lighting (push-in, orbit, rim light, dust, reflections); the photo locks the "
+        "look. Do not propose any other pipeline."),
+    "lipsync": (
+        "DIRECTOR MODE — TALKING AVATAR. You are directing a single spokesperson. ALL 3 "
+        "approaches MUST use pipeline \"lipsync\" (one reference face, audio-first). Write "
+        "the spoken line as the spine; the picture is one held, expressive shot. Do not "
+        "propose any other pipeline."),
+    "overlay": (
+        "DIRECTOR MODE — B-ROLL + VOICEOVER. You are cutting narrated b-roll. ALL 3 "
+        "approaches MUST use pipeline \"overlay\" (silent t2v shots + voiceover on top). "
+        "Design a shot list that illustrates the narration. Do not propose any other "
+        "pipeline."),
+}
+
+
 def plan(idea: str, language: str = "en", ad_format: str = "9:16",
          duration_s: int = 15, avoid: list[str] | None = None,
          cast: list[dict] | None = None, script: str | None = None,
-         verbatim: bool = False) -> dict:
+         verbatim: bool = False, mode: str | None = None) -> dict:
     """Ask Gemini for 3 proposed ad approaches. Returns the parsed proposals dict.
 
     `avoid` carries the titles of directions the user already rejected (the
@@ -578,6 +613,9 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
     shots around them and paste each anchor VERBATIM (the SUBJECT-anchor rule
     the system prompt already teaches, now with a fixed cast instead of an
     invented one).
+    `mode` (optional) locks every approach to one pipeline and puts the brain in
+    that mode's director chair (MODE_DIRECTIVES) — e.g. a cinematic surface plans
+    like a cinematic director instead of the generic auto-router.
     """
     user_msg = (
         f"Ad idea: {idea}\n"
@@ -585,6 +623,8 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
         f"Format: {ad_format}\n"
         f"Target duration: {duration_s} seconds"
     )
+    if mode and mode in MODE_DIRECTIVES:
+        user_msg += f"\n\n{MODE_DIRECTIVES[mode]}"
     if cast:
         lines = "\n".join(f'- {c["name"]}: "{c["anchor"]}"' for c in cast)
         user_msg += (
@@ -750,6 +790,81 @@ def plan_episode(script: str, cast: list[dict], rooms: list[dict],
     _clamp_episode_beats(beats, cast, rooms)
     _enforce_episode_verbatim(beats, script.strip())
     return {"beats": beats, "spoken_s": spoken, "target_beats": target}
+
+
+WRITE_EPISODE_PROMPT = """\
+You are the WRITER-DIRECTOR of an episodic AD studio. A "Show" is a locked template:
+a fixed CAST (named characters with verbatim look-anchors), fixed ROOMS (named
+environments), and a fixed LOOK. The user gives you ONE line — an episode idea. You
+WRITE the whole episode from it: the spoken dialogue AND the shot breakdown, using
+ONLY this show's cast and rooms.
+
+This is an AD. Structure it as HOOK → PROBLEM → TURN → SOLUTION → CTA. Keep it tight
+(about 6-10 beats, ~25-45s). The dialogue must sound natural in the requested
+language and sell the product without feeling like a lecture.
+
+Hard rules:
+* CAST BY NAME. Every speaking beat's `speaker` MUST be one of the given cast names,
+  spelled exactly. Never invent a character. Write to each character's anchor.
+* ROOMS BY NAME. `room` MUST be one of the given room names, spelled exactly (or null
+  if truly locationless). Keep a scene in ONE room across its beats.
+* DIALOGUE IS CUT, NOT COMPOSITED. Two people talking = shot / reverse-shot: separate
+  beats, ONE speaker each, alternating, with gaze direction in `action`. Never put two
+  speakers in one beat.
+* IDENTITY BEATS ARE CLOSE/MID. Speaking/emotional beats are "close-up" or "mid";
+  reserve "wide" for establishing the room.
+* Each `line` is the EXACT words that character speaks in that beat (in the requested
+  language). A non-speaking beat has line "".
+
+Beat types: "speak" (a character delivers a line), "wide" (establishing the room),
+"action" (a character does something, may carry VO), "broll" (object/detail/insert).
+
+Return STRICT JSON only:
+{"beats": [
+  {"type":"speak"|"wide"|"action"|"broll",
+   "speaker": "<cast name>"|null,
+   "room": "<room name>"|null,
+   "line": "<the exact spoken words for THIS beat, or \\"\\" if silent>",
+   "action": "<what we SEE: blocking, gaze direction, camera move — no dialogue here>",
+   "camera": "close-up"|"mid"|"wide",
+   "duration_s": <number 3-6>}
+]}
+Order the beats as the episode plays."""
+
+
+def write_episode(idea: str, cast: list[dict], rooms: list[dict],
+                  language: str = "hi", style: str = "") -> dict:
+    """PROMPT-ONLY episode brain: AUTHOR a full episode (dialogue + beats) from a
+    one-line idea, using the show's locked cast/rooms/style. Unlike plan_episode
+    (which SPLITS a script the user already wrote), this WRITES the lines. Returns
+    {script, beats, spoken_s} — `script` is the assembled dialogue for the user to
+    read/edit before rendering."""
+    if not idea or not idea.strip():
+        raise PlanError("write_episode needs an idea")
+    cast_lines = "\n".join(f'- {c["name"]}: "{c.get("anchor", "")}"' for c in cast) \
+        or "- (no named cast — write as a narrated VO ad)"
+    room_lines = "\n".join(f'- {r["name"]}: "{r.get("anchor", "")}"' for r in rooms) \
+        or "- (no fixed rooms)"
+    user_msg = (
+        f"Language for the dialogue: {language}\n"
+        f"Art style (for the pictures): {style or 'as the show defines'}\n\n"
+        f"CAST (use these names exactly):\n{cast_lines}\n\n"
+        f"ROOMS (use these names exactly):\n{room_lines}\n\n"
+        f"=== EPISODE IDEA — write the full ad from this ===\n{idea.strip()}\n"
+        f"=== END IDEA ==="
+    )
+    out = _gemini_json(WRITE_EPISODE_PROMPT, user_msg, temperature=0.7, require="beats")
+    beats = out.get("beats") or []
+    if not beats:
+        raise PlanError("the writer returned no beats")
+    _clamp_episode_beats(beats, cast, rooms)
+    # Assemble the spoken words (in beat order) into a readable/editable script.
+    script = "\n".join(
+        (f'{b["speaker"]}: {b["line"]}' if b.get("speaker") else b["line"])
+        for b in beats if (b.get("line") or "").strip()
+    )
+    spoken = spoken_seconds(script, language) if script else 0
+    return {"script": script, "beats": beats, "spoken_s": spoken}
 
 
 _BEAT_TYPES = {"speak", "wide", "action", "broll"}

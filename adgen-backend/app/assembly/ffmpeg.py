@@ -624,6 +624,46 @@ def burn_captions(video: str, captions: list[dict], out: str = "captioned.mp4") 
             Path(t).unlink(missing_ok=True)
 
 
+def cover_frame(video: str, out: str, at_s: float = 0.0, hook: str | None = None) -> str:
+    """Grab one frame as a COVER/thumbnail still — the shelf image every social
+    surface shows in-grid and in-feed before autoplay. Optionally burn a HOOK line
+    across the lower third (the first words a scroller reads). A raw first frame is
+    usually a black fade or a mid-blink mouth that reads as broken; picking a real
+    frame + hook is the single biggest lever left on tap-through. drawtext textfile=
+    keeps the line Devanagari-safe and folds it to fit the frame width."""
+    if not hook or not hook.strip():
+        return extract_frame(video, out, at_s=at_s)
+    info = probe(video)
+    w = info["width"] or 720
+    h = info["height"] or 1280
+    font = _font()
+    max_chars = max(12, int(w / ((h // 16) * 0.55)))
+    words, lines, cur = hook.strip().split(), [], ""
+    for word in words:
+        if cur and len(cur) + 1 + len(word) > max_chars:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}".strip()
+    if cur:
+        lines.append(cur)
+    tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
+    tf.write("\n".join(lines))
+    tf.close()
+    try:
+        draw = (
+            f"drawtext=fontfile='{font}':textfile='{tf.name}'"
+            f":fontcolor=white:fontsize={h // 16}"
+            f":box=1:boxcolor=black@0.5:boxborderw={h // 80}"
+            f":x=(w-text_w)/2:y=0.78*h-text_h:line_spacing={h // 80}"
+        )
+        _run(["ffmpeg", "-y", "-ss", f"{at_s:.3f}", "-i", video, "-frames:v", "1",
+              "-vf", draw, out])
+        return out
+    finally:
+        Path(tf.name).unlink(missing_ok=True)
+
+
 def end_card(
     video: str,
     brand: str,

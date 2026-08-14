@@ -86,12 +86,13 @@ export default function SequencePage() {
       // user's own words split in order.
       const isScript = looksLikeScript(idea);
       const res = await api.plan({
-        idea: `${idea} — plan this as a SEQUENCE (mixed timeline).`,
+        idea,
         language,
         format: aspect,
         duration_s: 30,
         avoid: [],
         cast_ids: [],
+        mode: "sequence", // force the dedicated sequence-editor brain, not the auto-router
         ...(isScript ? { script: idea.trim(), verbatim: true } : {}),
       });
       const seq =

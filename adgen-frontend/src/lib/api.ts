@@ -69,6 +69,7 @@ export type ShowLook = {
   negative?: string;
   grade?: string;
   style?: string; // art direction, e.g. "warm 2D storybook cartoon" | "photoreal"
+  art_style?: "realistic" | "animated" | "cartoon_real"; // keyframe composite + negatives key off (cartoon_real = real bg + cartoon cast)
 };
 
 export type ShowGrammar = {
@@ -120,7 +121,12 @@ export type Episode = {
   language: string;
   beats: EpisodeBeat[];
   seeds: Record<string, unknown>;
-  outputs: { job_id?: string; final?: string; report?: unknown };
+  outputs: {
+    job_id?: string;
+    final?: string;
+    report?: { gaps?: { start: number; end: number; len: number }[]; tail?: number; lead_in?: number; silent?: boolean };
+    warnings?: string[];
+  };
   adherence: Record<string, unknown>;
   status: "draft" | "planned" | "rendering" | "done" | "error";
   created_at: number;
@@ -166,6 +172,7 @@ export type Job = {
   warnings?: string[]; // accumulating assembly warnings (gaps, tails, overruns)
   sync?: SyncReport; // auto silence analysis of the finished video
   beats?: EpisodeBeat[]; // episode-plan jobs: the split beats
+  script?: string; // episode-write jobs: the brain-authored script
   spoken_s?: number; // episode-plan jobs: estimated spoken length
   draft?: ShowDraft; // show-draft jobs: the brain's proposed template
 };
@@ -273,6 +280,7 @@ export type Recipe = {
 export type OutputItem = {
   path: string;
   url: string;
+  cover_url?: string | null; // picked cover/thumbnail (…-cover.png) if one exists
   name: string;
   pipeline: string;
   kind: string;
@@ -292,6 +300,9 @@ export type PlanRequest = {
   cast_ids?: string[]; // saved characters the plan must build shots around
   script?: string;     // a script the USER wrote
   verbatim?: boolean;  // true = reproduce `script` word-for-word, size the film to it
+  // Force a specialized director brain (every approach commits to this pipeline)
+  // instead of the generic auto-router. Set from the surface the user is on.
+  mode?: "cinematic" | "sequence" | "product" | "lipsync" | "overlay";
 };
 
 export type PlanApproach = {
@@ -439,6 +450,9 @@ export const api = {
     }).then(jsonOrThrow),
   job: (id: string): Promise<Job> => fetch(`${BASE}/jobs/${id}`).then(jsonOrThrow),
   jobVideoUrl: (id: string) => `${BASE}/jobs/${id}/video`,
+  // Durable URL for a finished render's file (survives a backend restart, unlike
+  // the in-memory job URL). Maps a local `…/outputs/x/y.mp4` path to the /files mount.
+  fileVideoUrl: (path: string) => `${BASE}/files/${path.replace(/^.*?outputs\//, "")}`,
   queue: (): Promise<{ active: QueueItem[]; pod_jobs: number }> =>
     fetch(`${BASE}/queue`).then(jsonOrThrow),
   revoice: (req: RevoiceRequest): Promise<{ job_id: string }> =>
@@ -649,7 +663,7 @@ export const api = {
     }).then(jsonOrThrow),
   updateCharacter: (
     id: string,
-    body: { name?: string; anchor?: string; voice_id?: string },
+    body: { name?: string; anchor?: string; voice_id?: string; face_image?: string; sheet_image?: string },
   ): Promise<Character> =>
     fetch(`${BASE}/characters/${id}`, {
       method: "PATCH",
@@ -665,17 +679,29 @@ export const api = {
   outputs: (): Promise<{ outputs: OutputItem[] }> => fetch(`${BASE}/outputs`).then(jsonOrThrow),
   stills: (): Promise<{ stills: StillItem[] }> => fetch(`${BASE}/stills`).then(jsonOrThrow),
   voices: (): Promise<{ voices: Voice[] }> => fetch(`${BASE}/voices`).then(jsonOrThrow),
-  voicePreviewBlob: async (voice_id: string, language = "en"): Promise<Blob> => {
+  // `text` (optional) = audition the voice reading the REAL line (the character's
+  // actual copy) instead of a canned sample; empty voice_id auditions the default.
+  voicePreviewBlob: async (voice_id: string, language = "en", text?: string): Promise<Blob> => {
     const r = await fetch(`${BASE}/voice-preview`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ voice_id, language }),
+      body: JSON.stringify({ voice_id, language, text }),
     });
     if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 300)}`);
     return r.blob();
   },
   fileUrl: (item: OutputItem) => `${BASE}${item.url}`,
   assetUrl: (url: string) => `${BASE}${url}`,
+  // Delete a Library render (+ its cover/meta/recipe sidecars).
+  deleteOutput: (path: string): Promise<{ ok: boolean; deleted: string }> =>
+    fetch(`${BASE}/outputs?path=${encodeURIComponent(path)}`, { method: "DELETE" }).then(jsonOrThrow),
+  // Pick a cover/thumbnail frame (+ optional burned hook line) for a finished ad.
+  cover: (body: { video_path: string; at_s?: number; hook?: string }): Promise<{ cover_url: string; path: string; at_s: number }> =>
+    fetch(`${BASE}/cover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
 
   // ---- Show Templates: environments ----
   environments: (): Promise<{ environments: Environment[] }> =>
@@ -769,6 +795,10 @@ export const api = {
   // One-click: render every missing cast face + room plate (needs pod). Poll job.
   generateShowAssets: (id: string): Promise<{ job_id: string; faces: number; plates: number }> =>
     fetch(`${BASE}/shows/${id}/generate-assets`, { method: "POST" }).then(jsonOrThrow),
+  // Composite each cast member INTO each room plate (Qwen-Edit) -> keyframe_bank.
+  // The background-lock references the lipsync lane animates. Async — poll job_id.
+  composeShowKeyframes: (id: string): Promise<{ job_id: string; show_id: string }> =>
+    fetch(`${BASE}/shows/${id}/compose-keyframes`, { method: "POST" }).then(jsonOrThrow),
 
   // ---- Show Templates: episodes ----
   episodes: (showId?: string): Promise<{ episodes: Episode[] }> =>
@@ -782,7 +812,7 @@ export const api = {
     }).then(jsonOrThrow),
   updateEpisode: (
     id: string,
-    body: Partial<{ title: string; script: string; language: string; beats: EpisodeBeat[]; status: string }>,
+    body: Partial<{ title: string; script: string; language: string; beats: EpisodeBeat[]; status: string; outputs: Episode["outputs"] }>,
   ): Promise<Episode> =>
     fetch(`${BASE}/episodes/${id}`, {
       method: "PATCH",
@@ -808,6 +838,26 @@ export const api = {
       if (j.status === "error") throw new Error(j.error || "episode planner failed");
     }
     throw new Error("episode planner timed out");
+  },
+  // PROMPT-ONLY: the brain AUTHORS the whole episode (dialogue + beats) from a
+  // one-line idea using the Show's locked cast/rooms/look. ASYNC (Gemini). Poll for
+  // `beats` + `script`; the episode is updated with both (status=planned) for review.
+  writeEpisode: async (id: string, idea: string): Promise<{ beats: EpisodeBeat[]; script: string; spoken_s: number }> => {
+    const { job_id } = await fetch(`${BASE}/episodes/${id}/write`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idea }),
+    }).then(jsonOrThrow);
+    for (let i = 0; i < 90; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const j: Job = await fetch(`${BASE}/jobs/${job_id}`).then(jsonOrThrow);
+      if (j.status === "done") {
+        if (j.beats) return { beats: j.beats, script: j.script ?? "", spoken_s: j.spoken_s ?? 0 };
+        throw new Error("the writer returned no beats");
+      }
+      if (j.status === "error") throw new Error(j.error || "episode writer failed");
+    }
+    throw new Error("episode writer timed out");
   },
   // Compile beats -> sequence render (needs pod). Returns the render job_id.
   renderEpisode: (id: string): Promise<{ job_id: string; name: string; segments: number }> =>

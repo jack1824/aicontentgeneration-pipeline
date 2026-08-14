@@ -17,6 +17,7 @@ import {
   Character,
   Episode,
   EpisodeBeat,
+  QueueItem,
   Show,
   ShowLook,
   ShowStarter,
@@ -132,6 +133,8 @@ export default function EpisodesPage() {
         </p>
       )}
 
+      <RenderStatusBar />
+
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[15rem_1fr_16rem]">
         {/* ---- LEFT: shows + episodes ---- */}
         <ShowsRail
@@ -152,6 +155,16 @@ export default function EpisodesPage() {
               const ep = await api.createEpisode({ show_id: selectedShowId, language: selectedShow?.grammar.language ?? "hi" });
               await refreshEpisodes();
               setSelectedEpId(ep.id);
+            } catch (e) {
+              setError(String(e));
+            }
+          }}
+          onDeleteEp={async (ep) => {
+            if (!window.confirm(`Delete Ep${ep.number} “${ep.title || "untitled"}”? This can't be undone.`)) return;
+            try {
+              await api.deleteEpisode(ep.id);
+              if (selectedEpId === ep.id) setSelectedEpId(null);
+              await refreshEpisodes();
             } catch (e) {
               setError(String(e));
             }
@@ -191,11 +204,17 @@ export default function EpisodesPage() {
         {/* ---- RIGHT: show assets ---- */}
         <AssetsPane
           show={selectedShow}
+          episode={selectedEp}
           voices={voices}
           onError={setError}
           onAssetsChanged={() => {
             loadShows();
             loadLibrary();
+          }}
+          onShowDeleted={() => {
+            setSelectedShowId(null);
+            setSelectedEpId(null);
+            loadShows();
           }}
         />
       </div>
@@ -231,6 +250,7 @@ function ShowsRail({
   onSelectEp,
   onNewShow,
   onNewEpisode,
+  onDeleteEp,
 }: {
   shows: Show[];
   loaded: boolean;
@@ -241,6 +261,7 @@ function ShowsRail({
   onSelectEp: (id: string) => void;
   onNewShow: () => void;
   onNewEpisode: () => void;
+  onDeleteEp: (ep: Episode) => void;
 }) {
   return (
     <div className="card-raised flex min-h-0 flex-col gap-1 overflow-y-auto rounded-card p-3">
@@ -267,17 +288,30 @@ function ShowsRail({
             {active && (
               <div className="mb-1 ml-2 flex flex-col gap-0.5 border-l border-white/10 pl-2">
                 {episodes.map((e) => (
-                  <button
+                  <div
                     key={e.id}
-                    onClick={() => onSelectEp(e.id)}
-                    className={`flex items-center gap-1.5 rounded-btn px-2 py-1 text-left text-xs transition-colors ${
-                      e.id === selectedEpId ? "bg-surface-2 text-text-primary" : "text-text-secondary hover:bg-surface-2"
+                    className={`group/ep flex items-center gap-1 rounded-btn pr-1 transition-colors ${
+                      e.id === selectedEpId ? "bg-surface-2" : "hover:bg-surface-2"
                     }`}
                   >
-                    <span className="text-text-muted">Ep{e.number}</span>
-                    <span className="min-w-0 flex-1 truncate">{e.title || "untitled"}</span>
-                    <EpStatusDot status={e.status} />
-                  </button>
+                    <button
+                      onClick={() => onSelectEp(e.id)}
+                      className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs ${
+                        e.id === selectedEpId ? "text-text-primary" : "text-text-secondary"
+                      }`}
+                    >
+                      <span className="text-text-muted">Ep{e.number}</span>
+                      <span className="min-w-0 flex-1 truncate">{e.title || "untitled"}</span>
+                      <EpStatusDot status={e.status} />
+                    </button>
+                    <button
+                      onClick={() => onDeleteEp(e)}
+                      title="Delete this episode"
+                      className="shrink-0 rounded px-1 text-[11px] text-text-muted opacity-0 transition hover:text-accent group-hover/ep:opacity-100"
+                    >
+                      🗑
+                    </button>
+                  </div>
                 ))}
                 <button
                   onClick={onNewEpisode}
@@ -336,6 +370,14 @@ function EpisodeBoard({
   const [rendering, setRendering] = useState(false);
   const [renderJob, setRenderJob] = useState<string | null>(episode.outputs?.job_id ?? null);
   const [renderMsg, setRenderMsg] = useState<string | null>(null);
+  // Prompt-only: default new episodes to "write with AI"; ones that already have a
+  // script/beats open on the script view.
+  const [inputMode, setInputMode] = useState<"idea" | "script">(
+    episode.beats.length || episode.script.trim() ? "script" : "idea",
+  );
+  const [idea, setIdea] = useState("");
+  const [writing, setWriting] = useState(false);
+  const [fixing, setFixing] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
@@ -374,6 +416,66 @@ function EpisodeBoard({
       onError(String(e));
     } finally {
       setPlanning(false);
+    }
+  };
+
+  // PROMPT-ONLY: the brain authors the whole episode (dialogue + beats) from one
+  // line, then we drop the user into the storyboard to review/edit and CONFIRM by
+  // hitting render — no pre-written script required.
+  const write = async () => {
+    if (idea.trim().length < 4) {
+      onError("Describe the episode in a line first.");
+      return;
+    }
+    setWriting(true);
+    onError("");
+    try {
+      const { beats: got, script: wrote } = await api.writeEpisode(episode.id, idea.trim());
+      setBeats(got);
+      setScript(wrote);
+      setInputMode("script"); // reveal the written script + storyboard for review
+      await onChange();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setWriting(false);
+    }
+  };
+
+  // Inline "Fix timing": trim the dead tail off the finished episode (the working
+  // /fit action, which used to live only on the Library page) and swap the trimmed
+  // cut in as the episode's final.
+  const fixTiming = async () => {
+    const final = episode.outputs?.final;
+    if (!final || fixing) return;
+    setFixing(true);
+    onError("");
+    try {
+      const { job_id } = await api.fit({ video_path: final, mode: "auto" });
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const j = await api.job(job_id);
+        if (j.status === "done") {
+          if (j.video_path && j.video_path !== final) {
+            const prev = episode.outputs ?? {};
+            await api.updateEpisode(episode.id, {
+              // Zero the tail we just trimmed so the "runs past the last word" warning
+              // and its Fix-timing button clear instead of lingering on the fixed cut.
+              outputs: { ...prev, final: j.video_path, report: { ...(prev.report ?? {}), tail: 0 } },
+            });
+            await onChange();
+          }
+          break;
+        }
+        if (["error", "cancelled"].includes(j.status)) {
+          onError(j.error ?? "fix timing failed");
+          break;
+        }
+      }
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setFixing(false);
     }
   };
 
@@ -452,35 +554,76 @@ function EpisodeBoard({
         </p>
       )}
 
-      {/* Script */}
+      {/* Episode input — write from a one-line idea, or paste a script */}
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between">
-          <span className="label-cap">Script</span>
-          <span className="text-[10px] text-text-muted">
-            pasted verbatim — the planner splits, never rewrites
-          </span>
+          <span className="label-cap">Episode</span>
+          <div className="flex gap-1">
+            <button
+              onClick={() => setInputMode("idea")}
+              className={`rounded-btn px-2.5 py-1 text-[11px] ${inputMode === "idea" ? "seg-on" : "seg"}`}
+            >
+              ✍️ Write with AI
+            </button>
+            <button
+              onClick={() => setInputMode("script")}
+              className={`rounded-btn px-2.5 py-1 text-[11px] ${inputMode === "script" ? "seg-on" : "seg"}`}
+            >
+              📋 Paste a script
+            </button>
+          </div>
         </div>
-        <textarea
-          value={script}
-          onChange={(e) => setScript(e.target.value)}
-          rows={5}
-          placeholder="Paste this episode's script. Mark who speaks if you like — the planner keeps your words exactly and cuts them into shots."
-          className="input-well resize-y rounded-btn px-3 py-2 text-sm leading-relaxed"
-        />
-        <div className="flex items-center gap-2">
-          <button
-            onClick={plan}
-            disabled={planning || !script.trim()}
-            className="hero-glow rounded-btn px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            {planning ? "breaking into beats…" : beats.length ? "↻ Re-plan beats" : "▸ Break into beats"}
-          </button>
-          {beats.length > 0 && (
-            <span className="text-xs text-text-muted">
-              {beats.length} beats · ~{est.secs}s · est. ~{est.mins} min to render
+
+        {inputMode === "idea" ? (
+          <>
+            <textarea
+              value={idea}
+              onChange={(e) => setIdea(e.target.value)}
+              rows={3}
+              placeholder="One line: what happens this episode? e.g. Motu's old mouse keeps hanging, Patlu shows him the new wireless one — then they tell everyone to order it."
+              className="input-well resize-y rounded-btn px-3 py-2 text-sm leading-relaxed"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={write}
+                disabled={writing || idea.trim().length < 4}
+                className="hero-glow rounded-btn px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                {writing ? "writing the episode…" : "✦ Write the episode"}
+              </button>
+              <span className="text-[10px] text-text-muted">
+                the brain writes the dialogue + storyboard from your locked cast &amp; rooms — you review &amp; edit before rendering
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <span className="text-[10px] text-text-muted">
+              pasted verbatim — the planner splits your words into beats, never rewrites
             </span>
-          )}
-        </div>
+            <textarea
+              value={script}
+              onChange={(e) => setScript(e.target.value)}
+              rows={5}
+              placeholder="Paste this episode's script. Mark who speaks if you like — the planner keeps your words exactly and cuts them into shots."
+              className="input-well resize-y rounded-btn px-3 py-2 text-sm leading-relaxed"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={plan}
+                disabled={planning || !script.trim()}
+                className="hero-glow rounded-btn px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                {planning ? "breaking into beats…" : beats.length ? "↻ Re-plan beats" : "▸ Break into beats"}
+              </button>
+              {beats.length > 0 && (
+                <span className="text-xs text-text-muted">
+                  {beats.length} beats · ~{est.secs}s · est. ~{est.mins} min to render
+                </span>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Beat table */}
@@ -512,11 +655,25 @@ function EpisodeBoard({
             </button>
             {renderMsg && <span className="text-xs text-text-secondary">{renderMsg}</span>}
           </div>
-          {renderJob && episode.status === "done" && (
+          {episode.status === "done" && (episode.outputs?.final || renderJob) && (
             <video
-              src={api.jobVideoUrl(renderJob)}
+              // Prefer the durable file (survives a backend restart); fall back to
+              // the in-memory job URL for a render still fresh in this session.
+              src={
+                episode.outputs?.final
+                  ? api.fileVideoUrl(episode.outputs.final)
+                  : api.jobVideoUrl(renderJob!)
+              }
               controls
               className="mt-1 w-full max-w-md rounded-card ring-1 ring-white/10"
+            />
+          )}
+          {episode.status === "done" && (
+            <WarningsPanel
+              report={episode.outputs?.report}
+              warnings={episode.outputs?.warnings}
+              onFixTiming={fixTiming}
+              fixing={fixing}
             />
           )}
           <p className="text-[10px] text-text-muted">
@@ -544,122 +701,57 @@ function BeatTable({
   roomNames: string[];
   onChange: (next: EpisodeBeat[]) => void;
 }) {
+  // The ⚙ shot-options disclosure lives HERE, not inside BeatCard, so it travels
+  // with the beat through delete/reorder (index-keyed local state would show the
+  // open panel on the wrong beat). Kept length-aligned to beats.
+  const [openFlags, setOpenFlags] = useState<boolean[]>([]);
+  const flags = openFlags.length === beats.length ? openFlags : beats.map((_, i) => openFlags[i] ?? false);
+  const toggleOpen = (i: number) =>
+    setOpenFlags(() => { const n = beats.map((_, j) => flags[j] ?? false); n[i] = !n[i]; return n; });
+
   const patch = (i: number, p: Partial<EpisodeBeat>) =>
     onChange(beats.map((b, j) => (j === i ? { ...b, ...p } : b)));
-  const remove = (i: number) => onChange(beats.filter((_, j) => j !== i));
+  const remove = (i: number) => {
+    setOpenFlags(flags.filter((_, j) => j !== i));
+    onChange(beats.filter((_, j) => j !== i));
+  };
   const move = (i: number, dir: -1 | 1) => {
     const j = i + dir;
     if (j < 0 || j >= beats.length) return;
     const next = [...beats];
     [next[i], next[j]] = [next[j], next[i]];
+    const nf = [...flags];
+    [nf[i], nf[j]] = [nf[j] ?? false, nf[i] ?? false];
+    setOpenFlags(nf);
     onChange(next);
   };
-  const add = () =>
+  const add = () => {
+    setOpenFlags([...flags, false]);
     onChange([...beats, { type: "action", speaker: null, room: roomNames[0] ?? null, line: "", action: "", camera: "mid", duration_s: 5 }]);
+  };
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <span className="label-cap">Beats · shot list</span>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-2xl border-separate border-spacing-y-1 text-xs">
-          <thead>
-            <tr className="text-left text-[10px] uppercase text-text-muted">
-              <th className="w-8 px-1">#</th>
-              <th className="px-1">Type</th>
-              <th className="px-1">Who</th>
-              <th className="px-1">Room</th>
-              <th className="px-1">Camera</th>
-              <th className="w-14 px-1">Sec</th>
-              <th className="px-1">Line / action</th>
-              <th className="w-14 px-1"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {beats.map((b, i) => (
-              <tr key={i} className="align-top">
-                <td className="px-1 pt-2 text-text-muted">{i + 1}</td>
-                <td className="px-1">
-                  <select
-                    value={b.type}
-                    onChange={(e) => patch(i, { type: e.target.value as EpisodeBeat["type"] })}
-                    className="input-well rounded-btn px-1.5 py-1"
-                  >
-                    {BEAT_TYPES.map((t) => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
-                </td>
-                <td className="px-1">
-                  <select
-                    value={b.speaker ?? ""}
-                    onChange={(e) => patch(i, { speaker: e.target.value || null })}
-                    className="input-well rounded-btn px-1.5 py-1"
-                  >
-                    <option value="">—</option>
-                    {castNames.map((n) => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                </td>
-                <td className="px-1">
-                  <select
-                    value={b.room ?? ""}
-                    onChange={(e) => patch(i, { room: e.target.value || null })}
-                    className="input-well rounded-btn px-1.5 py-1"
-                  >
-                    <option value="">—</option>
-                    {roomNames.map((n) => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                </td>
-                <td className="px-1">
-                  <select
-                    value={b.camera}
-                    onChange={(e) => patch(i, { camera: e.target.value as EpisodeBeat["camera"] })}
-                    className="input-well rounded-btn px-1.5 py-1"
-                  >
-                    {CAMERAS.map((c) => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
-                </td>
-                <td className="px-1">
-                  <input
-                    type="number"
-                    min={3}
-                    max={6}
-                    step={0.5}
-                    value={b.duration_s}
-                    onChange={(e) => patch(i, { duration_s: Number(e.target.value) })}
-                    className="input-well w-12 rounded-btn px-1.5 py-1"
-                  />
-                </td>
-                <td className="px-1">
-                  <input
-                    value={b.line}
-                    onChange={(e) => patch(i, { line: e.target.value })}
-                    placeholder="spoken words"
-                    className="input-well mb-1 w-full rounded-btn px-1.5 py-1"
-                  />
-                  <input
-                    value={b.action}
-                    onChange={(e) => patch(i, { action: e.target.value })}
-                    placeholder="what we see (blocking, gaze, camera move)"
-                    className="input-well w-full rounded-btn px-1.5 py-1 text-text-secondary"
-                  />
-                </td>
-                <td className="px-1 pt-1">
-                  <div className="flex gap-0.5">
-                    <button onClick={() => move(i, -1)} className="rounded px-1 text-text-muted hover:text-text-primary" title="up">↑</button>
-                    <button onClick={() => move(i, 1)} className="rounded px-1 text-text-muted hover:text-text-primary" title="down">↓</button>
-                    <button onClick={() => remove(i)} className="rounded px-1 text-text-muted hover:text-accent" title="delete">✕</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="label-cap">Storyboard · {beats.length} beats</span>
+        <span className="text-[10px] text-text-muted">line first · ⚙ for shot options</span>
+      </div>
+      <div className="flex flex-col gap-2">
+        {beats.map((b, i) => (
+          <BeatCard
+            key={i}
+            beat={b}
+            index={i}
+            count={beats.length}
+            castNames={castNames}
+            roomNames={roomNames}
+            open={flags[i] ?? false}
+            onToggleOpen={() => toggleOpen(i)}
+            onPatch={(p) => patch(i, p)}
+            onMove={(d) => move(i, d)}
+            onRemove={() => remove(i)}
+          />
+        ))}
       </div>
       <button
         onClick={add}
@@ -671,35 +763,178 @@ function BeatTable({
   );
 }
 
+const TYPE_ICON: Record<EpisodeBeat["type"], string> = {
+  speak: "🗣", wide: "🏞", action: "🎬", broll: "🎞",
+};
+
+// One beat as a readable storyboard card: the LINE leads, the shot knobs (Type /
+// Who / Room / Camera) hide behind ⚙ so a first-timer sees a script, not a cockpit.
+// (No "Sec" field — clip length is fixed by the engine; the old number did nothing.)
+function BeatCard({
+  beat, index, count, castNames, roomNames, open, onToggleOpen, onPatch, onMove, onRemove,
+}: {
+  beat: EpisodeBeat;
+  index: number;
+  count: number;
+  castNames: string[];
+  roomNames: string[];
+  open: boolean;
+  onToggleOpen: () => void;
+  onPatch: (p: Partial<EpisodeBeat>) => void;
+  onMove: (dir: -1 | 1) => void;
+  onRemove: () => void;
+}) {
+  const speak = beat.type === "speak";
+  return (
+    <div className="rounded-card border border-white/8 bg-surface-2/50 p-2.5">
+      <div className="flex items-center gap-2">
+        <span className="grid size-5 shrink-0 place-items-center rounded-full bg-surface-3 text-[10px] text-text-muted">{index + 1}</span>
+        <span className="shrink-0 text-sm" title={beat.type}>{TYPE_ICON[beat.type]}</span>
+        {speak ? (
+          <span className={`min-w-0 truncate text-xs font-medium ${beat.speaker ? "text-text-secondary" : "text-amber-300/80"}`}>
+            {beat.speaker || "pick who speaks →⚙"}
+          </span>
+        ) : (
+          <span className="min-w-0 truncate text-xs capitalize text-text-muted">
+            {beat.type}{beat.room ? ` · ${beat.room}` : ""}
+          </span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-0.5">
+          <button onClick={onToggleOpen} title="Shot options" className={`rounded px-1 hover:text-text-primary ${open ? "text-text-primary" : "text-text-muted"}`}>⚙</button>
+          <button onClick={() => onMove(-1)} disabled={index === 0} className="rounded px-1 text-text-muted hover:text-text-primary disabled:opacity-30" title="move up">↑</button>
+          <button onClick={() => onMove(1)} disabled={index === count - 1} className="rounded px-1 text-text-muted hover:text-text-primary disabled:opacity-30" title="move down">↓</button>
+          <button onClick={onRemove} className="rounded px-1 text-text-muted hover:text-accent" title="delete beat">✕</button>
+        </span>
+      </div>
+
+      {speak && (
+        <input
+          value={beat.line}
+          onChange={(e) => onPatch({ line: e.target.value })}
+          placeholder="what they say…"
+          className="input-well mt-2 w-full rounded-btn px-2.5 py-1.5 text-sm"
+        />
+      )}
+      <input
+        value={beat.action}
+        onChange={(e) => onPatch({ action: e.target.value })}
+        placeholder={speak ? "what we see (blocking, gaze, camera move)" : "what happens on screen"}
+        className="input-well mt-1.5 w-full rounded-btn px-2.5 py-1.5 text-xs text-text-secondary"
+      />
+
+      {open && (
+        <div className="mt-2 grid grid-cols-2 gap-2 border-t border-white/5 pt-2 sm:grid-cols-4">
+          <label className="flex flex-col gap-1 text-[10px] uppercase text-text-muted">
+            Type
+            <select value={beat.type} onChange={(e) => onPatch({ type: e.target.value as EpisodeBeat["type"] })} className="input-well rounded-btn px-1.5 py-1 text-xs normal-case text-text-primary">
+              {BEAT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-[10px] uppercase text-text-muted">
+            Who
+            <select value={beat.speaker ?? ""} onChange={(e) => onPatch({ speaker: e.target.value || null })} className="input-well rounded-btn px-1.5 py-1 text-xs normal-case text-text-primary">
+              <option value="">—</option>
+              {castNames.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-[10px] uppercase text-text-muted">
+            Room
+            <select value={beat.room ?? ""} onChange={(e) => onPatch({ room: e.target.value || null })} className="input-well rounded-btn px-1.5 py-1 text-xs normal-case text-text-primary">
+              <option value="">—</option>
+              {roomNames.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-[10px] uppercase text-text-muted">
+            Camera
+            <select value={beat.camera} onChange={(e) => onPatch({ camera: e.target.value as EpisodeBeat["camera"] })} className="input-well rounded-btn px-1.5 py-1 text-xs normal-case text-text-primary">
+              {CAMERAS.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // RIGHT — show assets (cast, rooms) + lifecycle actions
 // ---------------------------------------------------------------------------
 function AssetsPane({
   show,
+  episode,
   voices,
   onError,
   onAssetsChanged,
+  onShowDeleted,
 }: {
   show: Show | null;
+  episode: Episode | null;
   voices: Voice[];
   onError: (e: string) => void;
   onAssetsChanged: () => void;
+  onShowDeleted: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [gen, setGen] = useState<string | null>(null);
   const [batch, setBatch] = useState<string | null>(null);
   const [voiceEditId, setVoiceEditId] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+  // Confirm gate: a voice picked in the panel is PENDING until "Use this voice" —
+  // so a voice is never welded on the first click (the Patlu-stuck-on-Eric trap).
+  const [pendingVoice, setPendingVoice] = useState<Record<string, string>>({});
+  // Separate pollers: a room-plate job and the batch "generate all" job can run at
+  // once, so they must NOT share one ref (a shared ref cross-clears/orphans them).
+  const platePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const batchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => {
+    if (platePollRef.current) clearInterval(platePollRef.current);
+    if (batchPollRef.current) clearInterval(batchPollRef.current);
+  }, []);
 
-  // Set/change a cast member's voice — it flows to every one of their speaking
-  // beats automatically (the episode compiler reads speaker.voice_id).
+  // Commit a cast member's voice — it flows to every one of their speaking beats
+  // automatically (the episode compiler reads speaker.voice_id).
   const setVoice = async (charId: string, voiceId: string) => {
     try {
       await api.updateCharacter(charId, { voice_id: voiceId });
+      setPendingVoice((p) => { const n = { ...p }; delete n[charId]; return n; });
       onAssetsChanged();
     } catch (e) {
       onError(String(e));
+    }
+  };
+
+  // First spoken line for a character in the current episode — auditioned by the
+  // voice picker so you hear the ACTUAL delivery, not a canned sample.
+  const sampleFor = (name: string): string | undefined =>
+    (episode?.beats ?? []).find((b) => b.speaker === name && (b.line || "").trim())?.line;
+
+  // Upload-first: a real photo the user chose beats a generated face — it's faster
+  // and it's THEIR person, which reads as trust. Generation stays as the fallback.
+  const uploadFace = async (charId: string, file: File) => {
+    setBusy(true);
+    onError("");
+    try {
+      const { path } = await api.uploadAsset(file);
+      await api.updateCharacter(charId, { face_image: path });
+      onAssetsChanged();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  // Upload a real photo of the room as its plate — the background the lipsync
+  // keyframe composites the cast INTO, so the set is exactly the user's shop.
+  const uploadPlate = async (envId: string, file: File) => {
+    setBusy(true);
+    onError("");
+    try {
+      const { path } = await api.uploadAsset(file);
+      await api.updateEnvironment(envId, { plate_wide: path });
+      onAssetsChanged();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -732,11 +967,11 @@ function AssetsPane({
     onError("");
     try {
       const { job_id } = await api.generateEnvironmentPlate(envId, "wide");
-      pollRef.current = setInterval(async () => {
+      platePollRef.current = setInterval(async () => {
         try {
           const j = await api.job(job_id);
           if (["done", "error", "cancelled"].includes(j.status)) {
-            if (pollRef.current) clearInterval(pollRef.current);
+            if (platePollRef.current) clearInterval(platePollRef.current);
             setGen(null);
             if (j.status !== "done") {
               onError(j.error?.includes("pod") || j.error?.includes("COMFY")
@@ -762,12 +997,12 @@ function AssetsPane({
     onError("");
     try {
       const { job_id } = await api.generateShowAssets(show.id);
-      pollRef.current = setInterval(async () => {
+      batchPollRef.current = setInterval(async () => {
         try {
           const j = await api.job(job_id);
           setBatch(`${j.progress}% · ${j.detail}`.slice(0, 40));
           if (["done", "error", "cancelled"].includes(j.status)) {
-            if (pollRef.current) clearInterval(pollRef.current);
+            if (batchPollRef.current) clearInterval(batchPollRef.current);
             setBatch(null);
             if (j.status !== "done") {
               onError(j.error?.includes("pod") || j.error?.includes("COMFY") || j.error?.includes("system_stats")
@@ -831,24 +1066,68 @@ function AssetsPane({
                   {c.face_image ? "face ✓" : "no face"} · 🔊 {voiceName(voices, c.voice_id)}
                 </p>
               </div>
+              <label
+                className="shrink-0 cursor-pointer rounded px-1.5 py-1 text-[10px] text-text-muted hover:text-text-primary"
+                title={c.face_image ? "Replace this character's photo" : "Upload a photo for this character"}
+              >
+                {c.face_image ? "📤" : "📤 photo"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) uploadFace(c.id, f);
+                    e.currentTarget.value = "";
+                  }}
+                />
+              </label>
               <button
                 onClick={() => setVoiceEditId((id) => (id === c.id ? null : c.id))}
                 className="shrink-0 rounded px-1.5 py-1 text-[10px] text-text-muted hover:text-text-primary"
                 title="Choose this character's voice"
               >
-                {voiceEditId === c.id ? "✕" : "voice"}
+                {voiceEditId === c.id ? "✕" : "🔊 voice"}
+              </button>
+              <button
+                onClick={() => {
+                  if (!window.confirm(`Remove ${c.name} from this show?`)) return;
+                  act(() => api.updateShow(show.id, { character_ids: cast.filter((x) => x.id !== c.id).map((x) => x.id) }));
+                }}
+                title="Remove this character from the show"
+                className="shrink-0 rounded px-1 text-[11px] text-text-muted hover:text-accent"
+              >
+                🗑
               </button>
             </div>
-            {voiceEditId === c.id && (
-              <div className="border-t border-white/5 pt-1.5">
-                <VoicePicker
-                  voices={voices}
-                  value={c.voice_id ?? ""}
-                  language={show.grammar.language ?? "hi"}
-                  onChange={(id) => setVoice(c.id, id)}
-                />
-              </div>
-            )}
+            {voiceEditId === c.id && (() => {
+              const pending = pendingVoice[c.id];
+              const shown = pending ?? c.voice_id ?? "";
+              const changed = pending !== undefined && pending !== (c.voice_id ?? "");
+              return (
+                <div className="flex flex-col gap-1.5 border-t border-white/5 pt-1.5">
+                  <VoicePicker
+                    voices={voices}
+                    value={shown}
+                    language={show.grammar.language ?? "hi"}
+                    sampleText={sampleFor(c.name)}
+                    onChange={(id) => setPendingVoice((p) => ({ ...p, [c.id]: id }))}
+                  />
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-text-muted">
+                      {sampleFor(c.name) ? "▶ auditions this character’s real line" : "▶ preview before you lock it"}
+                    </span>
+                    <button
+                      onClick={() => setVoice(c.id, shown)}
+                      disabled={!changed}
+                      className="ml-auto rounded-btn bg-green-500/15 px-2.5 py-1 text-[11px] text-green-300 hover:bg-green-500/25 disabled:opacity-40"
+                    >
+                      ✓ Use this voice
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         ))}
       </div>
@@ -869,16 +1148,42 @@ function AssetsPane({
               <p className="truncate text-xs font-medium">{r.name}</p>
               <p className="truncate text-[10px] text-text-muted">{r.primary_plate ? "plate ✓" : "no plate"}</p>
             </div>
+            <label
+              className="shrink-0 cursor-pointer rounded px-1.5 py-1 text-[10px] text-text-muted hover:text-text-primary"
+              title={r.primary_plate ? "Replace this room's photo" : "Upload a photo of this room"}
+            >
+              {r.primary_plate ? "📤" : "📤 photo"}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) uploadPlate(r.id, f);
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
             {!r.primary_plate && (
               <button
                 onClick={() => genPlate(r.id)}
                 disabled={!!gen}
                 className="shrink-0 rounded px-1.5 py-1 text-[10px] text-text-muted hover:text-text-primary disabled:opacity-50"
-                title="Generate room plate (needs pod)"
+                title="Generate room plate (needs pod) — upload is faster"
               >
                 {gen === r.id ? "…" : "✨"}
               </button>
             )}
+            <button
+              onClick={() => {
+                if (!window.confirm(`Remove ${r.name} from this show?`)) return;
+                act(() => api.updateShow(show.id, { environment_ids: rooms.filter((x) => x.id !== r.id).map((x) => x.id) }));
+              }}
+              title="Remove this room from the show"
+              className="shrink-0 rounded px-1 text-[11px] text-text-muted hover:text-accent"
+            >
+              🗑
+            </button>
           </div>
         ))}
       </div>
@@ -908,6 +1213,25 @@ function AssetsPane({
             ⑂ Fork to new version
           </button>
         )}
+        <button
+          onClick={async () => {
+            if (!window.confirm(`Delete the show “${show.name}” and all its episodes? This can't be undone.`)) return;
+            setBusy(true);
+            onError("");
+            try {
+              await api.deleteShow(show.id);
+              onShowDeleted();
+            } catch (e) {
+              onError(String(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+          disabled={busy}
+          className="rounded-btn px-3 py-2 text-xs text-text-muted hover:bg-accent/10 hover:text-accent disabled:opacity-50"
+        >
+          🗑 Delete show
+        </button>
       </div>
     </div>
   );
@@ -1121,8 +1445,29 @@ function ShowWizard({
 
             {/* Look */}
             <div className="grid gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
+                <span className="label-cap">Style</span>
+                <div className="flex flex-wrap gap-2">
+                  {([
+                    { k: "realistic", l: "🎥 Realistic", style: "realistic documentary-style advertisement, natural handheld camera, candid moment", neg: "stiff posing, plastic skin, over-saturation, cartoonish, distorted hands, extra fingers, watermark, text overlay" },
+                    { k: "animated", l: "🎨 Animated", style: "2D animated cartoon-illustration, clean line art, bright cel shading, expressive characters", neg: "photorealistic, realistic skin pores, 3D render, distorted hands, extra fingers, watermark, text overlay" },
+                    { k: "cartoon_real", l: "🎭 Cartoon-on-real", style: "cartoon characters acting in a real photographic location — a real-photo background with lively cartoon characters composited in", neg: "photorealistic people, realistic human skin on characters, cartoon background, flattened illustrated backdrop, distorted hands, extra fingers, watermark, text overlay" },
+                  ] as const).map((o) => (
+                    <button
+                      key={o.k}
+                      type="button"
+                      onClick={() => setLook({ ...look, art_style: o.k, style: o.style, negative: o.neg })}
+                      className={`flex-1 rounded-btn px-3 py-2 text-sm font-medium ${
+                        look.art_style === o.k ? "bg-accent text-white" : "bg-surface-2 text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="flex flex-col gap-1.5">
-                <span className="label-cap">Art style</span>
+                <span className="label-cap">Art direction</span>
                 <input value={look.style ?? ""} onChange={(e) => setLook({ ...look, style: e.target.value })}
                   placeholder="warm 2D storybook cartoon / photoreal" className="input-well rounded-btn px-3 py-2 text-sm" />
               </div>
@@ -1154,6 +1499,118 @@ function ShowWizard({
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sync warnings, made presentable: driven by the STRUCTURED report (not raw
+// strings), bucketed by severity, with a real one-click Fix-timing inline instead
+// of the old "Library → Fix timing" breadcrumb that led nowhere.
+function WarningsPanel({
+  report,
+  warnings,
+  onFixTiming,
+  fixing,
+}: {
+  report?: Episode["outputs"]["report"];
+  warnings?: string[];
+  onFixTiming: () => void;
+  fixing: boolean;
+}) {
+  const r = report ?? {};
+  const items: { sev: "blocker" | "fix" | "heads"; text: string; fix?: boolean }[] = [];
+  if (r.silent) items.push({ sev: "blocker", text: "This ad has no audible sound — re-render it." });
+  if ((r.tail ?? 0) > 1.0)
+    items.push({ sev: "fix", text: `The video runs ~${(r.tail ?? 0).toFixed(1)}s past the last spoken word.`, fix: true });
+  if ((r.lead_in ?? 0) > 2.5)
+    items.push({ sev: "heads", text: `Silent for the first ~${(r.lead_in ?? 0).toFixed(1)}s before anyone speaks.` });
+  if (r.gaps?.length)
+    items.push({ sev: "heads", text: `${r.gaps.length} quiet gap${r.gaps.length > 1 ? "s" : ""} mid-video where no one speaks.` });
+  const underfill = (warnings ?? []).filter((w) => /fills only/.test(w)).length;
+  if (underfill)
+    items.push({ sev: "heads", text: `${underfill} beat${underfill > 1 ? "s" : ""} had a short line — we trimmed the silent tail to fit.` });
+
+  // Anything not already represented above = informational receipts, collapsed.
+  const covered = ["fills only", "past the last sound", "silent gap", "no audible", "silent open"];
+  const info = (warnings ?? []).filter((w) => !covered.some((k) => w.includes(k)));
+
+  if (!items.length && !info.length) return null;
+  const styles: Record<string, string> = {
+    blocker: "border-red-500/30 bg-red-500/10 text-red-300",
+    fix: "border-amber-400/30 bg-amber-400/10 text-amber-200",
+    heads: "border-white/10 bg-amber-400/5 text-amber-300/90",
+  };
+  return (
+    <div className="mt-1 flex flex-col gap-1">
+      {items.map((it, i) => (
+        <div key={i} className={`flex items-center gap-2 rounded-btn border px-2.5 py-1.5 text-[11px] ${styles[it.sev]}`}>
+          <span>{it.sev === "blocker" ? "⛔" : it.sev === "fix" ? "✂" : "•"}</span>
+          <span className="min-w-0 flex-1">{it.text}</span>
+          {it.fix && (
+            <button
+              onClick={onFixTiming}
+              disabled={fixing}
+              className="shrink-0 rounded-btn bg-amber-400/20 px-2 py-0.5 text-[10px] text-amber-100 hover:bg-amber-400/30 disabled:opacity-50"
+            >
+              {fixing ? "trimming…" : "✂ Fix timing"}
+            </button>
+          )}
+        </div>
+      ))}
+      {info.length > 0 && (
+        <details className="rounded-btn border border-white/5 bg-surface-2 px-2.5 py-1.5 text-[11px] text-text-muted">
+          <summary className="cursor-pointer select-none">We tidied a few timing details ({info.length})</summary>
+          <ul className="mt-1 space-y-0.5 pl-3">
+            {info.map((w, i) => <li key={i}>• {w}</li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Live render status — polls /queue and shows EVERY in-flight render (episode
+// renders AND standalone /generate jobs), so a render in progress is visible
+// here instead of vanishing until its final lands in the Library.
+function RenderStatusBar() {
+  const [active, setActive] = useState<QueueItem[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const tick = () =>
+      api.queue().then((d) => { if (alive) setActive(d.active); }).catch(() => {});
+    tick();
+    const t = setInterval(tick, 4000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  // Renders + assembly jobs; skip the fast pod-free "plan" LLM jobs.
+  const renders = active.filter((a) => a.kind !== "plan");
+  if (renders.length === 0) return null;
+  return (
+    <div className="card-raised flex flex-col gap-2 rounded-card p-3">
+      <div className="flex items-center gap-2">
+        <span className="size-2 shrink-0 animate-pulse rounded-full bg-amber-400" />
+        <span className="label-cap">Rendering now · {renders.length}</span>
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {renders.map((r) => (
+          <div key={r.job_id} className="flex flex-col gap-1">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] uppercase text-text-muted">{r.kind}</span>
+              <span className="min-w-0 flex-1 truncate font-medium">{r.name || r.job_id}</span>
+              <span className="shrink-0 text-text-secondary">{r.progress}%</span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
+              <div
+                className={`h-full rounded-full transition-all ${r.status === "error" ? "bg-accent" : "bg-green-400"}`}
+                style={{ width: `${Math.max(3, Math.min(100, r.progress))}%` }}
+              />
+            </div>
+            <p className="truncate text-[10px] text-text-muted">{r.status} · {r.detail || "…"}</p>
+          </div>
+        ))}
       </div>
     </div>
   );

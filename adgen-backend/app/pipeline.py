@@ -587,7 +587,13 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
             engine = "ltx-ing" if seg.get("image") else "ltx-av"
         else:
             engine = "wan"
-        if prev_engine is not None and engine != prev_engine:
+        # Free VRAM before EVERY take, not just on engine switches. A long all-S2V
+        # dialogue never switches engines, so weights + activations accumulate on
+        # the pod until it OOMs mid-render (the Motu-Patlu beat-4 crash: 3 takes
+        # fine, 4th died). One /free per take keeps a clean slate — the reload is
+        # seconds and negligible against a real take, and far cheaper than a dead
+        # render. (Doubly important with fp8 kernels off: eager mode holds more.)
+        if prev_engine is not None:
             comfy.free_memory(pod)
         prev_engine = engine
 
@@ -612,8 +618,9 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
             ndur = ffmpeg.probe(narration)["duration"]
             if ndur < 10.5:
                 report("generating", pct,
-                       f"⚠ segment {i + 1}: script fills only {ndur:.0f}s of the ~14s "
-                       f"take — the speaker will fall silent; add ~{int((13 - ndur) * 2.9)} words")
+                       f"⚠ segment {i + 1}: line fills only {ndur:.0f}s of the ~14s take — "
+                       f"trimming the silent tail so the beat ends on the voice (add "
+                       f"~{int((13 - ndur) * 2.9)} words to fill more of the shot)")
             inputs = {
                 "prompt": seg["prompt"],
                 "ref_image": upload_once(seg["image"]),
@@ -641,6 +648,17 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
             # The segment clip stays in the Library — lock its lip-synced voice
             # just like the final, or /revoice could desync its mouth.
             Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
+            # Dead-air guard (episodes): the take is a fixed ~14.4s but this line
+            # may fill only part of it. Trim to where the baked-in voice actually
+            # ends (+ the same 0.45s breathing tail assembly uses) so the avatar
+            # doesn't mouth silence into the next cut — FIXES the underfill, not
+            # just warns it. detect_audio_end handles the "audio stream ends before
+            # video" case S2V underfill produces.
+            voice_end = ffmpeg.detect_audio_end(clip)
+            if voice_end + ffmpeg.FIT_TAIL_S < ffmpeg.probe(clip)["duration"] - 0.1:
+                fit = str(SEQ_VIDEO_DIR / f"{seg_stem}-fit.mp4")
+                ffmpeg.trim_end(clip, voice_end + ffmpeg.FIT_TAIL_S, fit)
+                Path(fit).replace(clip)  # reuse the path -> voice_lock sidecar stays valid
         elif pipeline_kind == "cinematic":
             if seg.get("image"):
                 # Brand-locked b-roll: the segment's product/reference photo rides
@@ -758,6 +776,20 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
         Path(joined).unlink(missing_ok=True)  # exactly ONE final per job
     else:
         final = ffmpeg.concat_reencode(processed, out=final)
+
+    # Branded end frame (the reference's closing social/CTA card): text can't be
+    # trusted to video models, so it lives on a real card appended here. Sidecars
+    # below then point at the carded final.
+    ec = req.get("end_card")
+    if ec and ec.get("brand"):
+        report("assembling", 97, "branded end card")
+        carded = ffmpeg.end_card(
+            final, brand=ec["brand"], tagline=ec.get("tagline"), offer=ec.get("offer"),
+            product_image=ec.get("image"), out=str(SEQ_VIDEO_DIR / f"{name}-carded.mp4"))
+        # The carded cut BECOMES the final so it's named/classified as ONE final
+        # (the Library keys "final" off the stem; a -carded name reads as a clip and
+        # hides the real, branded deliverable).
+        Path(carded).replace(final)
 
     if any(seg["pipeline"] == "lipsync" for seg in segments):
         # Voice-lock sidecar: this final contains lip-synced speech — /revoice must

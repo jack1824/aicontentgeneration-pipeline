@@ -17,6 +17,7 @@ Endpoints:
 Jobs are held in memory (fine for 3-4 users / dev); the DB arrives in Phase 3.
 Run:  ./.venv/bin/uvicorn app.main:app --port 8000
 """
+import hashlib
 import json
 import threading
 import time
@@ -181,6 +182,7 @@ class GenerateRequest(BaseModel):
     language: str = "hi"
     seed: int | None = None
     music: str | None = None             # optional path to a music bed
+    end_card: dict | None = None         # branded end frame {brand, tagline?, offer?, image?}
     quality: Literal["quality", "fast"] = "quality"   # fast = 4-step preview mode
     name: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9._-]+$")
     # ^ prefixes output files (outputs/video/<name>-*.mp4); defaults to the job id
@@ -226,6 +228,11 @@ class PlanRequest(BaseModel):
     # and the film is sized to it; otherwise it is treated as a draft to improve.
     script: str | None = Field(default=None, max_length=12000)
     verbatim: bool = False
+    # Force a specialized director brain instead of the generic 3-approach planner.
+    # None = auto (the brain picks the pipeline). Set from the mode the user is on so
+    # a cinematic surface plans like a cinematic director, a sequence surface like an
+    # editor, etc. — every returned approach commits to this pipeline.
+    mode: Literal["cinematic", "sequence", "product", "lipsync", "overlay"] | None = None
 
 
 class PlanQuestionsRequest(BaseModel):
@@ -264,7 +271,7 @@ def plan_endpoint(req: PlanRequest):
             result = llm.plan(req.idea, language=req.language, ad_format=req.format,
                               duration_s=req.duration_s, avoid=req.avoid or None,
                               cast=cast or None, script=req.script,
-                              verbatim=req.verbatim)
+                              verbatim=req.verbatim, mode=req.mode)
             _update(job_id, status="done", progress=100, detail="", plan=result)
         except llm.PlanError as e:
             _update(job_id, status="error", error=str(e))
@@ -812,6 +819,62 @@ def sync_report_endpoint(req: SyncReportRequest):
     if not _under_outputs(src):
         raise HTTPException(422, "only videos under outputs/ can be analyzed")
     return ffmpeg.sync_report(str(src))
+
+
+class CoverRequest(BaseModel):
+    """Pick a COVER/thumbnail for a finished ad — the shelf image every social
+    surface shows in-grid and pre-autoplay. A raw first frame is usually a black
+    fade or a mid-blink mouth; letting the user pick a frame (+ optional hook line
+    burned on) is a small change with outsized tap-through impact."""
+    video_path: str
+    at_s: float = Field(default=0.0, ge=0.0)   # timestamp to grab
+    hook: str | None = Field(default=None, max_length=120)  # optional burned-on line
+
+
+@app.post("/cover")
+def cover_endpoint(req: CoverRequest):
+    """Write outputs/.../<stem>-cover.png next to the video (sync — one frame grab).
+    The Library listing then surfaces it as `cover_url`. Downloadable/shareable."""
+    src = Path(req.video_path)
+    if not src.exists():
+        raise HTTPException(404, f"video not found: {req.video_path}")
+    if not _under_outputs(src):
+        raise HTTPException(422, "only videos under outputs/ can get a cover")
+    out = src.with_name(src.stem + "-cover.png")
+    try:
+        dur = ffmpeg.probe(str(src)).get("duration") or 0.0
+        at = min(float(req.at_s), max(0.0, dur - 0.05))
+        ffmpeg.cover_frame(str(src), str(out), at_s=at, hook=req.hook)
+    except Exception as e:
+        raise HTTPException(500, f"cover failed: {type(e).__name__}: {e}")
+    # resolve() both sides so an absolute video_path (which _under_outputs accepts)
+    # still maps to a /files-relative URL instead of ValueError-ing.
+    rel = out.resolve().relative_to(Path("outputs").resolve()).as_posix()
+    return {"cover_url": f"/files/{rel}", "path": str(out), "at_s": at}
+
+
+@app.delete("/outputs")
+def delete_output_endpoint(path: str):
+    """Delete a Library render (and its sidecars: -cover.png, .meta.json, -recipe.json).
+    `path` is the item's stored `path` (outputs/...). Guarded to the outputs tree."""
+    src = Path(path)
+    if not _under_outputs(src):
+        raise HTTPException(422, "only files under outputs/ can be deleted")
+    if not src.exists():
+        raise HTTPException(404, f"not found: {path}")
+    mtime = src.stat().st_mtime
+    src.unlink(missing_ok=True)
+    # sweep the sidecars that ride alongside THIS file
+    src.with_name(src.stem + "-cover.png").unlink(missing_ok=True)
+    src.with_suffix(".meta.json").unlink(missing_ok=True)
+    # The recipe sidecar is SHARED by the -final and -final-post siblings (list_outputs
+    # strips both suffixes to the same base). Only sweep it once no sibling still needs it.
+    stem = src.stem.replace("-final", "").replace("-post", "")
+    siblings = [src.parent / f"{stem}-final.mp4", src.parent / f"{stem}-final-post.mp4"]
+    if not any(s.exists() for s in siblings):
+        (src.parent / f"{stem}-recipe.json").unlink(missing_ok=True)
+    _DURATION_CACHE.pop((str(src), mtime), None)
+    return {"ok": True, "deleted": path}
 
 
 class TimelineClip(BaseModel):
@@ -1614,7 +1677,10 @@ def _cached_duration(path: str, mtime: float) -> float | None:
 @app.get("/outputs")
 def list_outputs():
     """List every generated video for the Library grid (newest first)."""
-    items = []
+    # Collect candidates first, then warm the duration cache in PARALLEL. A cold
+    # Library used to ffprobe ~300 files serially (~9s) — the frontend's fetch
+    # stalled and the grid showed nothing. 16-way probing makes it ~instant.
+    cands = []
     for p in Path("outputs").rglob("*.mp4"):
         # Assembly intermediates are transient (and deleted mid-flight) — never list them.
         if p.stem.endswith(".stitched") or p.stem.endswith("-joined"):
@@ -1623,11 +1689,23 @@ def list_outputs():
             st = p.stat()
         except OSError:
             continue  # a running job deleted it between rglob and stat — skip, don't 500
+        cands.append((p, st))
+    _uncached = [(str(p), st.st_mtime) for p, st in cands
+                 if (str(p), st.st_mtime) not in _DURATION_CACHE]
+    if _uncached:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            list(ex.map(lambda a: _cached_duration(*a), _uncached))
+    items = []
+    for p, st in cands:
         rel = p.relative_to("outputs")
         parts = rel.parts
+        cover = p.with_name(p.stem + "-cover.png")
         item = {
             "path": str(p),
             "url": f"/files/{rel.as_posix()}",
+            "cover_url": (f"/files/{cover.relative_to('outputs').as_posix()}"
+                          if cover.exists() else None),
             "name": p.name,
             "pipeline": parts[0] if len(parts) > 2 else "want2v",
             "kind": ("final-post" if p.stem.endswith("-post")
@@ -1697,21 +1775,42 @@ def list_voices():
     return {"voices": _default_voice_entry(), "degraded": reason}
 
 
+# Language-appropriate audition lines so a Hindi show never previews a Hindi-capable
+# voice reading an English boilerplate sentence (the "hear it before you lock it" fix).
+_PREVIEW_SAMPLES = {
+    "hi": "नमस्ते! यही मेरी आवाज़ है — आपके विज्ञापन के लिए एकदम सही।",
+    "en": "Your ad, your voice — this is how I sound.",
+}
+
+
 class VoicePreviewRequest(BaseModel):
     voice_id: str
-    text: str = "Your ad, your voice — this is how I sound."
+    # None -> a language-appropriate default sample; the UI usually passes the
+    # character's REAL line so the audition is the actual delivery, not boilerplate.
+    text: str | None = None
     language: str = "en"
 
 
 @app.post("/voice-preview")
 def voice_preview(req: VoicePreviewRequest):
-    """Generate a short TTS sample for the voice picker's preview button."""
+    """Generate a short TTS sample for the voice picker's preview button.
+
+    Keyed by (voice_id, language, text) so previewing the ACTUAL line — or the
+    same voice in Hindi vs English — each get their own cached clip.
+    """
+    text = (req.text or "").strip() or _PREVIEW_SAMPLES.get(
+        (req.language or "en").split("-")[0], _PREVIEW_SAMPLES["en"])
+    # Empty voice_id = audition the server's Default voice (the "Default voice" chip).
+    voice_id = req.voice_id.strip() or ELEVENLABS_VOICE_ID
+    if not voice_id:
+        raise HTTPException(422, "no voice_id and no server default voice configured")
     out = Path("outputs/voice-previews")
     out.mkdir(parents=True, exist_ok=True)
-    dest = out / f"{req.voice_id}.mp3"
+    key = hashlib.sha1(f"{voice_id}|{req.language}|{text}".encode()).hexdigest()[:16]
+    dest = out / f"{voice_id}-{key}.mp3"
     if not dest.exists() or dest.stat().st_mtime < time.time() - 86400:
         try:
-            synthesize_voice(req.text[:120], voice_id=req.voice_id,
+            synthesize_voice(text[:200], voice_id=voice_id,
                              language=req.language, output_path=str(dest))
         except Exception as e:
             raise HTTPException(502, f"preview failed: {e}")
@@ -2084,6 +2183,7 @@ class EpisodeUpdateRequest(BaseModel):
     language: str | None = None
     beats: list[dict] | None = None
     status: str | None = None
+    outputs: dict | None = None  # e.g. swap in a trimmed final after an inline Fix-timing
 
 
 class EpisodePlanRequest(BaseModel):
@@ -2163,6 +2263,50 @@ def plan_episode_endpoint(ep_id: str, req: EpisodePlanRequest):
     return {"job_id": job_id}
 
 
+class EpisodeWriteRequest(BaseModel):
+    idea: str = Field(min_length=3, max_length=2000)  # one-line episode idea
+
+
+@app.post("/episodes/{ep_id}/write")
+def write_episode_endpoint(ep_id: str, req: EpisodeWriteRequest):
+    """PROMPT-ONLY: the brain AUTHORS the whole episode (dialogue + beats) from a
+    one-line idea, using the Show's locked cast/rooms/look — no pre-written script
+    needed. ASYNC (Gemini). Returns a job_id; poll GET /jobs/{id} (fields `beats`,
+    `script`). The stored episode gets the written script + beats + status=planned.
+    The user reviews/edits the beats, then renders — the confirm gate stays in the UI."""
+    ep = episodes.get_episode(ep_id)
+    if ep is None:
+        raise HTTPException(404, f"unknown episode_id {ep_id}")
+    show = shows.get_show(ep["show_id"])
+    if show is None:
+        raise HTTPException(404, f"episode's show {ep['show_id']} is gone")
+    cast = [{"name": c["name"], "anchor": c["anchor"]}
+            for c in (characters.get_character(cid) for cid in show["character_ids"]) if c]
+    rooms = [{"name": e["name"], "anchor": e["anchor"]}
+             for e in (environments.get_environment(eid) for eid in show["environment_ids"]) if e]
+    style = (show.get("look") or {}).get("style", "")
+    job_id = _new_job("plan", f"write episode {ep['number']}")
+
+    def run() -> None:
+        try:
+            _update(job_id, status="planning", progress=25, detail="writing the episode")
+            result = llm.write_episode(req.idea, cast, rooms,
+                                       language=ep["language"], style=style)
+            episodes.update_episode(ep_id, script=result["script"],
+                                    beats=result["beats"], status="planned")
+            _update(job_id, status="done", progress=100, detail="",
+                    beats=result["beats"], script=result["script"],
+                    spoken_s=result["spoken_s"])
+        except llm.PlanError as e:
+            _update(job_id, status="error", error=str(e))
+        except Exception as e:
+            traceback.print_exc()
+            _update(job_id, status="error", error=f"episode writer error ({type(e).__name__}): {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
 def _slug(text: str, fallback: str) -> str:
     import re as _re
     s = _re.sub(r"[^a-zA-Z0-9._-]+", "-", (text or "").strip()).strip("-")
@@ -2194,6 +2338,50 @@ def _beat_prompt(beat: dict, speaker: dict | None, room: dict | None, look: dict
     return " ".join(p.strip().rstrip(".") + "." for p in parts if p and p.strip())
 
 
+def _lookup_keyframe(show: dict, character_id: str, environment_id: str) -> str | None:
+    """A cached character-in-room composite for this (character, room) pair, if one
+    was composed and the file still exists — the S2V background-lock reference that
+    keeps the same set across cuts. None -> the lipsync lane uses the bare face."""
+    for kf in show.get("keyframe_bank") or []:
+        if (kf.get("character_id") == character_id
+                and kf.get("environment_id") == environment_id):
+            p = kf.get("image")
+            if p and Path(p).exists():
+                return p
+    return None
+
+
+def _compose_show_keyframes(show_id: str, style: str | None = None,
+                            on_progress=None, on_submit=None) -> list[dict]:
+    """Composite each cast character (with a face) INTO each room (with a plate) via
+    Qwen-Edit and cache the results in the show's keyframe_bank — the S2V
+    background-lock references, reused across every episode. Idempotent: existing
+    (character, room) entries are kept, only missing pairs are composed."""
+    show = shows.get_show(show_id)
+    if show is None:
+        raise ValueError(f"unknown show_id {show_id}")
+    style = style or (show.get("look") or {}).get("art_style") or "realistic"
+    chars = [c for c in (characters.get_character(cid) for cid in show["character_ids"])
+             if c and c.get("face_image")]
+    rooms = [e for e in (environments.get_environment(eid) for eid in show["environment_ids"])
+             if e and e.get("primary_plate")]
+    bank = list(show.get("keyframe_bank") or [])
+    have = {(k.get("character_id"), k.get("environment_id")) for k in bank}
+    pairs = [(c, r) for r in rooms for c in chars if (c["id"], r["id"]) not in have]
+    for i, (c, r) in enumerate(pairs):
+        if on_progress:
+            on_progress("keyframes", 5 + int(85 * i / max(1, len(pairs))),
+                        f"composing {c['name']} in {r['name']} ({i + 1}/{len(pairs)})")
+        out = str(keyframes.KEYFRAMES_DIR / f"show-{show_id}-{c['id']}-{r['id']}.png")
+        img = keyframes.composite_into_scene(
+            c["face_image"], r["primary_plate"], out, style=style, on_submit=on_submit)
+        bank.append({"character_id": c["id"], "environment_id": r["id"],
+                     "character": c["name"], "environment": r["name"],
+                     "image": img, "style": style})
+        shows.update_show(show_id, keyframe_bank=bank)  # persist incrementally
+    return bank
+
+
 def _compile_episode_segments(show: dict, ep: dict) -> list[dict]:
     """Turn approved beats into sequence segments the existing pipeline renders.
 
@@ -2218,8 +2406,12 @@ def _compile_episode_segments(show: dict, ep: dict) -> list[dict]:
         prompt = _beat_prompt(beat, speaker, room, look) or "cinematic advertisement shot."
         line = (beat.get("line") or "").strip() or None
         if beat.get("type") == "speak" and speaker and speaker.get("face_image"):
+            # Background lock: prefer a cached character-in-room composite so S2V
+            # holds the SAME set across every cut; fall back to the bare face when
+            # none has been composed yet (current behaviour, background drifts).
+            ref = _lookup_keyframe(show, speaker["id"], room["id"]) if room else None
             seg = {"pipeline": "lipsync", "prompt": prompt, "negative_prompt": negative,
-                   "script": line or "", "image": speaker["face_image"],
+                   "script": line or "", "image": ref or speaker["face_image"],
                    "voice_id": speaker.get("voice_id")}
         elif room and room.get("primary_plate"):
             seg = {"pipeline": "cinematic", "prompt": prompt, "negative_prompt": negative,
@@ -2232,6 +2424,81 @@ def _compile_episode_segments(show: dict, ep: dict) -> list[dict]:
                    "voice_id": speaker.get("voice_id") if speaker else None}
         segments.append(seg)
     return segments
+
+
+def _episode_voice_gaps(show: dict, ep: dict) -> list[str]:
+    """Speaking characters with no assigned voice. A spoken beat for such a
+    character would raise inside synthesize_voice AFTER the GPU spend — reject the
+    render up front instead. Returns the character names (or beat labels) to fix."""
+    chars = {c["name"]: c for c in
+             (characters.get_character(cid) for cid in show["character_ids"]) if c}
+    gaps: set[str] = set()
+    for n, b in enumerate(ep.get("beats") or [], 1):
+        if b.get("type") != "speak" or not (b.get("line") or "").strip():
+            continue
+        ch = chars.get(b.get("speaker") or "")
+        if not ch or not ch.get("voice_id"):
+            gaps.add(b.get("speaker") or f"beat {n}")
+    return sorted(gaps)
+
+
+def _watch_episode_render(ep_id: str, job_id: str) -> None:
+    """Bridge the in-memory JOB to the durable episode row. The rendered final +
+    sync report live only on the JOBS dict (gone on restart); when the render
+    reaches a terminal state, copy them into episodes.outputs so the episode has a
+    durable video path + a dead-air receipt. Runs in a daemon thread."""
+    def watch() -> None:
+        while True:
+            job = JOBS.get(job_id)
+            if job and job.get("status") in TERMINAL_STATES:
+                break
+            time.sleep(2)
+        job = JOBS.get(job_id) or {}
+        ep = episodes.get_episode(ep_id)
+        if ep is None:
+            return
+        base = {**(ep.get("outputs") or {}), "job_id": job_id}
+        if job.get("status") == "done" and job.get("video_path"):
+            episodes.update_episode(
+                ep_id, status="done",
+                outputs={**base, "final": job["video_path"],
+                         "report": job.get("sync") or {},
+                         "warnings": job.get("warnings") or []},
+                adherence=job.get("sync") or {})
+        else:
+            episodes.update_episode(
+                ep_id, status="error",
+                outputs={**base, "error": job.get("error") or "render did not finish"})
+    threading.Thread(target=watch, daemon=True).start()
+
+
+@app.post("/shows/{show_id}/compose-keyframes")
+def compose_show_keyframes_endpoint(show_id: str):
+    """Composite each cast member INTO each room plate (Qwen-Edit) and cache them in
+    keyframe_bank — the background-lock references the episode lipsync lane animates,
+    so the room stays identical across cuts and across episodes. NEEDS THE POD;
+    requires faces + plates to already exist. Async — poll GET /jobs/{id}."""
+    show = shows.get_show(show_id)
+    if show is None:
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    job_id = _new_job("generate", f"compose-{show['name']}")
+
+    def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+
+        def on_progress(status: str, pct: int, detail: str) -> None:
+            _update(job_id, status=status, progress=pct, detail=detail)
+        try:
+            bank = _compose_show_keyframes(show_id, on_progress=on_progress, on_submit=on_submit)
+            _update(job_id, status="done", progress=100,
+                    detail=f"{len(bank)} keyframe(s) cached", video_path=None)
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id, "show_id": show_id}
 
 
 @app.post("/episodes/{ep_id}/render")
@@ -2251,15 +2518,33 @@ def render_episode_endpoint(ep_id: str):
     segments = _compile_episode_segments(show, ep)
     if not segments:
         raise HTTPException(422, "no renderable beats")
+    # Fail fast BEFORE the pod spend: a speaking character with no voice would
+    # crash mid-render in synthesize_voice.
+    gaps = _episode_voice_gaps(show, ep)
+    if gaps:
+        raise HTTPException(422, "assign a voice to these speaking characters before "
+                                 f"rendering (Show cast → pick a voice): {', '.join(gaps)}")
     grammar = show.get("grammar") or {}
+    look = show.get("look") or {}
+    # Branded end frame (reference's closing social/CTA card) — only when the Show
+    # carries a brand name; tagline/offer/logo are optional.
+    end_card = None
+    if look.get("brand"):
+        end_card = {"brand": look["brand"], "tagline": look.get("tagline"),
+                    "offer": look.get("offer"), "image": look.get("end_card_image")}
     name = f"ep{ep['number']}-{_slug(show['name'], show['id'])}"
     gen = GenerateRequest(
         mode="sequence", segments=[Segment(**s) for s in segments],
         language=ep["language"], name=name,
         quality=grammar.get("quality", "quality"),
         width=grammar.get("width"), height=grammar.get("height"),
+        end_card=end_card,
     )
     result = generate_endpoint(gen)  # reuses all validation + cast/avatar resolution + sync
+    job_id = result["job_id"]
     episodes.update_episode(ep_id, status="rendering",
-                            outputs={**(ep.get("outputs") or {}), "job_id": result["job_id"]})
-    return {"job_id": result["job_id"], "name": name, "segments": len(segments)}
+                            outputs={**(ep.get("outputs") or {}), "job_id": job_id})
+    # Persist the final + sync report back to the episode when the job finishes
+    # (the JOBS dict is in-memory; the episode row must survive a restart).
+    _watch_episode_render(ep_id, job_id)
+    return {"job_id": job_id, "name": name, "segments": len(segments)}

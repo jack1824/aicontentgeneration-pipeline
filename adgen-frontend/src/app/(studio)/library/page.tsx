@@ -32,17 +32,54 @@ function Lightbox({
   onClose,
   onEnhanced,
   onJobStart,
+  onDeleted,
 }: {
   item: OutputItem;
   voices: Voice[];
   onClose: () => void;
   onEnhanced: () => void;
   onJobStart: (path: string, jobId: string) => void;
+  onDeleted: () => void;
 }) {
   const [enhanceJobId, setEnhanceJobId] = useState<string | null>(null);
   const [enhanceJob, setEnhanceJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Cover/thumbnail picker: scrub the player, grab the current frame (+ optional
+  // burned hook line) as the ad's shelf image.
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [coverHook, setCoverHook] = useState("");
+  const [coverUrl, setCoverUrl] = useState<string | null>(item.cover_url ?? null);
+  const [coverBusy, setCoverBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const setCover = async () => {
+    setCoverBusy(true);
+    setError(null);
+    try {
+      const at = videoRef.current?.currentTime ?? 0;
+      const { cover_url } = await api.cover({ video_path: item.path, at_s: at, hook: coverHook.trim() || undefined });
+      setCoverUrl(`${cover_url}?t=${Date.now()}`); // cache-bust so a re-pick shows
+      onEnhanced();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCoverBusy(false);
+    }
+  };
+
+  const del = async () => {
+    if (!window.confirm(`Delete “${item.name}” from the Library? This can't be undone.`)) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.deleteOutput(item.path);
+      onDeleted();
+    } catch (e) {
+      setError(String(e));
+      setDeleting(false);
+    }
+  };
 
   // ---- Edit voice (revoice): new narration replaces the whole soundtrack ----
   // Voice-locked = lips synced to the baked-in speech (avatar renders, and
@@ -312,7 +349,41 @@ function Lightbox({
           </button>
         </div>
 
-        <video controls autoPlay className="max-h-[60vh] w-full rounded-xl bg-black" src={api.fileUrl(item)} />
+        <video ref={videoRef} controls autoPlay className="max-h-[60vh] w-full rounded-xl bg-black" src={api.fileUrl(item)} />
+
+        {/* Cover / thumbnail — the shelf image every social surface shows before
+            autoplay. Scrub to a good frame, optionally add a hook line, grab it. */}
+        <div className="flex flex-wrap items-center gap-2 rounded-btn bg-surface-2/60 p-2">
+          {coverUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- backend-proxied preview
+            <img src={api.assetUrl(coverUrl)} alt="cover" className="h-12 w-20 shrink-0 rounded object-cover ring-1 ring-white/10" />
+          ) : (
+            <span className="grid h-12 w-20 shrink-0 place-items-center rounded bg-surface-3 text-[10px] text-text-muted">no cover</span>
+          )}
+          <input
+            value={coverHook}
+            onChange={(e) => setCoverHook(e.target.value)}
+            placeholder="optional hook line to burn on the cover"
+            className="input-well min-w-0 flex-1 rounded-btn px-2.5 py-1.5 text-xs"
+          />
+          <button
+            onClick={setCover}
+            disabled={coverBusy}
+            className="shrink-0 rounded-btn bg-surface-2 px-3 py-1.5 text-xs font-medium hover:bg-surface-3 disabled:opacity-50"
+            title="Grab the frame currently showing as the cover"
+          >
+            {coverBusy ? "saving…" : "🖼 Set cover from frame"}
+          </button>
+          {coverUrl && (
+            <a
+              href={api.assetUrl(coverUrl)}
+              download={`${item.name.replace(/\.mp4$/, "")}-cover.png`}
+              className="shrink-0 rounded-btn bg-surface-2 px-3 py-1.5 text-xs font-medium hover:bg-surface-3"
+            >
+              ↓ Cover
+            </a>
+          )}
+        </div>
 
         {/* Multi-model recipe chips — role-first (clients care what an engine
             DID); technical model names live in the hover tooltip. */}
@@ -364,6 +435,14 @@ function Lightbox({
           >
             ↓ Download
           </a>
+          <button
+            onClick={del}
+            disabled={deleting}
+            title="Delete this render from the Library"
+            className="shrink-0 rounded-btn bg-surface-2 px-4 py-2.5 text-xs font-medium text-text-muted hover:bg-accent/15 hover:text-accent disabled:opacity-50"
+          >
+            {deleting ? "deleting…" : "🗑"}
+          </button>
           {item.kind !== "final-post" && (!enhanceJobId || enhanceJob?.status === "error") && (
             <button
               onClick={enhance}
@@ -843,6 +922,7 @@ export default function LibraryPage() {
           onClose={() => setOpen(null)}
           onEnhanced={refresh}
           onJobStart={trackJob}
+          onDeleted={() => { setOpen(null); refresh(); }}
         />
       )}
     </div>
