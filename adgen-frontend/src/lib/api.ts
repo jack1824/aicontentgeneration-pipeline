@@ -215,6 +215,10 @@ export type QueueItem = {
   status: string;
   progress: number;
   detail: string;
+  warnings?: string[];
+  error?: string | null;
+  retriable?: boolean;
+  created?: number;
 };
 
 export type RevoiceRequest = {
@@ -585,6 +589,9 @@ export const api = {
       body: JSON.stringify(req),
     }).then(jsonOrThrow),
   cancel: (id: string) => fetch(`${BASE}/jobs/${id}/cancel`, { method: "POST" }).then(jsonOrThrow),
+  // Replay a failed render's stashed request; returns a NEW job_id.
+  retryJob: (id: string): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/jobs/${id}/retry`, { method: "POST" }).then(jsonOrThrow),
   postprocess: (video_path: string, restore_face: boolean): Promise<{ job_id: string }> =>
     fetch(`${BASE}/postprocess`, {
       method: "POST",

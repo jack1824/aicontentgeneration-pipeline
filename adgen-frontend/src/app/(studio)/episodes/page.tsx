@@ -17,7 +17,6 @@ import {
   Character,
   Episode,
   EpisodeBeat,
-  QueueItem,
   Show,
   ShowLook,
   ShowStarter,
@@ -118,7 +117,7 @@ export default function EpisodesPage() {
         </div>
         <button
           onClick={() => setWizardOpen(true)}
-          className="hero-glow shrink-0 rounded-btn px-4 py-2.5 text-sm font-semibold text-white"
+          className="bg-accent hover:bg-accent/90 shrink-0 rounded-btn px-4 py-2.5 text-sm font-semibold text-white"
         >
           ✦ New show
         </button>
@@ -132,8 +131,6 @@ export default function EpisodesPage() {
           </button>
         </p>
       )}
-
-      <RenderStatusBar />
 
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[15rem_1fr_16rem]">
         {/* ---- LEFT: shows + episodes ---- */}
@@ -172,7 +169,7 @@ export default function EpisodesPage() {
         />
 
         {/* ---- CENTER: episode board ---- */}
-        <div className="card-raised min-h-0 overflow-y-auto rounded-card p-5">
+        <div className="border border-white/[0.14] bg-[#141414] min-h-0 overflow-y-auto rounded-card p-5">
           {selectedShow ? (
             selectedEp ? (
               <EpisodeBoard
@@ -264,7 +261,7 @@ function ShowsRail({
   onDeleteEp: (ep: Episode) => void;
 }) {
   return (
-    <div className="card-raised flex min-h-0 flex-col gap-1 overflow-y-auto rounded-card p-3">
+    <div className="border border-white/[0.14] bg-[#141414] flex min-h-0 flex-col gap-1 overflow-y-auto rounded-card p-3">
       <span className="label-cap px-2 pb-1">Shows</span>
       {loaded && shows.length === 0 && (
         <p className="px-2 py-3 text-xs text-text-muted">No shows yet.</p>
@@ -524,7 +521,7 @@ function EpisodeBoard({
       const msg = String(e);
       onError(
         msg.includes("system_stats") || msg.includes("pod") || msg.includes("Connection")
-          ? "Render needs the pod — start it and paste the -8188 URL, then try again."
+          ? "Renders are paused — the render service is offline. Try again shortly."
           : msg,
       );
     }
@@ -555,23 +552,34 @@ function EpisodeBoard({
       )}
 
       {/* Episode input — write from a one-line idea, or paste a script */}
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
-          <span className="label-cap">Episode</span>
-          <div className="flex gap-1">
-            <button
-              onClick={() => setInputMode("idea")}
-              className={`rounded-btn px-2.5 py-1 text-[11px] ${inputMode === "idea" ? "seg-on" : "seg"}`}
-            >
-              ✍️ Write with AI
-            </button>
-            <button
-              onClick={() => setInputMode("script")}
-              className={`rounded-btn px-2.5 py-1 text-[11px] ${inputMode === "script" ? "seg-on" : "seg"}`}
-            >
-              📋 Paste a script
-            </button>
-          </div>
+      <div className="flex flex-col gap-2.5">
+        <span className="label-cap">How do you want to start this episode?</span>
+        <div className="grid grid-cols-2 gap-2.5">
+          {([
+            { k: "idea", icon: "✨", title: "Write with AI", sub: "One line → we write it" },
+            { k: "script", icon: "📝", title: "Paste a script", sub: "You supply the words" },
+          ] as const).map((o) => {
+            const on = inputMode === o.k;
+            return (
+              <button
+                key={o.k}
+                type="button"
+                aria-pressed={on}
+                onClick={() => setInputMode(o.k)}
+                className={`flex items-center gap-2.5 rounded-[10px] border p-3 text-left transition-colors ${
+                  on
+                    ? "border-accent/60 bg-accent/[0.10]"
+                    : "border-white/[0.10] bg-white/[0.02] hover:border-white/25"
+                }`}
+              >
+                <span className="grid size-8 shrink-0 place-items-center rounded-[8px] bg-white/[0.05] text-base leading-none">{o.icon}</span>
+                <span className="min-w-0">
+                  <span className={`block text-[13px] font-semibold ${on ? "text-text-primary" : "text-text-secondary"}`}>{o.title}</span>
+                  <span className="block truncate text-[11px] text-text-muted">{o.sub}</span>
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         {inputMode === "idea" ? (
@@ -587,7 +595,7 @@ function EpisodeBoard({
               <button
                 onClick={write}
                 disabled={writing || idea.trim().length < 4}
-                className="hero-glow rounded-btn px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                className="bg-accent hover:bg-accent/90 rounded-btn px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
               >
                 {writing ? "writing the episode…" : "✦ Write the episode"}
               </button>
@@ -612,7 +620,7 @@ function EpisodeBoard({
               <button
                 onClick={plan}
                 disabled={planning || !script.trim()}
-                className="hero-glow rounded-btn px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                className="bg-accent hover:bg-accent/90 rounded-btn px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
               >
                 {planning ? "breaking into beats…" : beats.length ? "↻ Re-plan beats" : "▸ Break into beats"}
               </button>
@@ -786,7 +794,7 @@ function BeatCard({
 }) {
   const speak = beat.type === "speak";
   return (
-    <div className="rounded-card border border-white/8 bg-surface-2/50 p-2.5">
+    <div className="rounded-[10px] border border-white/[0.09] bg-white/[0.025] p-2.5">
       <div className="flex items-center gap-2">
         <span className="grid size-5 shrink-0 place-items-center rounded-full bg-surface-3 text-[10px] text-text-muted">{index + 1}</span>
         <span className="shrink-0 text-sm" title={beat.type}>{TYPE_ICON[beat.type]}</span>
@@ -940,7 +948,7 @@ function AssetsPane({
 
   if (!show) {
     return (
-      <div className="card-raised flex min-h-0 flex-col gap-2 overflow-y-auto rounded-card p-4">
+      <div className="border border-white/[0.14] bg-[#141414] flex min-h-0 flex-col gap-2 overflow-y-auto rounded-card p-4">
         <span className="label-cap">Show assets</span>
         <p className="text-xs text-text-muted">Select a show to see its cast and rooms.</p>
       </div>
@@ -975,7 +983,7 @@ function AssetsPane({
             setGen(null);
             if (j.status !== "done") {
               onError(j.error?.includes("pod") || j.error?.includes("COMFY")
-                ? "Plate needs the pod — start it, then try again."
+                ? "The image service is offline right now — try again shortly."
                 : j.error ?? "plate failed");
             }
             onAssetsChanged();
@@ -1006,7 +1014,7 @@ function AssetsPane({
             setBatch(null);
             if (j.status !== "done") {
               onError(j.error?.includes("pod") || j.error?.includes("COMFY") || j.error?.includes("system_stats")
-                ? "Assets need the pod — start it, then try again."
+                ? "Asset generation is offline right now — try again shortly."
                 : j.error ?? "asset generation failed");
             }
             onAssetsChanged();
@@ -1027,7 +1035,7 @@ function AssetsPane({
   const missing = cast.filter((c) => !c.face_image).length + rooms.filter((r) => !r.primary_plate).length;
 
   return (
-    <div className="card-raised flex min-h-0 flex-col gap-3 overflow-y-auto rounded-card p-4">
+    <div className="border border-white/[0.14] bg-[#141414] flex min-h-0 flex-col gap-3 overflow-y-auto rounded-card p-4">
       <div className="flex items-center justify-between">
         <span className="label-cap">Show assets</span>
         <span className={`rounded-full px-1.5 py-0.5 text-[9px] uppercase ${STATUS_BADGE[show.status]}`}>
@@ -1318,7 +1326,7 @@ function ShowWizard({
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="card-raised my-6 flex w-full max-w-3xl flex-col gap-5 rounded-card p-6">
+      <div onClick={(e) => e.stopPropagation()} className="border border-white/[0.14] bg-[#141414] my-6 flex w-full max-w-3xl flex-col gap-5 rounded-card p-6">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-display text-lg font-bold">New show</h2>
@@ -1351,7 +1359,7 @@ function ShowWizard({
                 <button
                   onClick={runDraft}
                   disabled={drafting || brief.trim().length < 4}
-                  className="hero-glow rounded-btn px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  className="bg-accent hover:bg-accent/90 rounded-btn px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                 >
                   {drafting ? "drafting…" : "✦ Draft with AI"}
                 </button>
@@ -1493,7 +1501,7 @@ function ShowWizard({
             <button onClick={onClose} className="rounded-btn px-4 py-2 text-sm text-text-secondary hover:bg-surface-2">Cancel</button>
             {step === "review" && (
               <button onClick={create} disabled={!name.trim() || busy}
-                className="hero-glow rounded-btn px-5 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                className="bg-accent hover:bg-accent/90 rounded-btn px-5 py-2 text-sm font-semibold text-white disabled:opacity-50">
                 {busy ? "creating…" : "Create show"}
               </button>
             )}
@@ -1572,58 +1580,13 @@ function WarningsPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Live render status — polls /queue and shows EVERY in-flight render (episode
-// renders AND standalone /generate jobs), so a render in progress is visible
-// here instead of vanishing until its final lands in the Library.
-function RenderStatusBar() {
-  const [active, setActive] = useState<QueueItem[]>([]);
-  useEffect(() => {
-    let alive = true;
-    const tick = () =>
-      api.queue().then((d) => { if (alive) setActive(d.active); }).catch(() => {});
-    tick();
-    const t = setInterval(tick, 4000);
-    return () => { alive = false; clearInterval(t); };
-  }, []);
-  // Renders + assembly jobs; skip the fast pod-free "plan" LLM jobs.
-  const renders = active.filter((a) => a.kind !== "plan");
-  if (renders.length === 0) return null;
-  return (
-    <div className="card-raised flex flex-col gap-2 rounded-card p-3">
-      <div className="flex items-center gap-2">
-        <span className="size-2 shrink-0 animate-pulse rounded-full bg-amber-400" />
-        <span className="label-cap">Rendering now · {renders.length}</span>
-      </div>
-      <div className="flex flex-col gap-2.5">
-        {renders.map((r) => (
-          <div key={r.job_id} className="flex flex-col gap-1">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] uppercase text-text-muted">{r.kind}</span>
-              <span className="min-w-0 flex-1 truncate font-medium">{r.name || r.job_id}</span>
-              <span className="shrink-0 text-text-secondary">{r.progress}%</span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
-              <div
-                className={`h-full rounded-full transition-all ${r.status === "error" ? "bg-accent" : "bg-green-400"}`}
-                style={{ width: `${Math.max(3, Math.min(100, r.progress))}%` }}
-              />
-            </div>
-            <p className="truncate text-[10px] text-text-muted">{r.status} · {r.detail || "…"}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 function EmptyBoard({ title, hint, cta }: { title: string; hint: string; cta?: { label: string; onClick: () => void } }) {
   return (
     <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 text-center">
       <p className="font-display text-lg font-semibold text-text-secondary">{title}</p>
       <p className="max-w-sm text-sm text-text-muted">{hint}</p>
       {cta && (
-        <button onClick={cta.onClick} className="hero-glow mt-1 rounded-btn px-4 py-2 text-sm font-semibold text-white">
+        <button onClick={cta.onClick} className="bg-accent hover:bg-accent/90 mt-1 rounded-btn px-4 py-2 text-sm font-semibold text-white">
           {cta.label}
         </button>
       )}

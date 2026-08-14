@@ -372,6 +372,9 @@ def generate_endpoint(req: GenerateRequest):
         if seg.image and not Path(seg.image).exists():
             raise HTTPException(404, f"segment {i + 1} image not found: {seg.image}")
     job_id = _new_job("generate", req.name)
+    # Stash the request so a failed render can be replayed by POST /jobs/{id}/retry
+    # (episode renders route through here too, so their compiled segments retry as-is).
+    JOBS[job_id]["retry"] = {"kind": "generate", "req": req.model_dump()}
 
     def run() -> None:
         def on_progress(status: str, pct: int, detail: str) -> None:
@@ -522,7 +525,9 @@ def queue_state():
     active = sorted(
         (
             {"job_id": jid, "kind": j.get("kind"), "name": j.get("name"),
-             "status": j["status"], "progress": j["progress"], "detail": j["detail"]}
+             "status": j["status"], "progress": j["progress"], "detail": j["detail"],
+             "warnings": j.get("warnings") or [], "error": j.get("error"),
+             "retriable": bool(j.get("retry")), "created": j.get("created")}
             for jid, j in JOBS.items() if j["status"] not in TERMINAL_STATES
         ),
         key=lambda a: JOBS[a["job_id"]].get("created", 0),
@@ -578,6 +583,22 @@ def job_cancel(job_id: str):
             # its current clip but the worker discards it at the next checkpoint.
             job.update(detail="cancelled (pod unreachable — current clip may finish)")
     return {"ok": True, "status": "cancelled"}
+
+
+@app.post("/jobs/{job_id}/retry")
+def job_retry(job_id: str):
+    """Re-run a failed render by replaying its stashed request. Returns a NEW job_id
+    (the render tray swaps the failed row for it). Only jobs created with a `retry`
+    descriptor (generate / episode renders) are retriable."""
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"unknown job_id {job_id}")
+    r = job.get("retry")
+    if not r:
+        raise HTTPException(422, "this job can't be retried")
+    if r.get("kind") == "generate":
+        return generate_endpoint(GenerateRequest(**r["req"]))
+    raise HTTPException(422, f"unknown retry kind: {r.get('kind')}")
 
 
 class RevoiceRequest(BaseModel):
