@@ -52,7 +52,13 @@ _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 # (the dentist audit found a 1.2s dead-frame span a viewer reads as buffering).
 FREEZE_FAIL_S = 0.8
 
-_VISION_MODEL = "gemini-2.5-flash"
+# Gemini's free tier meters ~20 requests/day PER MODEL per project, so QC and the
+# PLANNER must not share a model or they starve each other: a 6-segment render spends
+# one vision call per take (three on a re-roll) and had already drained the planner's
+# budget by segment 2 — which is what "vision QC unavailable (Gemini)" meant, and why
+# planning went flaky on the same day. Pointing QC at its own model buys a separate
+# bucket. Keep this DIFFERENT from llm.GEMINI_MODEL / llm.GEMINI_FALLBACK_MODEL.
+_VISION_MODEL = os.getenv("QC_VISION_MODEL", "gemini-3.5-flash")
 _URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 _RUBRIC = """\
