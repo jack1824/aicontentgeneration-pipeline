@@ -37,12 +37,34 @@ FIT_MAX_TRIM_S = 4.0   # lenient mode only: keep the full cut past this much dea
 # Strict mode never trims an ad below this — a 3s VO on a 30s film must not ship a
 # 3.5s stub. Below this length the tail stays and is flagged instead.
 FIT_MIN_OUT_S = 8.0
+# A freeze longer than this still ships (losing the voice is always worse), but the
+# warning tells the user to add a shot rather than leaning on the hold.
+FIT_HOLD_WARN_S = 2.5
+# libx264 args for the one path that CANNOT use -c:v copy: extending the picture needs
+# a real video filter (tpad), which forces a re-encode. Matches concat_reencode's crf.
+_HOLD_VCODEC = ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
+
+
+def _hold_lane(hold_s: float) -> tuple[str, str, list[str]]:
+    """(video filter prefix, -map target, codec args) for a possibly-extended picture.
+
+    hold_s <= 0 keeps the fast `-c:v copy` path untouched, so every currently-working
+    render is byte-for-byte unaffected.
+    """
+    if hold_s <= 0.05:
+        return "", "0:v", ["-c:v", "copy"]
+    return (f"[0:v]tpad=stop_mode=clone:stop_duration={hold_s:.3f}[vhold];",
+            "[vhold]", list(_HOLD_VCODEC))
 
 
 def _fit_narration(
     video_dur: float, narr_dur: float, delay_ms: int, strict: bool = True,
-) -> tuple[float | None, float, str | None]:
-    """Return (atempo_or_None, output_duration_s, warning_or_None) for a narration join.
+    allow_hold: bool = True,
+) -> tuple[float | None, float, float, str | None]:
+    """Return (atempo_or_None, output_duration_s, hold_s, warning_or_None) for a join.
+
+    `hold_s` > 0 means the PICTURE must be extended by that many seconds (freeze the
+    final frame) so the voice can finish. See allow_hold below.
 
     strict=True (default): the film ends a beat after the voice does — dead tails are
     CUT, not kept. This is the fix for "29s clip, 20s audio": the old code computed the
@@ -53,10 +75,22 @@ def _fit_narration(
     strict=False: the legacy lenient behaviour — keep the whole cut past FIT_MAX_TRIM_S
     and flag it. Correct where the tail is NOT silent (an ambience/music bed rides under
     it) or where the user deliberately placed the narration (/reassemble, timeline export).
+
+    allow_hold=True (default): a narration that STILL overruns at FIT_MAX_TEMPO extends
+    the picture instead of losing its tail. This is the fix for "the end audio gets
+    clipped": the old code detected the overrun, warned about it, and then truncated
+    anyway (`out_t = min(video_dur, ...)` ran BEFORE the strict/lenient split, so
+    neither strict nor lenient callers were protected — the whole closing CTA of a
+    25.2s VO on a 20.25s film was cut mid-word). Speech is never cut now.
+
+    allow_hold=False: the legacy clamp, kept for EPISODE renders only. Episode beats are
+    cut to fixed-length takes and a freeze would break the show's rhythm, so episodes
+    keep shipping exactly what they shipped before this change.
     """
     delay = delay_ms / 1000.0
     tempo: float | None = None
     warning: str | None = None
+    hold = 0.0
     window = video_dur - delay
     audio_end = delay + narr_dur
     if window > 0.1 and narr_dur > window:
@@ -68,8 +102,19 @@ def _fit_narration(
             tempo = FIT_MAX_TEMPO
             audio_end = delay + narr_dur / FIT_MAX_TEMPO
             overrun = audio_end - video_dur
-            warning = (f"narration runs ~{overrun:.1f}s past the video even at "
-                       f"{FIT_MAX_TEMPO}x — shorten the script")
+            if allow_hold:
+                # Hold the final frame until the voice lands, rather than cutting it.
+                hold = overrun + FIT_TAIL_S
+                warning = (f"narration runs ~{overrun:.1f}s past the last shot — held "
+                           f"the final frame so the voice finishes"
+                           + (f"; that's a long freeze, consider one more shot"
+                              if hold > FIT_HOLD_WARN_S else ""))
+            else:
+                warning = (f"narration runs ~{overrun:.1f}s past the video even at "
+                           f"{FIT_MAX_TEMPO}x — shorten the script")
+    if hold > 0:
+        # The picture is being extended to meet the voice; nothing to trim.
+        return tempo, audio_end + FIT_TAIL_S, hold, warning
     out_t = min(video_dur, audio_end + FIT_TAIL_S)
     trimmed = video_dur - out_t
     if trimmed > 0.05:
@@ -95,7 +140,7 @@ def _fit_narration(
             out_t = video_dur
             warning = (f"narration ends ~{gap:.1f}s before the video — kept the full cut "
                        f"(Library → ✂ Fix timing to trim it on purpose)")
-    return tempo, out_t, warning
+    return tempo, out_t, 0.0, warning
 
 
 def _narr_filter(delay_ms: int, gain: float = 1.0, tempo: float | None = None) -> str:
@@ -305,6 +350,7 @@ def stitch_and_overlay(
     music: str | None = None,
     out: str = "final.mp4",
     on_warning=None,
+    allow_hold: bool = True,
 ) -> str:
     """Stitch silent clips and lay narration on top (+ optional ducked music). [AUDIO-AFTER]
 
@@ -319,22 +365,24 @@ def stitch_and_overlay(
     try:
         vdur = probe(stitched)["duration"]
         ndur = probe(narration)["duration"]
-        tempo, out_t, warning = _fit_narration(vdur, ndur, 300, strict=music is None)
+        tempo, out_t, hold, warning = _fit_narration(
+            vdur, ndur, 300, strict=music is None, allow_hold=allow_hold)
         if warning and on_warning:
             on_warning(warning)
         narr = _narr_filter(300, tempo=tempo)
+        vf, vmap, vcodec = _hold_lane(hold)
         if music:
-            fc = (f"{narr};"
+            fc = (f"{vf}{narr};"
                   f"[2:a]volume={MUSIC_DUCK_VOLUME}[bg];"
                   f"[narr][bg]amix=inputs=2:duration=first:normalize=0[mix]")
             cmd = ["ffmpeg", "-y", "-i", stitched, "-i", narration, "-i", music,
                    "-filter_complex", fc,
-                   "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
+                   "-map", vmap, "-map", "[mix]", *vcodec, "-c:a", "aac",
                    "-t", f"{out_t:.3f}", out]
         else:
             cmd = ["ffmpeg", "-y", "-i", stitched, "-i", narration,
-                   "-filter_complex", narr,
-                   "-map", "0:v", "-map", "[narr]", "-c:v", "copy", "-c:a", "aac",
+                   "-filter_complex", f"{vf}{narr}",
+                   "-map", vmap, "-map", "[narr]", *vcodec, "-c:a", "aac",
                    "-t", f"{out_t:.3f}", out]
         _run(cmd)
     finally:
@@ -388,6 +436,7 @@ def replace_audio(
     fit: bool = True,
     strict: bool = True,
     on_warning=None,
+    allow_hold: bool = True,
 ) -> str:
     """Replace a video's ENTIRE soundtrack with narration (+ optional ducked music).
 
@@ -404,24 +453,26 @@ def replace_audio(
     vdur = probe(video)["duration"]
     ndur = probe(narration)["duration"]
     if fit:
-        tempo, out_t, warning = _fit_narration(
-            vdur, ndur, narration_delay_ms, strict=strict and music is None)
+        tempo, out_t, hold, warning = _fit_narration(
+            vdur, ndur, narration_delay_ms, strict=strict and music is None,
+            allow_hold=allow_hold)
         if warning and on_warning:
             on_warning(warning)
     else:
-        tempo, out_t = None, vdur
+        tempo, out_t, hold = None, vdur, 0.0
     narr = _narr_filter(narration_delay_ms, gain=narration_gain, tempo=tempo)
+    vf, vmap, vcodec = _hold_lane(hold)
     if music:
-        fc = (f"{narr};[2:a]volume={music_gain}[bg];"
+        fc = (f"{vf}{narr};[2:a]volume={music_gain}[bg];"
               f"[narr][bg]amix=inputs=2:duration=first:normalize=0[mix]")
         cmd = ["ffmpeg", "-y", "-i", video, "-i", narration, "-i", music,
                "-filter_complex", fc,
-               "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
+               "-map", vmap, "-map", "[mix]", *vcodec, "-c:a", "aac",
                "-t", f"{out_t:.3f}", out]
     else:
         cmd = ["ffmpeg", "-y", "-i", video, "-i", narration,
-               "-filter_complex", narr,
-               "-map", "0:v", "-map", "[narr]", "-c:v", "copy", "-c:a", "aac",
+               "-filter_complex", f"{vf}{narr}",
+               "-map", vmap, "-map", "[narr]", *vcodec, "-c:a", "aac",
                "-t", f"{out_t:.3f}", out]
     _run(cmd)
     return out

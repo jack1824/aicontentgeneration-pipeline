@@ -24,6 +24,11 @@ from pathlib import Path
 
 CHECKPOINT_DIR = Path("outputs/sequence/checkpoints")
 
+# Bump whenever the audio/video assembly of a SEGMENT changes, so cached segments from
+# the old policy are re-muxed instead of reused. 2 = narration that outruns its shot
+# holds the final frame instead of being cut.
+FIT_POLICY_VERSION = 2
+
 
 def _path(name: str) -> Path:
     return CHECKPOINT_DIR / f"{name}.json"
@@ -39,6 +44,11 @@ def seg_hash(seg: dict, req: dict) -> str:
         "language": req.get("language"),
         "steps": req.get("steps"),
         "seed": req.get("seed"),
+        # Assembly policy affects the FINISHED per-segment artifact (the -voiced.mp4 we
+        # cache), not just the render. Bumping this invalidates every segment muxed under
+        # an older policy, so a resume/retry can't ship audio cut by the pre-fix code.
+        "fit_policy": FIT_POLICY_VERSION,
+        "legacy_audio_fit": bool(req.get("legacy_audio_fit")),
     }
     return hashlib.sha1(json.dumps(knobs, sort_keys=True, default=str).encode()).hexdigest()[:16]
 

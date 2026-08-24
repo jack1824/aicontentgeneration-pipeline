@@ -208,6 +208,14 @@ class GenerateRequest(BaseModel):
     qc: bool | None = None               # shot QC gate (vision review + auto re-roll).
                                          # None = ON for every render incl. FAST (user rule:
                                          # fast must not degrade); false is the only off-switch
+    legacy_audio_fit: bool = False       # True = keep the pre-2026-08 behaviour of CUTTING a
+                                         # narration that outruns the picture. Ads never set
+                                         # this (they hold the last frame so the voice
+                                         # finishes); ONLY /episodes/{id}/render does, because
+                                         # episode beats are cut to fixed-length takes and a
+                                         # freeze would break the show's rhythm. It lives on the
+                                         # model, not as a local, so an episode RETRY (which
+                                         # replays req.model_dump()) keeps episode behaviour.
     width: int | None = Field(default=None, ge=64, le=1920, multiple_of=16)
     height: int | None = Field(default=None, ge=64, le=1920, multiple_of=16)
     # ^ frame size override (e.g. 432x768 = 9:16 vertical for reels); default = workflow's own
@@ -2799,6 +2807,9 @@ def render_episode_endpoint(ep_id: str):
         quality=grammar.get("quality", "quality"),
         width=grammar.get("width"), height=grammar.get("height"),
         end_card=end_card,
+        # Episodes keep the legacy audio fit — ads now hold the final frame when a
+        # narration outruns its shot, but an episode's beats are timed to fixed takes.
+        legacy_audio_fit=True,
     )
     result = generate_endpoint(gen)  # reuses all validation + cast/avatar resolution + sync
     job_id = result["job_id"]

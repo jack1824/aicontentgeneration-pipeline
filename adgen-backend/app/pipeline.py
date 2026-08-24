@@ -557,6 +557,11 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
     SEQ_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     SEQ_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     pod = COMFY_POD_URLS[0]
+    # Ads hold the final frame rather than cutting a narration that outruns its shot;
+    # EPISODES keep the legacy cut (their beats are timed to fixed-length takes).
+    # This is the ONLY thing separating an episode render from a Sequence Studio ad —
+    # both land in this same function.
+    allow_hold = not req.get("legacy_audio_fit")
     base_seed = req.get("seed") or DEFAULT_BASE_SEED
     fast = req.get("quality") == "fast"
     uploaded: dict[str, str] = {}  # local path -> pod filename (upload each asset once)
@@ -814,6 +819,7 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                     clip, narration, music=clip, music_gain=0.25,
                     out=str(SEQ_VIDEO_DIR / f"{seg_stem}-voiced.mp4"),
                     on_warning=lambda w, i=i: report("generating", pct, f"segment {i + 1}: {w}"),
+                    allow_hold=allow_hold,
                 )
                 Path(silent).unlink(missing_ok=True)
         else:
@@ -848,6 +854,7 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                 clip = ffmpeg.replace_audio(
                     clip, narration, out=str(SEQ_VIDEO_DIR / f"{seg_stem}-voiced.mp4"),
                     on_warning=lambda w, i=i: report("generating", pct, f"segment {i + 1}: {w}"),
+                    allow_hold=allow_hold,
                 )
                 Path(silent).unlink(missing_ok=True)  # one clip per segment in the Library
         processed.append(clip)
@@ -1428,6 +1435,17 @@ def _generate_redub(req: dict, name: str, report, on_submit=None) -> str:
         language=req.get("language", "hi"),
         output_path=str(REDUB_AUDIO_DIR / f"{name}-dub-raw.mp3"),
     )
+    # fit_audio_duration TRIMS to the source length, so a dub longer than the video
+    # loses its tail — and the lips then get re-rendered around the cut. Unlike every
+    # other path this one had no warning at all, so the loss was invisible. The source
+    # video's length is fixed here (the mouth must stay registered to real frames), so
+    # we can't hold a frame the way an ad assembly can: say so loudly instead.
+    raw_dur = ffmpeg.probe(raw)["duration"]
+    if raw_dur > info["duration"] + 0.15:
+        over = raw_dur - info["duration"]
+        report("tts", 6, f"⚠ the new line runs ~{over:.1f}s longer than the clip — its "
+                         f"last ~{over:.1f}s will not be dubbed; shorten the line or "
+                         f"redub a longer clip")
     dub = ffmpeg.fit_audio_duration(raw, info["duration"],
                                     str(REDUB_AUDIO_DIR / f"{name}-dub.mp3"))
 
