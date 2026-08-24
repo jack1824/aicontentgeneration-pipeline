@@ -679,7 +679,10 @@ function TimelineStudio() {
   useEffect(() => {
     api.voices().then((d) => setVoices(d.voices ?? [])).catch(() => setVoices([]));
     api.characters()
-      .then((d) => setCast((d.characters ?? []).map((c) => ({ id: c.id, name: c.name, anchor: c.anchor }))))
+      // backend caps a plan's cast_ids at 4 (PlanRequest.cast_ids, main.py) — /characters
+      // returns newest-first, so take(4) keeps the 4 most recently saved and stops a
+      // growing character library from 422-ing every plan.
+      .then((d) => setCast((d.characters ?? []).slice(0, 4).map((c) => ({ id: c.id, name: c.name, anchor: c.anchor }))))
       .catch(() => setCast([]));
   }, []);
   // Remember an image AND what it's for. Re-recording the same path updates its
