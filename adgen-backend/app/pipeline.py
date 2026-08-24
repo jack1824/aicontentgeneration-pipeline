@@ -788,7 +788,14 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                     # generation — real quality-mode requests must not silently ride
                     # the same speed-optimized weights as FAST (2026-08-24 audit: the
                     # preset toggle previously had NO effect on cinematic LTX at all).
-                    **({} if fast else {"lora_strength": 0.0}),
+                    # NOTE: do NOT drop the distilled LoRA here. ltx2_av.json is a DISTILLED
+            # graph — 8 base steps + 3 refine steps at cfg=1.0 (nodes 252/211/231/213)
+            # only converge because node 232 loads the distilled LoRA at 0.5. Setting
+            # lora_strength=0 for "quality" removed the distillation but kept the
+            # 8-step schedule, so every clip came out undercooked: QC reported
+            # "unusably soft / extremely blurry / pitch black / frozen" on all takes.
+            # Real quality here needs a pod-side re-export with more steps and real
+            # CFG, not a LoRA removal.
                 }
                 wf, mapping = comfy.load_workflow("ltx2_av"), LTX2_MAPPING
             if seg.get("negative_prompt"):
@@ -1044,7 +1051,14 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
             "width": max(2, final_w // 2),
             "height": max(2, final_h // 2),
             "filename_prefix": f"video/adgen_ltx2_{name}",
-            **({} if fast else {"lora_strength": 0.0}),
+            # NOTE: do NOT drop the distilled LoRA here. ltx2_av.json is a DISTILLED
+            # graph — 8 base steps + 3 refine steps at cfg=1.0 (nodes 252/211/231/213)
+            # only converge because node 232 loads the distilled LoRA at 0.5. Setting
+            # lora_strength=0 for "quality" removed the distillation but kept the
+            # 8-step schedule, so every clip came out undercooked: QC reported
+            # "unusably soft / extremely blurry / pitch black / frozen" on all takes.
+            # Real quality here needs a pod-side re-export with more steps and real
+            # CFG, not a LoRA removal.
         }
         if shot.get("negative_prompt"):
             inputs["negative_prompt"] = shot["negative_prompt"]
