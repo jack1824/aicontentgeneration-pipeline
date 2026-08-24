@@ -32,7 +32,11 @@ GEMINI_URL = (
 NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip().strip("\"'“”")
 if NVIDIA_API_KEY and not NVIDIA_API_KEY.startswith("nvapi-"):
     NVIDIA_API_KEY = ""  # non-NVIDIA paste — ignore
-NVIDIA_MODEL = "qwen/qwen3.5-397b-a17b"
+# NOTE: hosted model ids ROT — qwen3.5-397b hit end-of-life 2026-07-27 and every
+# fallback rung silently 404/410'd for weeks, so the "three-vendor ladder" was
+# really Gemini-only and one quota blip took planning down with it. Env-overridable
+# so the next EOL is a .env edit, not a deploy.
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3-super-120b-a12b")
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
 # Fourth rung of the ladder: Groq-hosted Llama (independent vendor, independent
@@ -40,7 +44,7 @@ NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip().strip("\"'“”")
 if GROQ_API_KEY and not GROQ_API_KEY.startswith("gsk_"):
     GROQ_API_KEY = ""  # non-Groq paste — ignore
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Archetype -> pipeline routing (docs file 03). Only overlay + lipsync are BUILT today;

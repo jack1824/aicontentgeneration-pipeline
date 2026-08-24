@@ -37,7 +37,10 @@ QC_GEMINI_API_KEY = os.getenv("QC_GEMINI_API_KEY") or GEMINI_API_KEY
 NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip().strip("\"'“”")
 if NVIDIA_API_KEY and not NVIDIA_API_KEY.startswith("nvapi-"):
     NVIDIA_API_KEY = ""  # non-NVIDIA paste — ignore it
-_NVIDIA_MODEL = "qwen/qwen3.5-397b-a17b"
+# Vision-capable and CURRENT — see the note in llm.py: the previous ids were dead,
+# which is why a Gemini 429 produced "vision QC unavailable" instead of degrading
+# to another vendor as designed.
+_NVIDIA_MODEL = os.getenv("QC_NVIDIA_MODEL", "nvidia/llama-3.1-nemotron-nano-vl-8b-v1")
 _NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
 # Third judge: Groq-hosted Llama-4 vision (OpenAI-compatible API, separate
@@ -46,7 +49,7 @@ _NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip().strip("\"'“”")
 if GROQ_API_KEY and not GROQ_API_KEY.startswith("gsk_"):
     GROQ_API_KEY = ""  # a non-Groq paste (e.g. an AIza Google key) — ignore it
-_GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+_GROQ_MODEL = os.getenv("QC_GROQ_MODEL", "qwen/qwen3.6-27b")
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 # A freeze under this long can be a deliberate hold; over it reads as a glitch
 # (the dentist audit found a 1.2s dead-frame span a viewer reads as buffering).
@@ -171,7 +174,10 @@ def blur_mean(path: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def _frames_b64(path: str, n: int = 3) -> list[str]:
+def _frames_b64(path: str, n: int = 3, width: int = 768, q: int = 4) -> list[str]:
+    """n frames sampled across the take, base64 JPEG. `width`/`q` exist because the
+    rungs do NOT share a payload budget: Groq 413s on three 768px frames that Gemini
+    and NVIDIA accept happily, so that rung re-samples smaller rather than going blind."""
     dur = _duration(path)
     if dur <= 0:
         raise RuntimeError(f"unreadable clip: {path}")
@@ -181,7 +187,7 @@ def _frames_b64(path: str, n: int = 3) -> list[str]:
             f = Path(tmp) / f"{frac}.jpg"
             subprocess.run(
                 ["ffmpeg", "-y", "-v", "error", "-ss", f"{dur * frac:.2f}",
-                 "-i", path, "-frames:v", "1", "-vf", "scale=768:-2", "-q:v", "4",
+                 "-i", path, "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", str(q),
                  str(f)], check=True)
             out.append(base64.b64encode(f.read_bytes()).decode())
     return out
@@ -310,7 +316,16 @@ def vision_review(path: str, context: str) -> dict | None:
                 return out
         except Exception:
             pass
-    return _nvidia_review(frames, context) or _groq_review(frames, context)
+    out = _nvidia_review(frames, context)
+    if out:
+        return out
+    # Last rung. Groq's vision context is tighter than the others' — full-size frames
+    # come back 413 Payload Too Large — so re-sample lighter instead of losing the judge.
+    try:
+        small = _frames_b64(path, n=2, width=448, q=6)
+    except Exception:
+        small = frames
+    return _groq_review(small, context) or _groq_review(frames, context)
 
 
 _IDENTITY_RUBRIC = """\
