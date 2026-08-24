@@ -83,6 +83,21 @@ export type ShowGrammar = {
 };
 
 // A locked production recipe. status: draft -> validated -> locked (immutable).
+// One locked character-in-room still: the identity artifact of record. Composed
+// with a deterministic seed, then human-APPROVED before any episode may render
+// against it; the seed is pinned on every beat that animates the still.
+export type KeyframeEntry = {
+  character_id: string;
+  environment_id: string;
+  character: string;
+  environment: string;
+  image: string; // local path (assets/keyframes/…) — serve via /assets-files
+  style?: string;
+  seed?: number;
+  approved?: boolean; // absent = legacy entry, backfill-approved as-is
+  reroll?: number;
+};
+
 export type Show = {
   id: string;
   name: string;
@@ -94,7 +109,7 @@ export type Show = {
   version: number;
   parent_id: string | null;
   calibration: Record<string, unknown>;
-  keyframe_bank: unknown[];
+  keyframe_bank: KeyframeEntry[];
   created_at: number;
   locked_at: number | null;
   cast?: Character[]; // resolved by the backend for the board's asset pane
@@ -802,10 +817,32 @@ export const api = {
   // One-click: render every missing cast face + room plate (needs pod). Poll job.
   generateShowAssets: (id: string): Promise<{ job_id: string; faces: number; plates: number }> =>
     fetch(`${BASE}/shows/${id}/generate-assets`, { method: "POST" }).then(jsonOrThrow),
-  // Composite each cast member INTO each room plate (Qwen-Edit) -> keyframe_bank.
-  // The background-lock references the lipsync lane animates. Async — poll job_id.
+  // Composite each cast member INTO each room plate (Qwen-Edit) -> keyframe_bank
+  // CANDIDATES (approved=false). Async — poll job_id, then review + approve.
   composeShowKeyframes: (id: string): Promise<{ job_id: string; show_id: string }> =>
     fetch(`${BASE}/shows/${id}/compose-keyframes`, { method: "POST" }).then(jsonOrThrow),
+  // Sign off candidates: {all:true} approves every pending still in one click
+  // (one review per SHOW), or pass specific pairs. Sync + instant.
+  approveKeyframes: (
+    id: string,
+    body: { pairs?: { character_id: string; environment_id: string }[]; all?: boolean },
+  ): Promise<{ ok: boolean; approved: number; pending: number }> =>
+    fetch(`${BASE}/shows/${id}/keyframes/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
+  // Re-compose ONE candidate with the next deterministic seed (reproducible
+  // "different take"). Async (needs the render service) — poll the job_id.
+  rerollKeyframe: (
+    id: string,
+    body: { character_id: string; environment_id: string },
+  ): Promise<{ job_id: string }> =>
+    fetch(`${BASE}/shows/${id}/keyframes/reroll`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(jsonOrThrow),
 
   // ---- Show Templates: episodes ----
   episodes: (showId?: string): Promise<{ episodes: Episode[] }> =>

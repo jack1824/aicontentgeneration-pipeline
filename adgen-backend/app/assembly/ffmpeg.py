@@ -624,6 +624,51 @@ def burn_captions(video: str, captions: list[dict], out: str = "captioned.mp4") 
             Path(t).unlink(missing_ok=True)
 
 
+def build_captions(beats: list[tuple[str, float]], max_chars: int = 42,
+                   min_card_s: float = 1.2) -> list[dict]:
+    """Timed caption cards from (spoken text, clip duration) pairs — no ASR needed.
+
+    The muted-first layer (nextplan Phase 3): 85% of social plays muted, and we
+    ALREADY know each beat's exact words and its measured on-screen duration, so
+    the caption track is arithmetic, not transcription. A long line is split on
+    clause boundaries and each card gets a share of the beat proportional to its
+    character count, so cards track the delivery instead of drifting.
+
+    Returns burn_captions-ready dicts: [{start, end, text, position}].
+    """
+    cards: list[dict] = []
+    t = 0.0
+    for text, dur in beats:
+        text = (text or "").strip()
+        if not text or dur <= 0:
+            t += max(0.0, dur)
+            continue
+        # Split long lines on clause boundaries; keep short ones whole.
+        chunks: list[str] = []
+        if len(text) <= max_chars:
+            chunks = [text]
+        else:
+            cur = ""
+            for word in text.split():
+                if cur and len(cur) + 1 + len(word) > max_chars:
+                    chunks.append(cur)
+                    cur = word
+                else:
+                    cur = f"{cur} {word}".strip()
+            if cur:
+                chunks.append(cur)
+        total = sum(len(c) for c in chunks) or 1
+        start = t
+        for c in chunks:
+            share = dur * (len(c) / total)
+            end = min(t + dur, start + max(min_card_s, share))
+            cards.append({"start": round(start, 2), "end": round(end, 2),
+                          "text": c, "position": "bottom"})
+            start = end
+        t += dur
+    return cards
+
+
 def cover_frame(video: str, out: str, at_s: float = 0.0, hook: str | None = None) -> str:
     """Grab one frame as a COVER/thumbnail still — the shelf image every social
     surface shows in-grid and in-feed before autoplay. Optionally burn a HOOK line

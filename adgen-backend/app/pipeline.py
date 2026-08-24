@@ -17,7 +17,7 @@ import httpx
 OUTPUT_VIDEO_DIR = Path("outputs/video")
 OUTPUT_AUDIO_DIR = Path("outputs/audio")
 
-from app import qc
+from app import checkpoint, qc
 from app.assembly import ffmpeg
 from app.config import COMFY_POD_URLS
 from app.providers import comfy
@@ -36,6 +36,12 @@ from app.workflow_mappings import (
 )
 
 DEFAULT_BASE_SEED = 1000
+
+# Identity backstop (nextplan Phase 1): bounded re-rolls when frame-0 of an
+# identity-locked S2V take clearly breaks from its approved keyframe (garment/
+# hair/face change). Each re-roll is minutes of GPU — spent only on a hard
+# identity break, and each uses a DETERMINISTIC seed bump so retries reproduce.
+IDENTITY_RETRIES = max(0, int(os.getenv("IDENTITY_RETRIES", "2")))
 
 # Appended to every image-anchored (i2v) prompt — the start image is the source
 # of truth and the motion prompt must not invite re-imagination (2026-07-10
@@ -575,6 +581,15 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
     for i, seg in enumerate(segments):
         pct = 5 + int(80 * i / n)
         pipeline_kind = seg["pipeline"]
+        # Checkpoint/resume (nextplan Phase 2): a re-submitted job REUSES every
+        # segment already rendered with identical inputs — a failure at segment N
+        # no longer costs segments 1..N-1. The hash re-renders anything edited.
+        seg_h = checkpoint.seg_hash(seg, req)
+        cached = checkpoint.usable(name, i, seg_h)
+        if cached:
+            report("generating", pct, f"segment {i + 1}/{n} — reusing finished clip (resume)")
+            processed.append(cached)
+            continue
         report("generating", pct, f"segment {i + 1}/{n} ({pipeline_kind})")
         # user-facing naming: files read "myad-scene3-take2.mp4" so scenes are
         # distinguishable at a glance in the Library/Timeline (old renders keep
@@ -597,7 +612,13 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
             comfy.free_memory(pod)
         prev_engine = engine
 
-        common: dict = {"seed": base_seed + i * 3}
+        # Identity-lock (nextplan Phase 1): a beat anchored to an APPROVED keyframe
+        # carries that keyframe's PINNED seed — the SAME character renders from the
+        # SAME still with the SAME seed on every beat and every re-run, instead of
+        # base_seed + i*3 handing each beat a fresh dice roll.
+        seg_seed = seg.get("seed")
+        seed0 = seg_seed if seg_seed is not None else base_seed + i * 3
+        common: dict = {"seed": seed0}
         if seg.get("negative_prompt"):
             common["negative_prompt"] = seg["negative_prompt"]
         if req.get("width"):
@@ -621,30 +642,89 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                        f"⚠ segment {i + 1}: line fills only {ndur:.0f}s of the ~14s take — "
                        f"trimming the silent tail so the beat ends on the voice (add "
                        f"~{int((13 - ndur) * 2.9)} words to fill more of the shot)")
-            inputs = {
-                "prompt": seg["prompt"],
-                "ref_image": upload_once(seg["image"]),
-                "audio": comfy.upload_file(pod, narration),
-                "seed": base_seed + i * 3,
-                "seed_extend1": base_seed + i * 3 + 1,
-                "seed_extend2": base_seed + i * 3 + 2,
-                **{k: v for k, v in common.items() if k != "seed"},
-            }
-            if fast:
-                # Graph defaults are QUALITY since 2026-07-10 (fail-safe); FAST
-                # is the explicit downgrade patch for previews.
-                inputs.update(WAN_S2V_FAST_INPUTS)
-            if req.get("steps"):
-                inputs["steps"] = req["steps"]
-            clip = comfy.comfy_generate(
-                pod, comfy.load_workflow("wan_s2v"), inputs, WAN_S2V_MAPPING,
-                out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
-                on_submit=on_submit,
-                # QUALITY S2V (20 steps, CFG 6, 3 windows, ~14s take) runs past the
-                # default 30min ceiling — the protein-ab postmortem: the render was
-                # healthy, only the client gave up.
-                timeout=3600.0 if not fast else comfy.DEFAULT_TIMEOUT,
-            )
+            ref_name = upload_once(seg["image"])
+            audio_name = comfy.upload_file(pod, narration)
+            # First-frame identity QC (advisory backstop): S2V has no strength/mask
+            # knob, so even a pinned seed can drift a garment/hairstyle. Frame-0 of
+            # each take is judged against the approved still; a clear identity break
+            # re-rolls with a DETERMINISTIC seed bump (bounded), else ships + warns.
+            check_identity = bool(seg.get("identity_lock")) and _qc_on(req)
+            takes = 1 + (IDENTITY_RETRIES if check_identity else 0)
+            clip = ""
+            for attempt in range(takes):
+                a_seed = seed0 + attempt * 7919
+                inputs = {
+                    "prompt": seg["prompt"],
+                    "ref_image": ref_name,
+                    "audio": audio_name,
+                    "seed": a_seed,
+                    "seed_extend1": a_seed + 1,
+                    "seed_extend2": a_seed + 2,
+                    **{k: v for k, v in common.items() if k != "seed"},
+                }
+                if fast:
+                    # Graph defaults are QUALITY since 2026-07-10 (fail-safe); FAST
+                    # is the explicit downgrade patch for previews.
+                    inputs.update(WAN_S2V_FAST_INPUTS)
+                if req.get("steps"):
+                    inputs["steps"] = req["steps"]
+                try:
+                    # render_with_recovery: a CUDA-OOM take gets /free + same-seed
+                    # retry instead of killing the whole sequence (Phase 2).
+                    clip = comfy.render_with_recovery(
+                        pod, comfy.load_workflow("wan_s2v"), inputs, WAN_S2V_MAPPING,
+                        out_path=str(SEQ_VIDEO_DIR / f"{seg_stem}.mp4"),
+                        on_submit=on_submit,
+                        # QUALITY S2V (20 steps, CFG 6, 3 windows, ~14s take) runs past the
+                        # default 30min ceiling — the protein-ab postmortem: the render was
+                        # healthy, only the client gave up.
+                        timeout=3600.0 if not fast else comfy.DEFAULT_TIMEOUT,
+                    )
+                except Exception:
+                    if attempt == 0 or not clip:
+                        raise  # no usable take exists — this is a real render failure
+                    # An identity RE-ROLL died (pod hiccup/timeout). The advisory check
+                    # must not convert a good first take into a dead job — ship it.
+                    report("generating", pct,
+                           f"⚠ segment {i + 1}: identity re-roll failed — keeping the "
+                           f"previous take")
+                    break
+                if not check_identity:
+                    break
+                # Judge BOTH ends of the take: frame-0 catches a wrong start, and a
+                # MID-TAKE frame catches the within-take drift the client actually
+                # sees (S2V softens identity as it animates away from the still —
+                # the "everything perfect but still not consistent" review).
+                frame0 = str(SEQ_VIDEO_DIR / f"{seg_stem}-frame0.png")
+                framem = str(SEQ_VIDEO_DIR / f"{seg_stem}-framemid.png")
+                try:
+                    ffmpeg.extract_frame(clip, frame0, at_s=0.0)
+                    verdict = qc.identity_check(frame0, seg["image"])
+                    if verdict.get("same", True):
+                        mid = max(0.5, (ffmpeg.probe(clip)["duration"] or 2.0) * 0.5)
+                        ffmpeg.extract_frame(clip, framem, at_s=mid)
+                        verdict = qc.identity_check(framem, seg["image"])
+                        if not verdict.get("same", True):
+                            verdict["reason"] = f"mid-take: {verdict.get('reason', '')}"
+                except Exception:
+                    # Advisory gate degrades OPEN end-to-end: a frame-grab/judge
+                    # failure must never fail or re-roll the render.
+                    verdict = {"same": True, "reason": "identity check unavailable"}
+                finally:
+                    Path(frame0).unlink(missing_ok=True)
+                    Path(framem).unlink(missing_ok=True)
+                if verdict.get("same", True):
+                    break
+                why = (verdict.get("reason") or "identity drift")[:90]
+                if attempt < takes - 1:
+                    report("generating", pct,
+                           f"⚠ segment {i + 1}: {why} vs the approved still — "
+                           f"re-rolling ({attempt + 2}/{takes})")
+                    comfy.free_memory(pod)
+                else:
+                    report("generating", pct,
+                           f"⚠ segment {i + 1}: {why} vs the approved still after "
+                           f"{takes} takes — shipping the last take, review it")
             # The segment clip stays in the Library — lock its lip-synced voice
             # just like the final, or /revoice could desync its mouth.
             Path(clip).with_suffix(".meta.json").write_text(json.dumps({"voice_lock": True}))
@@ -765,6 +845,9 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                 )
                 Path(silent).unlink(missing_ok=True)  # one clip per segment in the Library
         processed.append(clip)
+        # Persist the FINISHED per-segment artifact (post mux/trim) — the resume
+        # unit. A crash on segment i+1 re-uses everything up to here.
+        checkpoint.record(name, i, clip, seg_h)
 
     report("assembling", 88, "joining mixed segments")
     final = str(SEQ_VIDEO_DIR / f"{name}-final.mp4")
@@ -800,6 +883,9 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
     qc.write_sidecar(final, qc_records)
     _write_recipe(final, segments, qc_records,
                   voiced=any(s.get("script") for s in segments))
+    # Success — drop the manifest so a future SAME-NAME job starts clean instead
+    # of resurrecting this job's clips.
+    checkpoint.clear(name)
     report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final
 

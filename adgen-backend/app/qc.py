@@ -307,6 +307,72 @@ def vision_review(path: str, context: str) -> dict | None:
     return _nvidia_review(frames, context) or _groq_review(frames, context)
 
 
+_IDENTITY_RUBRIC = """\
+You check CHARACTER IDENTITY between two images of the same (possibly cartoon) character.
+Image 1 is the APPROVED reference still. Image 2 is frame 0 of a new video take.
+Is the character in image 2 the SAME character as image 1 — same face shape, same
+hairstyle/hair colour, same clothing items and colours? IGNORE pose, expression,
+mouth position, lighting, framing and small crops. Flag ONLY a clear identity break:
+a garment gone or replaced (e.g. vest missing, new collar), different hair style or
+colour, or a clearly different face.
+Return STRICT JSON only: {"same": true|false, "reason": "<short phrase>"}"""
+
+
+def identity_check(frame_path: str, ref_path: str) -> dict:
+    """Frame-0 vs the approved keyframe: is this still the same character?
+    ADVISORY — degrades OPEN: any judge failure returns same=True so an outage can
+    never block or re-roll a render. The caller treats same=False as a bounded
+    re-roll signal (nextplan Phase 1 identity backstop)."""
+    if not QC_GEMINI_API_KEY:
+        return {"same": True, "reason": "no judge configured"}
+    try:
+        mimes = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                 ".webp": "image/webp"}
+
+        def _part(p: str) -> dict:
+            mime = mimes.get(Path(p).suffix.lower(), "image/png")
+            return {"inline_data": {"mime_type": mime,
+                                    "data": base64.b64encode(Path(p).read_bytes()).decode()}}
+        body = {
+            "system_instruction": {"parts": [{"text": _IDENTITY_RUBRIC}]},
+            "contents": [{"role": "user", "parts": [
+                {"text": "Image 1 — the APPROVED reference still:"},
+                _part(ref_path),
+                {"text": "Image 2 — frame 0 of the new take:"},
+                _part(frame_path),
+            ]}],
+            "generationConfig": {"temperature": 0.0, "response_mime_type": "application/json"},
+        }
+        r = None
+        for i in range(3):
+            try:
+                r = httpx.post(_URL.format(model=_VISION_MODEL),
+                               headers={"x-goog-api-key": QC_GEMINI_API_KEY},
+                               json=body, timeout=60)
+                r.raise_for_status()
+                break
+            except httpx.HTTPStatusError as e:
+                r = None
+                if i == 2 or e.response.status_code not in (500, 503):
+                    break  # 429/4xx: degrade open now, don't drain quota
+                time.sleep(2 * (i + 1))
+            except httpx.HTTPError:  # transport blip (connect/read timeout) — retry too
+                r = None
+                if i == 2:
+                    break
+                time.sleep(2 * (i + 1))
+        if r is None:
+            return {"same": True, "reason": "judge unavailable"}
+        text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        out = json.loads(text)
+        return {"same": bool(out.get("same", True)),
+                "reason": str(out.get("reason") or "")[:160]}
+    except Exception:
+        return {"same": True, "reason": "judge error"}
+
+
 def review_clip(path: str, context: str = "") -> dict:
     """Full QC verdict for one take: local checks + vision rubric.
 

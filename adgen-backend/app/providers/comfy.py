@@ -17,6 +17,7 @@ chunk, once the workflow JSON is exported.
 """
 import copy
 import json
+import re
 import time
 import uuid
 
@@ -212,6 +213,42 @@ def comfy_generate(
         on_submit(prompt_id)
     entry = poll_until_done(pod_url, prompt_id, timeout=timeout, interval=poll_interval)
     return download_output(pod_url, entry, out_path=out_path)
+
+
+# A transient GPU failure a /free + retry genuinely fixes. Deliberately TIGHT:
+# mapping/typo/validation errors must fail fast, not loop max_retries of GPU time.
+_OOM_RE = re.compile(r"out of memory|cuda error|allocation on device|oom", re.IGNORECASE)
+
+
+def render_with_recovery(
+    pod_url: str,
+    workflow_json: dict,
+    inputs: dict | None = None,
+    mapping: dict | None = None,
+    out_path: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+    on_submit=None,
+    max_retries: int = 2,
+) -> str:
+    """comfy_generate + OOM self-recovery (nextplan Phase 2).
+
+    The named failure: a long all-S2V dialogue accumulates activations until one
+    take dies with CUDA OOM — previously a dead 40-minute job. Now: /free the
+    pod's caches, breathe, and retry the SAME take (same seed — out_path
+    overwrite is idempotent). Only messages matching the OOM regex retry;
+    everything else (bad mapping, validation, timeout) raises immediately."""
+    last: Exception | None = None
+    for attempt in range(1 + max_retries):
+        try:
+            return comfy_generate(pod_url, workflow_json, inputs, mapping,
+                                  out_path=out_path, timeout=timeout, on_submit=on_submit)
+        except RuntimeError as e:
+            if not _OOM_RE.search(str(e)) or attempt == max_retries:
+                raise
+            last = e
+            free_memory(pod_url)
+            time.sleep(5)
+    raise last if last else RuntimeError("render_with_recovery: unreachable")
 
 
 def free_memory(pod_url: str) -> None:

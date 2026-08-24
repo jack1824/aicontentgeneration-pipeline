@@ -17,6 +17,7 @@ import {
   Character,
   Episode,
   EpisodeBeat,
+  KeyframeEntry,
   Show,
   ShowLook,
   ShowStarter,
@@ -1196,6 +1197,11 @@ function AssetsPane({
         ))}
       </div>
 
+      {/* Locked keyframes — the identity system. Compose candidates once per show,
+          review them, approve; every episode then animates these exact stills.
+          Keyed by show so busy/poll state can't leak across a show switch. */}
+      <KeyframesSection key={show.id} show={show} onError={onError} onChanged={onAssetsChanged} />
+
       {/* Look summary */}
       {(show.look.style || show.look.grade) && (
         <div className="flex flex-col gap-1 border-t border-white/5 pt-2">
@@ -1241,6 +1247,178 @@ function AssetsPane({
           🗑 Delete show
         </button>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// KEYFRAMES — the identity system's review surface. Compose candidate stills
+// (each character composited into each room, deterministic seed), review them
+// here, approve (batch or per-still) or reroll for a reproducible different
+// take. Episodes refuse to render until every still they need is approved.
+// ---------------------------------------------------------------------------
+function KeyframesSection({
+  show,
+  onError,
+  onChanged,
+}: {
+  show: Show;
+  onError: (e: string) => void;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null); // "compose" | pair key
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  const cast = (show.cast ?? []).filter((c) => c.face_image);
+  const rooms = (show.rooms ?? []).filter((r) => r.primary_plate);
+  const bank = show.keyframe_bank ?? [];
+  const have = new Set(bank.map((k) => `${k.character_id}|${k.environment_id}`));
+  const missing = cast.reduce(
+    (n, c) => n + rooms.filter((r) => !have.has(`${c.id}|${r.id}`)).length, 0);
+  const pending = bank.filter((k) => k.approved === false).length;
+  if (cast.length === 0 || rooms.length === 0) {
+    if (bank.length === 0) return null; // nothing composable and nothing to review
+  }
+
+  const watchJob = (job_id: string, done: () => void) => {
+    pollRef.current = setInterval(async () => {
+      try {
+        const j = await api.job(job_id);
+        if (["done", "error", "cancelled"].includes(j.status)) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          setBusy(null);
+          if (j.status !== "done") {
+            onError(j.error?.includes("pod") || j.error?.includes("COMFY")
+              ? "The image service is offline right now — try again shortly."
+              : j.error ?? "keyframe job failed");
+          }
+          done();
+        }
+      } catch (e) {
+        // 404 = job record gone (service restarted) — stop polling and unlock the
+        // buttons instead of spinning forever; other errors are transient.
+        if (String(e).includes("404")) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          setBusy(null);
+          done();
+        }
+      }
+    }, 5000);
+  };
+
+  const compose = async () => {
+    if (busy) return;
+    setBusy("compose");
+    onError("");
+    try {
+      const { job_id } = await api.composeShowKeyframes(show.id);
+      watchJob(job_id, onChanged);
+    } catch (e) {
+      setBusy(null);
+      onError(String(e));
+    }
+  };
+
+  const approve = async (pairs?: { character_id: string; environment_id: string }[]) => {
+    onError("");
+    try {
+      await api.approveKeyframes(show.id, pairs ? { pairs } : { all: true });
+      onChanged();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const reroll = async (k: KeyframeEntry) => {
+    if (busy) return;
+    setBusy(`${k.character_id}|${k.environment_id}`);
+    onError("");
+    try {
+      const { job_id } = await api.rerollKeyframe(show.id, {
+        character_id: k.character_id, environment_id: k.environment_id,
+      });
+      watchJob(job_id, onChanged);
+    } catch (e) {
+      setBusy(null);
+      onError(String(e));
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-white/5 pt-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] uppercase text-text-muted">Locked looks</span>
+        {pending > 0 && (
+          <button
+            onClick={() => approve()}
+            className="rounded-btn bg-green-500/15 px-2 py-1 text-[10px] text-green-300 hover:bg-green-500/25"
+            title="Approve every pending still in one click"
+          >
+            ✓ Approve all ({pending})
+          </button>
+        )}
+      </div>
+
+      {missing > 0 && (
+        <button
+          onClick={compose}
+          disabled={!!busy}
+          className="rounded-btn border border-white/[0.14] bg-white/[0.03] px-3 py-2 text-left text-[11px] text-text-secondary hover:border-white/25 disabled:opacity-50"
+          title="Place each character into each room once — episodes then reuse these exact stills"
+        >
+          {busy === "compose" ? "composing stills…" : `🎞 Compose ${missing} missing still${missing > 1 ? "s" : ""}`}
+        </button>
+      )}
+
+      {bank.map((k) => {
+        const key = `${k.character_id}|${k.environment_id}`;
+        const name = k.image.split("/").pop() ?? "";
+        const approved = k.approved !== false; // legacy entries = frozen as-is
+        return (
+          <div key={key} className="flex items-center gap-2 rounded-btn border border-white/[0.09] bg-white/[0.025] p-1.5">
+            {/* eslint-disable-next-line @next/next/no-img-element -- backend-proxied preview.
+                Cache-busted by seed+reroll: a reroll rewrites the SAME filename, and
+                without this the browser would keep showing the old still. */}
+            <img
+              src={api.assetUrl(`/assets-files/keyframes/${name}`) + `?v=${k.seed ?? 0}-${k.reroll ?? 0}`}
+              alt={`${k.character} in ${k.environment}`}
+              className="h-9 w-14 shrink-0 rounded object-cover ring-1 ring-white/10"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[11px] font-medium">{k.character} · {k.environment}</p>
+              <p className="text-[10px] text-text-muted">
+                {approved ? "✓ locked" : "awaiting your approval"}
+                {typeof k.reroll === "number" && k.reroll > 0 ? ` · take ${k.reroll + 1}` : ""}
+              </p>
+            </div>
+            {!approved && (
+              <button
+                onClick={() => approve([{ character_id: k.character_id, environment_id: k.environment_id }])}
+                className="shrink-0 rounded-btn bg-green-500/15 px-2 py-1 text-[10px] text-green-300 hover:bg-green-500/25"
+                title="Freeze this still as this character's look in this room"
+              >
+                ✓
+              </button>
+            )}
+            <button
+              onClick={() => reroll(k)}
+              disabled={!!busy}
+              className="shrink-0 rounded px-1.5 py-1 text-[10px] text-text-muted hover:text-text-primary disabled:opacity-50"
+              title="Compose a different take of this still"
+            >
+              {busy === key ? "…" : "↻"}
+            </button>
+          </div>
+        );
+      })}
+
+      {bank.length > 0 && (
+        <p className="text-[10px] leading-relaxed text-text-muted">
+          Every episode animates these exact stills — approve them once and the cast
+          can&apos;t drift between beats or episodes.
+        </p>
+      )}
     </div>
   );
 }

@@ -32,7 +32,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import (avatars, characters, environments, episodes, keyframes,
+from app import (avatars, characters, checkpoint, environments, episodes, keyframes,
                  pipeline, postprocess, shows, starters)
 from app.assembly import ffmpeg
 from app.config import COMFY_POD_URLS, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
@@ -172,6 +172,11 @@ class Segment(BaseModel):
     voice_id: str | None = None          # per-segment voice (dialogue ads: A vs B);
                                          # falls back to the job-level voice_id
     avatar_id: str | None = None         # saved avatar profile — fills image + voice_id
+    seed: int | None = Field(default=None, ge=0, le=2_147_483_647)
+                                         # identity-lock: the approved keyframe's PINNED
+                                         # seed — this beat renders with it every time
+    identity_lock: bool = False          # True = `image` is an APPROVED keyframe; the
+                                         # first-frame identity QC compares against it
 
 
 class GenerateRequest(BaseModel):
@@ -436,10 +441,37 @@ def generate_endpoint(req: GenerateRequest):
         except JobCancelled:
             pass  # job already shows 'cancelled'; nothing to report
         except Exception as e:  # surface the real cause to the poller
-            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+            # Typed failure (Phase 2): pod-down is an OPS state ("renders paused"),
+            # not a content error — the UI can say so instead of a raw stack. The
+            # job also advertises whether a checkpoint manifest makes it resumable.
+            msg = f"{type(e).__name__}: {e}"
+            # "Lost contact with pod" is what comfy.poll_until_done actually raises
+            # when the pod dies mid-render (found in production, 2026-08-15) — it
+            # MUST classify as pod_down, or the UI blames the content for an ops
+            # outage and the user re-renders instead of restarting the service.
+            kind = ("pod_down" if any(s in msg for s in (
+                "Lost contact with pod", "ConnectError", "ConnectTimeout",
+                "ReadTimeout", "pod unreachable", "system_stats", "502", "503",
+            )) else "render")
+            _update(job_id, status="error", error=msg, error_kind=kind,
+                    resumable=checkpoint.exists(req.name or job_id))
 
     threading.Thread(target=run, daemon=True).start()
     return {"job_id": job_id}
+
+
+@app.get("/healthz")
+def healthz():
+    """Is the render service reachable? The studio polls this to show
+    'renders paused' up front instead of failing a submit with a raw error."""
+    if not COMFY_POD_URLS:
+        return {"pod_up": False, "reason": "no render service configured"}
+    try:
+        httpx.get(f"{COMFY_POD_URLS[0].rstrip('/')}/system_stats",
+                  timeout=8).raise_for_status()
+        return {"pod_up": True, "reason": None}
+    except httpx.HTTPError as e:
+        return {"pod_up": False, "reason": type(e).__name__}
 
 
 class PostprocessRequest(BaseModel):
@@ -2359,25 +2391,66 @@ def _beat_prompt(beat: dict, speaker: dict | None, room: dict | None, look: dict
     return " ".join(p.strip().rstrip(".") + "." for p in parts if p and p.strip())
 
 
-def _lookup_keyframe(show: dict, character_id: str, environment_id: str) -> str | None:
-    """A cached character-in-room composite for this (character, room) pair, if one
-    was composed and the file still exists — the S2V background-lock reference that
-    keeps the same set across cuts. None -> the lipsync lane uses the bare face."""
+# Per-show write lock for keyframe_bank: approve (request threadpool), compose and
+# reroll (daemon workers) all read-modify-write the same JSON column. Every writer
+# takes this lock around ONLY the read+write (GPU work stays outside), so a
+# concurrent approval can never be reverted by a worker's snapshot.
+_KF_LOCKS: dict[str, threading.Lock] = {}
+_KF_LOCKS_GUARD = threading.Lock()
+
+
+def _kf_lock(show_id: str) -> threading.Lock:
+    with _KF_LOCKS_GUARD:
+        return _KF_LOCKS.setdefault(show_id, threading.Lock())
+
+
+def _kf_seed(show_id: str, character_id: str, environment_id: str, reroll: int = 0) -> int:
+    """Deterministic keyframe seed per (show, character, room[, reroll]). The SAME
+    pair always composes with the SAME seed (reproducible re-composition), and this
+    seed is then PINNED on every beat that animates the approved still — identity is
+    a property of a frozen asset, not a per-take dice roll. Rerolls bump by a fixed
+    prime so 'give me a different take' is itself reproducible."""
+    h = hashlib.sha1(f"{show_id}|{character_id}|{environment_id}".encode()).hexdigest()
+    return (int(h, 16) + reroll * 7919) % (2**31 - 1) + 1
+
+
+def _lookup_keyframe(show: dict, character_id: str, environment_id: str) -> dict | None:
+    """The APPROVED character-in-room composite for this pair, or None. Returns the
+    bank entry ({image, seed, ...}) so the compiler can pin both the still AND its
+    seed on every beat. Entries composed before the approval gate carry no
+    'approved' key — those are backfill-approved as-is (frozen), so live shows keep
+    rendering; entries composed after the gate need an explicit sign-off."""
+    for kf in show.get("keyframe_bank") or []:
+        if (kf.get("character_id") == character_id
+                and kf.get("environment_id") == environment_id):
+            p = kf.get("image")
+            if p and Path(p).exists() and kf.get("approved", True):
+                return kf
+    return None
+
+
+def _keyframe_pair(show: dict, character_id: str, environment_id: str) -> dict | None:
+    """Any bank entry for the pair (approved or not) whose file exists — the
+    approval UI and the render gate need to distinguish 'missing' from 'awaiting
+    approval'."""
     for kf in show.get("keyframe_bank") or []:
         if (kf.get("character_id") == character_id
                 and kf.get("environment_id") == environment_id):
             p = kf.get("image")
             if p and Path(p).exists():
-                return p
+                return kf
     return None
 
 
 def _compose_show_keyframes(show_id: str, style: str | None = None,
                             on_progress=None, on_submit=None) -> list[dict]:
     """Composite each cast character (with a face) INTO each room (with a plate) via
-    Qwen-Edit and cache the results in the show's keyframe_bank — the S2V
-    background-lock references, reused across every episode. Idempotent: existing
-    (character, room) entries are kept, only missing pairs are composed."""
+    Qwen-Edit and cache the results in the show's keyframe_bank as CANDIDATES
+    (approved=False) — a human signs them off via /shows/{id}/keyframes/approve
+    before any episode may render against them. Each pair composes with its
+    deterministic seed (stored on the entry) so identity is reproducible.
+    Idempotent: existing (character, room) entries are kept, only missing pairs
+    are composed."""
     show = shows.get_show(show_id)
     if show is None:
         raise ValueError(f"unknown show_id {show_id}")
@@ -2387,30 +2460,50 @@ def _compose_show_keyframes(show_id: str, style: str | None = None,
     rooms = [e for e in (environments.get_environment(eid) for eid in show["environment_ids"])
              if e and e.get("primary_plate")]
     bank = list(show.get("keyframe_bank") or [])
-    have = {(k.get("character_id"), k.get("environment_id")) for k in bank}
+    # Skip-set counts only entries whose FILE still exists — a manually deleted PNG
+    # must be re-composable, or compose would skip the pair forever while the
+    # approved-lookup keeps rejecting it (a permanent un-renderable gap).
+    have = {(k.get("character_id"), k.get("environment_id")) for k in bank
+            if k.get("image") and Path(k["image"]).exists()}
     pairs = [(c, r) for r in rooms for c in chars if (c["id"], r["id"]) not in have]
     for i, (c, r) in enumerate(pairs):
         if on_progress:
             on_progress("keyframes", 5 + int(85 * i / max(1, len(pairs))),
                         f"composing {c['name']} in {r['name']} ({i + 1}/{len(pairs)})")
+        seed = _kf_seed(show_id, c["id"], r["id"])
         out = str(keyframes.KEYFRAMES_DIR / f"show-{show_id}-{c['id']}-{r['id']}.png")
         img = keyframes.composite_into_scene(
-            c["face_image"], r["primary_plate"], out, style=style, on_submit=on_submit)
-        bank.append({"character_id": c["id"], "environment_id": r["id"],
-                     "character": c["name"], "environment": r["name"],
-                     "image": img, "style": style})
-        shows.update_show(show_id, keyframe_bank=bank)  # persist incrementally
+            c["face_image"], r["primary_plate"], out, style=style, seed=seed,
+            on_submit=on_submit)
+        # Serialized upsert: re-read the live bank UNDER the per-show lock and patch
+        # only this pair — each compose is ~a minute of GPU and an approval made
+        # meanwhile must never be clobbered by a stale snapshot.
+        with _kf_lock(show_id):
+            live = shows.get_show(show_id) or {}
+            bank = [k for k in (live.get("keyframe_bank") or [])
+                    if not (k.get("character_id") == c["id"]
+                            and k.get("environment_id") == r["id"])]
+            bank.append({"character_id": c["id"], "environment_id": r["id"],
+                         "character": c["name"], "environment": r["name"],
+                         "image": img, "style": style, "seed": seed,
+                         "approved": False, "reroll": 0})
+            shows.update_show(show_id, keyframe_bank=bank)  # persist incrementally
     return bank
 
 
 def _compile_episode_segments(show: dict, ep: dict) -> list[dict]:
     """Turn approved beats into sequence segments the existing pipeline renders.
 
-    Today's routing (pod-day adds the Qwen-Edit keyframe pass + ltx2_i2v lane):
-      * a SPEAK beat whose character has a saved face -> lipsync (that face + voice
-        deliver the exact line);
-      * any other beat in a room WITH a plate -> cinematic brand-lock (the plate
-        locks the room, LTX native audio carries any VO line);
+    Identity-locked routing (nextplan Phase 1):
+      * a SPEAK beat whose character has a saved face -> lipsync, animating the
+        APPROVED character-in-room keyframe with its PINNED seed (identity_lock);
+        bare face only when no keyframe exists (roomless shows — background drifts).
+        Single-character framing by construction: the speaker's own keyframe holds
+        exactly one person, so only the speaker's mouth can move.
+      * a NON-speak beat featuring a character with an approved keyframe -> the
+        i2v-from-still lane (sequence `product` + I2V_PRESERVE): the approved still
+        is animated near pixel-lock instead of re-imagined by t2v.
+      * any other beat in a room WITH a plate -> cinematic brand-lock;
       * otherwise -> cinematic from the assembled prompt.
     Verbatim `line` becomes the segment script; the frozen negative rides along.
     """
@@ -2426,14 +2519,21 @@ def _compile_episode_segments(show: dict, ep: dict) -> list[dict]:
         room = by_name_room.get(beat.get("room") or "")
         prompt = _beat_prompt(beat, speaker, room, look) or "cinematic advertisement shot."
         line = (beat.get("line") or "").strip() or None
+        kf = (_lookup_keyframe(show, speaker["id"], room["id"])
+              if speaker and room else None)
         if beat.get("type") == "speak" and speaker and speaker.get("face_image"):
-            # Background lock: prefer a cached character-in-room composite so S2V
-            # holds the SAME set across every cut; fall back to the bare face when
-            # none has been composed yet (current behaviour, background drifts).
-            ref = _lookup_keyframe(show, speaker["id"], room["id"]) if room else None
             seg = {"pipeline": "lipsync", "prompt": prompt, "negative_prompt": negative,
-                   "script": line or "", "image": ref or speaker["face_image"],
-                   "voice_id": speaker.get("voice_id")}
+                   "script": line or "", "image": (kf or {}).get("image") or speaker["face_image"],
+                   "voice_id": speaker.get("voice_id"),
+                   "seed": (kf or {}).get("seed"), "identity_lock": bool(kf)}
+        elif speaker and kf:
+            # Featured character, no dialogue: animate the approved still directly
+            # (motion-only) — the identity CANNOT drift because the pixels are the
+            # approved keyframe, not a fresh generation.
+            seg = {"pipeline": "product", "prompt": prompt, "negative_prompt": negative,
+                   "script": line, "image": kf["image"],
+                   "voice_id": speaker.get("voice_id"),
+                   "seed": kf.get("seed"), "identity_lock": True}
         elif room and room.get("primary_plate"):
             seg = {"pipeline": "cinematic", "prompt": prompt, "negative_prompt": negative,
                    "script": line, "image": room["primary_plate"],
@@ -2522,6 +2622,137 @@ def compose_show_keyframes_endpoint(show_id: str):
     return {"job_id": job_id, "show_id": show_id}
 
 
+class KeyframeApproveRequest(BaseModel):
+    """Sign off candidate keyframes. `all=True` approves every pending candidate in
+    one click (the batch path — one review per SHOW, amortized across episodes);
+    otherwise `pairs` names specific (character, room) entries."""
+    pairs: list[dict] | None = None      # [{character_id, environment_id}]
+    all: bool = False
+
+
+@app.post("/shows/{show_id}/keyframes/approve")
+def approve_keyframes_endpoint(show_id: str, req: KeyframeApproveRequest):
+    """Flip candidate keyframes to approved — the human sign-off that freezes each
+    still as the identity artifact of record. Sync + instant (no pod).
+
+    Deliberately allowed on LOCKED shows: locking freezes the TEMPLATE (cast/rooms/
+    look); the keyframe bank is a production asset that keeps evolving (compose has
+    always written it on locked shows), so this is not routed through the
+    immutability check in PATCH /shows/{id}."""
+    show = shows.get_show(show_id)
+    if show is None:
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    wanted = {(p.get("character_id"), p.get("environment_id"))
+              for p in (req.pairs or [])}
+    if not req.all and not wanted:
+        raise HTTPException(422, "pass `pairs` or `all: true`")
+    with _kf_lock(show_id):
+        live = shows.get_show(show_id) or {}
+        bank = list(live.get("keyframe_bank") or [])
+        n = 0
+        for kf in bank:
+            key = (kf.get("character_id"), kf.get("environment_id"))
+            # Absent 'approved' = legacy backfill-approved (same default the render
+            # gate and UI use) — only explicit approved:False entries are pending.
+            if (req.all or key in wanted) and not kf.get("approved", True):
+                kf["approved"] = True
+                n += 1
+        shows.update_show(show_id, keyframe_bank=bank)
+    return {"ok": True, "approved": n,
+            "pending": sum(1 for k in bank if not k.get("approved", True))}
+
+
+class KeyframeRerollRequest(BaseModel):
+    character_id: str
+    environment_id: str
+
+
+@app.post("/shows/{show_id}/keyframes/reroll")
+def reroll_keyframe_endpoint(show_id: str, req: KeyframeRerollRequest):
+    """Re-compose ONE candidate with the next deterministic seed (reroll+1) — a
+    reproducible 'different take', not a dice roll. The new still replaces the old
+    candidate and stays approved=False until signed off. NEEDS THE POD. Async."""
+    show = shows.get_show(show_id)
+    if show is None:
+        raise HTTPException(404, f"unknown show_id {show_id}")
+    ch = characters.get_character(req.character_id)
+    env = environments.get_environment(req.environment_id)
+    if not ch or not ch.get("face_image"):
+        raise HTTPException(404, "character not found or has no face image")
+    if not env or not env.get("primary_plate"):
+        raise HTTPException(404, "room not found or has no plate")
+    style = (show.get("look") or {}).get("art_style") or "realistic"
+    job_id = _new_job("generate", f"reroll-{ch['name']}-{env['name']}")
+
+    def run() -> None:
+        def on_submit(prompt_id: str) -> None:
+            if job_id in JOBS:
+                JOBS[job_id]["prompt_id"] = prompt_id
+        try:
+            _update(job_id, status="keyframes", progress=20,
+                    detail=f"re-composing {ch['name']} in {env['name']}")
+            # Quick read just for the reroll counter (the seed bump input).
+            pre = shows.get_show(show_id) or {}
+            entry0 = next((k for k in (pre.get("keyframe_bank") or [])
+                           if k.get("character_id") == req.character_id
+                           and k.get("environment_id") == req.environment_id), None)
+            nxt = (entry0.get("reroll", 0) + 1) if entry0 else 1
+            seed = _kf_seed(show_id, req.character_id, req.environment_id, reroll=nxt)
+            # Take-suffixed filename: never overwrite the previous still — an
+            # in-flight render may be reading it, and the browser caches by URL.
+            out = str(keyframes.KEYFRAMES_DIR /
+                      f"show-{show_id}-{req.character_id}-{req.environment_id}-t{nxt}.png")
+            img = keyframes.composite_into_scene(
+                ch["face_image"], env["primary_plate"], out, style=style, seed=seed,
+                on_submit=on_submit)
+            # Serialized swap UNDER the per-show lock: compose takes ~a minute, so
+            # re-read the live bank and patch only THIS pair — approvals made in the
+            # meantime survive (read-modify-write race closed).
+            with _kf_lock(show_id):
+                live = shows.get_show(show_id) or {}
+                bank = [k for k in (live.get("keyframe_bank") or [])
+                        if not (k.get("character_id") == req.character_id
+                                and k.get("environment_id") == req.environment_id)]
+                bank.append({"character_id": req.character_id,
+                             "environment_id": req.environment_id,
+                             "character": ch["name"], "environment": env["name"],
+                             "image": img, "style": style, "seed": seed,
+                             "approved": False, "reroll": nxt})
+                shows.update_show(show_id, keyframe_bank=bank)
+            _update(job_id, status="done", progress=100, detail="new candidate ready",
+                    image_url=f"/assets-files/keyframes/{Path(img).name}")
+        except Exception as e:
+            _update(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id}
+
+
+def _episode_keyframe_gaps(show: dict, ep: dict) -> list[str]:
+    """Composable (speaker, room) pairs this episode NEEDS that lack an APPROVED
+    keyframe — the identity gate. Only pairs that CAN be composed count (character
+    has a face AND the room has a plate); a roomless speak beat has no set to lock,
+    so it falls back to the bare face rather than blocking the render. Returns
+    'Character in Room (status)' labels for the 422."""
+    by_name_char = {c["name"]: c for c in
+                    (characters.get_character(cid) for cid in show["character_ids"]) if c}
+    by_name_room = {e["name"]: e for e in
+                    (environments.get_environment(eid) for eid in show["environment_ids"]) if e}
+    missing: dict[tuple[str, str], str] = {}
+    for b in ep.get("beats") or []:
+        sp = by_name_char.get(b.get("speaker") or "")
+        rm = by_name_room.get(b.get("room") or "")
+        if not sp or not sp.get("face_image") or not rm or not rm.get("primary_plate"):
+            continue  # not composable — bare-face / plate fallbacks apply
+        if _lookup_keyframe(show, sp["id"], rm["id"]):
+            continue  # approved — good
+        pending = _keyframe_pair(show, sp["id"], rm["id"]) is not None
+        missing[(sp["id"], rm["id"])] = (
+            f"{sp['name']} in {rm['name']}" + (" (awaiting approval)" if pending
+                                               else " (not composed yet)"))
+    return sorted(missing.values())
+
+
 @app.post("/episodes/{ep_id}/render")
 def render_episode_endpoint(ep_id: str):
     """Compile the episode's approved beats into a sequence render and fire it
@@ -2545,6 +2776,14 @@ def render_episode_endpoint(ep_id: str):
     if gaps:
         raise HTTPException(422, "assign a voice to these speaking characters before "
                                  f"rendering (Show cast → pick a voice): {', '.join(gaps)}")
+    # Identity gate (nextplan Phase 1): every composable character-in-room this
+    # episode uses must have an APPROVED keyframe — no GPU spend on an unlocked
+    # identity. Mirrors the voice gate above.
+    kf_gaps = _episode_keyframe_gaps(show, ep)
+    if kf_gaps:
+        raise HTTPException(422, "lock the look first — these character-in-room stills "
+                                 "need composing/approval (Show assets → Keyframes): "
+                                 + "; ".join(kf_gaps))
     grammar = show.get("grammar") or {}
     look = show.get("look") or {}
     # Branded end frame (reference's closing social/CTA card) — only when the Show
