@@ -10,7 +10,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api, GenerateRequest, Job, OutputItem, PlanApproach, PRESET_HINTS, PRESETS, PresetKey, StillItem, Voice } from "@/lib/api";
-import { looksLikeScript, scriptSignals, spokenSeconds } from "@/lib/script";
+import { looksLikeScript, scriptSignals, spokenSeconds, suggestQuality } from "@/lib/script";
 import { usePersistentState } from "@/lib/usePersistentState";
 
 const MIN_PPS = 20;
@@ -627,6 +627,13 @@ function TimelineStudio() {
     chatBoot?.msgs?.length ? chatBoot.msgs : [WELCOME_MSG],
   );
   const [chatInput, setChatInput] = useState("");
+  // Prompt-based quality suggestion (nextplan Phase 3 gap fix): reads the SAME
+  // draft-vs-final signal as the script detector, surfaced next to the toggle so
+  // the user picks it — never silently switched under them.
+  const qualityHint = useMemo(() => {
+    const s = suggestQuality(chatInput);
+    return s && s.preset !== preset ? s : null;
+  }, [chatInput, preset]);
   const [chatBusy, setChatBusy] = useState(false);
   const [chatJobId, setChatJobId] = useState<string | null>(null);
   // 🎙 post-render narration: after a render lands, lay a voiceover over it,
@@ -3964,6 +3971,16 @@ function TimelineStudio() {
                   </button>
                 ))}
               </div>
+              {qualityHint && (
+                <button
+                  type="button"
+                  onClick={() => setPreset(qualityHint.preset)}
+                  title="Click to switch"
+                  className={`ml-auto flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-text-muted hover:text-text-primary ${focusRing}`}
+                >
+                  💡 {qualityHint.reason} — try {PRESETS[qualityHint.preset].label}
+                </button>
+              )}
             </div>
             {/* quick actions — contextual; they fill the input so you can edit first */}
             <div className="flex flex-wrap gap-1 px-2.5 pb-1">

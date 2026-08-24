@@ -778,6 +778,12 @@ def _generate_sequence(req: dict, name: str, report, on_submit=None) -> str:
                     "width": max(2, (req.get("width") or 1280) // 2),
                     "height": max(2, (req.get("height") or 720) // 2),
                     "filename_prefix": f"video/adgen_seq_{seg_stem}",
+                    # QUALITY drops the distilled-speed LoRA blend baked into this
+                    # graph's default (0.5) so the pure dev-fp8 checkpoint drives
+                    # generation — real quality-mode requests must not silently ride
+                    # the same speed-optimized weights as FAST (2026-08-24 audit: the
+                    # preset toggle previously had NO effect on cinematic LTX at all).
+                    **({} if fast else {"lora_strength": 0.0}),
                 }
                 wf, mapping = comfy.load_workflow("ltx2_av"), LTX2_MAPPING
             if seg.get("negative_prompt"):
@@ -1015,6 +1021,10 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
     base_seed = req.get("seed") or DEFAULT_BASE_SEED
     final_w = req.get("width") or 1280
     final_h = req.get("height") or 720
+    # QUALITY drops the distilled-speed LoRA blend baked into this graph's default
+    # (0.5) so the pure dev-fp8 checkpoint drives generation — see the matching
+    # sequence-cinematic comment; the preset toggle previously had NO effect here.
+    fast = req.get("quality") == "fast"
     clips: list[str] = []
     qc_records: list[dict] = []
     for i, shot in enumerate(shots):
@@ -1027,6 +1037,7 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
             "width": max(2, final_w // 2),
             "height": max(2, final_h // 2),
             "filename_prefix": f"video/adgen_ltx2_{name}",
+            **({} if fast else {"lora_strength": 0.0}),
         }
         if shot.get("negative_prompt"):
             inputs["negative_prompt"] = shot["negative_prompt"]

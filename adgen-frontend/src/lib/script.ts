@@ -52,3 +52,34 @@ export function spokenSeconds(script: string, language = "en"): number {
   const breaths = 0.35 * Math.max(0, ((script.match(/[.!?।]+/g) || []).length - 1));
   return Math.round((words / rate + breaths) * 10) / 10;
 }
+
+// ---------------------------------------------------------------------------
+// Quality-preset suggestion — reads the SAME "what is this text for" question
+// as scriptSignals above, but answers "how much render budget does it deserve"
+// instead of "is it finished copy". A quick draft and a client deliverable read
+// very differently even in one sentence, and the render preset is exactly the
+// knob that should track that difference. This only SUGGESTS (surfaced next to
+// the quality toggle, one click to apply) — it never silently overrides the
+// user's own choice; "ask, never assume" applies to render spend too.
+const DRAFT_MARKERS = [
+  /\b(test|quick|draft|rough|sample|scratch|throwaway|just (testing|trying|checking)|iterat\w*|prototype)\b/i,
+  /(टेस्ट|ड्राफ्ट|जल्दी|आजमा)/, // test / draft / quick / try — common Hinglish chat forms
+];
+const FINAL_MARKERS = [
+  /\b(final|client|deliver(y|able)?|ship it|publish|production|premium|polish(ed)?|best quality|master|for the demo|presentation)\b/i,
+  /(फाइनल|क्लाइंट|डिलीवर)/, // final / client / deliver
+];
+
+export type QualitySuggestion = { preset: "preview" | "master"; reason: string } | null;
+
+/** A one-line reason to suggest Preview (fast) or Master (best) — or null when the
+ * text carries no clear signal either way (the common case; say nothing then). */
+export function suggestQuality(text: string): QualitySuggestion {
+  const t = (text || "").trim();
+  if (t.length < 6) return null;
+  const draft = DRAFT_MARKERS.some((re) => re.test(t));
+  const final = FINAL_MARKERS.some((re) => re.test(t));
+  if (final && !draft) return { preset: "master", reason: "sounds like a final deliverable" };
+  if (draft && !final) return { preset: "preview", reason: "sounds like a quick test" };
+  return null; // both or neither fired — ambiguous, stay quiet rather than guess
+}
