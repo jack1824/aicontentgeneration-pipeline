@@ -16,6 +16,9 @@ import httpx
 
 from app.config import GEMINI_API_KEY
 
+# How many treatments a plan must offer. The whole Director flow is "pick a direction",
+# so shipping fewer silently removes the choice the user came for.
+PLAN_APPROACHES = 3
 GEMINI_MODEL = "gemini-2.5-flash"
 # Separate free-tier quota pool — the planner's lifeboat when flash is exhausted.
 GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
@@ -668,11 +671,38 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
             f"them; propose 3 clearly different creative directions: {rejected}"
         )
     # Regenerates run hotter — the user explicitly wants different ideas.
+    base_temp = 0.2 if verbatim else (0.9 if avoid else 0.7)
     proposals = _gemini_json(
-        SYSTEM_PROMPT, user_msg,
-        temperature=0.2 if verbatim else (0.9 if avoid else 0.7), require="approaches")
+        SYSTEM_PROMPT, user_msg, temperature=base_temp, require="approaches")
     if "approaches" not in proposals or not proposals["approaches"]:
         raise PlanError("Gemini returned no approaches.")
+    # The prompt says EXACTLY 3, but nothing enforced it — only "non-empty" was checked,
+    # so a model that answered with a single strong treatment shipped one card and the
+    # user silently lost the choice. Long verbatim briefs at low temperature trigger this
+    # most. Ask again, hotter and explicitly, then merge (dedup by title) so a second
+    # partial answer still tops the list up instead of replacing it.
+    if len(proposals["approaches"]) < PLAN_APPROACHES:
+        seen = {(a.get("title") or "").strip().lower() for a in proposals["approaches"]}
+        for bump in (0.25, 0.5):
+            missing = PLAN_APPROACHES - len(proposals["approaches"])
+            if missing <= 0:
+                break
+            have = "; ".join(a.get("title", "?") for a in proposals["approaches"])
+            try:
+                more = _gemini_json(
+                    SYSTEM_PROMPT,
+                    user_msg + (f"\n\nYou already proposed: {have}. Propose {missing} MORE "
+                                f"clearly different approach(es) — same JSON shape, same "
+                                f"brief, same pipeline rule. Do not repeat the above."),
+                    temperature=min(1.0, base_temp + bump), require="approaches")
+            except PlanError:
+                break  # a top-up failure must never sink a plan we already have
+            for a in more.get("approaches") or []:
+                key = (a.get("title") or "").strip().lower()
+                if key and key not in seen:
+                    seen.add(key)
+                    proposals["approaches"].append(a)
+    proposals["approaches"] = proposals["approaches"][:PLAN_APPROACHES]
     if verbatim and script and script.strip():
         _enforce_verbatim(proposals, script.strip())
     return proposals
