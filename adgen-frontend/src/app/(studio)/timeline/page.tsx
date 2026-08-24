@@ -9,8 +9,9 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { api, GenerateRequest, Job, OutputItem, PlanApproach, StillItem, Voice } from "@/lib/api";
+import { api, GenerateRequest, Job, OutputItem, PlanApproach, PRESET_HINTS, PRESETS, PresetKey, StillItem, Voice } from "@/lib/api";
 import { looksLikeScript, scriptSignals, spokenSeconds } from "@/lib/script";
+import { usePersistentState } from "@/lib/usePersistentState";
 
 const MIN_PPS = 20;
 const MAX_PPS = 200;
@@ -570,6 +571,12 @@ function TimelineStudio() {
   const [voiceOut, setVoiceOut] = useState<number | null>(() => (useDraft ? draft!.voiceOut : null));
   const [voiceScript, setVoiceScript] = useState<string | null>(() => (useDraft ? draft!.voiceScript ?? null : null));
   const [voiceLang, setVoiceLang] = useState(() => (useDraft ? draft!.voiceLang ?? "hi" : "hi"));
+  // Render quality is a USER CHOICE here too (nextplan Phase 3 gap fix) — Director
+  // used to hard-code every render at full "quality", which is why a live demo could
+  // stall on a 20-min take with no way to say "just show me fast." Same locked
+  // preview/moderate/master preset every other render surface uses, persisted per tab.
+  const [preset, setPreset] = usePersistentState<PresetKey>("adgen-timeline-preset", "preview");
+  const presetKnobs = PRESETS[preset];
   const [rangeIn, setRangeIn] = useState<number | null>(null); // I/O marks on the ruler
   const [rangeOut, setRangeOut] = useState<number | null>(null);
   const [gain, setGain] = useState(() => (useDraft ? draft!.gain : 1.0));
@@ -2036,7 +2043,7 @@ function TimelineStudio() {
             ...(img ? { image: img } : {}),
           };
         }),
-        language, quality: "quality",
+        language, quality: presetKnobs.quality, ...("steps" in presetKnobs ? { steps: presetKnobs.steps } : {}), postprocess: presetKnobs.postprocess,
         name: pname(ap.title),
       };
       if (injected) postChat("assistant", `🖼 ${injected} approved still${injected > 1 ? "s" : ""} wired into the character/product shots.`);
@@ -2078,7 +2085,7 @@ function TimelineStudio() {
               image: productImg,
             },
           ],
-          language, quality: "quality",
+          language, quality: presetKnobs.quality, ...("steps" in presetKnobs ? { steps: presetKnobs.steps } : {}), postprocess: presetKnobs.postprocess,
           name: pname(ap.title),
         };
         // sequence ignores the job-level script (each segment carries its own), so the
@@ -2092,7 +2099,7 @@ function TimelineStudio() {
           mode: ap.pipeline,
           shots: shotList.map((s) => ({ prompt: s.prompt, negative_prompt: s.negative_prompt })),
           script: ap.narration_script || null,
-          language, quality: "quality",
+          language, quality: presetKnobs.quality, ...("steps" in presetKnobs ? { steps: presetKnobs.steps } : {}), postprocess: presetKnobs.postprocess,
           name: pname(ap.title),
         };
       }
@@ -2114,7 +2121,7 @@ function TimelineStudio() {
             prompt: x.prompt,
             negative_prompt: x.negative_prompt,
           })),
-          language, quality: "quality", name: pname(ap.title),
+          language, quality: presetKnobs.quality, ...("steps" in presetKnobs ? { steps: presetKnobs.steps } : {}), postprocess: presetKnobs.postprocess, name: pname(ap.title),
         };
         pendingNarrationRef.current = ap.narration_script || "";
       } else if (anyShots.length) {
@@ -2124,7 +2131,7 @@ function TimelineStudio() {
           mode: "overlay",
           shots: anyShots.map((x) => ({ prompt: x.prompt, negative_prompt: x.negative_prompt })),
           script: ap.narration_script || null,
-          language, quality: "quality", name: pname(ap.title),
+          language, quality: presetKnobs.quality, ...("steps" in presetKnobs ? { steps: presetKnobs.steps } : {}), postprocess: presetKnobs.postprocess, name: pname(ap.title),
         };
       }
     }
@@ -2728,7 +2735,7 @@ function TimelineStudio() {
             shots: [{ prompt, negative_prompt: appr.negative || undefined }],
             script: null,
             language: sessionRef.current.voice?.language ?? voiceLang,
-            quality: "quality",
+            quality: presetKnobs.quality, ...("steps" in presetKnobs ? { steps: presetKnobs.steps } : {}), postprocess: presetKnobs.postprocess,
             name: pname(`${appr.title}-extra`),
             ...(sessionRef.current.voice?.voice_id ? { voice_id: sessionRef.current.voice.voice_id } : {}),
           } as GenerateRequest);
@@ -3939,6 +3946,24 @@ function TimelineStudio() {
               })}
               {chatBusy && <div className="shimmer text-[11px]">directing…</div>}
               <div ref={chatEndRef} />
+            </div>
+            {/* Render quality — user choice, not hard-coded. Defaults to Preview (fast) so
+                a live demo never stalls on a full-quality take unless you ask for one. */}
+            <div className="flex items-center gap-1.5 border-t border-white/5 px-2.5 py-1.5">
+              <span className="text-[10px] uppercase text-text-muted">Quality</span>
+              <div className="flex gap-1">
+                {(Object.keys(PRESETS) as PresetKey[]).map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setPreset(k)}
+                    title={PRESET_HINTS[k]}
+                    className={`rounded-btn px-2 py-1 text-[10px] ${preset === k ? "seg-on" : "seg"} ${focusRing}`}
+                  >
+                    {PRESETS[k].label}
+                  </button>
+                ))}
+              </div>
             </div>
             {/* quick actions — contextual; they fill the input so you can edit first */}
             <div className="flex flex-wrap gap-1 px-2.5 pb-1">
