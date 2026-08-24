@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>adgen ops</title>
+<style>
+  :root{
+    --bg:#0d0d0d; --panel:#141414; --line:#242424; --line2:#2e2e2e;
+    --fg:#ededed; --dim:#8a8a8a; --dimmer:#5c5c5c;
+    --red:#ff4d3d; --amber:#e8a33d; --green:#3ecf8e; --blue:#4d9fff;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+  a{color:var(--blue)}
+  header{position:sticky;top:0;z-index:10;background:var(--bg);
+         border-bottom:1px solid var(--line);padding:14px 20px;
+         display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.02em}
+  h1 span{color:var(--dimmer);font-weight:400}
+  .grow{flex:1}
+  button{background:var(--panel);color:var(--fg);border:1px solid var(--line2);
+         border-radius:7px;padding:7px 13px;font-size:13px;cursor:pointer;font-family:inherit}
+  button:hover{border-color:#454545}
+  button.warn{border-color:#5a3a1a;color:var(--amber)}
+  main{padding:20px;max-width:1500px;margin:0 auto}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:11px;
+          margin-bottom:16px;overflow:hidden}
+  .head{padding:12px 16px;border-bottom:1px solid var(--line);
+        display:flex;align-items:center;gap:10px}
+  .head h2{font-size:13px;margin:0;font-weight:600;letter-spacing:.03em;text-transform:uppercase}
+  .head .sub{color:var(--dim);font-size:12px;font-weight:400;text-transform:none;letter-spacing:0}
+  .body{padding:14px 16px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .card{background:#101010;border:1px solid var(--line);border-radius:9px;padding:12px 14px}
+  .card .n{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}
+  .card .l{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;
+     text-transform:uppercase;letter-spacing:.05em;padding:7px 10px;border-bottom:1px solid var(--line)}
+  td{padding:8px 10px;border-bottom:1px solid #1b1b1b;vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .mono{font-family:var(--mono);font-size:12px}
+  .dim{color:var(--dim)}
+  .dimmer{color:var(--dimmer)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;
+        font-weight:600;letter-spacing:.03em;white-space:nowrap}
+  .red{background:rgba(255,77,61,.14);color:var(--red)}
+  .amber{background:rgba(232,163,61,.14);color:var(--amber)}
+  .green{background:rgba(62,207,142,.13);color:var(--green)}
+  .grey{background:#1e1e1e;color:var(--dim)}
+  .blue{background:rgba(77,159,255,.13);color:var(--blue)}
+  .bar{height:4px;background:#1e1e1e;border-radius:3px;overflow:hidden;min-width:70px}
+  .bar>i{display:block;height:100%;background:var(--blue)}
+  .banner{padding:11px 16px;border-radius:9px;margin-bottom:16px;font-size:13px;
+          border:1px solid;display:flex;gap:10px;align-items:flex-start}
+  .banner.red{border-color:#5a2018;background:rgba(255,77,61,.07);color:#ffb3aa}
+  .banner.amber{border-color:#5a4318;background:rgba(232,163,61,.07);color:#f0cf9a}
+  .banner.green{border-color:#1c4d38;background:rgba(62,207,142,.06);color:#a8e6c8}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:1000px){.split{grid-template-columns:1fr}}
+  .empty{color:var(--dimmer);font-size:13px;padding:8px 2px}
+  details{margin-top:6px}
+  summary{cursor:pointer;color:var(--dim);font-size:12px}
+  pre{margin:6px 0 0;background:#0b0b0b;border:1px solid var(--line);border-radius:7px;
+      padding:9px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;color:#c8c8c8}
+  .why{color:var(--dim);font-size:12px;margin-top:3px;line-height:1.45}
+  .tabs{display:flex;gap:6px;padding:0 16px 12px}
+  .tabs button{font-size:12px;padding:5px 11px}
+  .tabs button[aria-selected="true"]{background:#1e1e1e;border-color:#454545}
+</style>
+</head>
+<body>
+<header>
+  <h1>adgen <span>/ ops</span></h1>
+  <span id="clock" class="dim mono" style="font-size:12px"></span>
+  <span class="grow"></span>
+  <span id="autonote" class="dimmer" style="font-size:12px"></span>
+  <button id="refresh">Refresh</button>
+  <button id="probe" class="warn" title="Runs real API calls against every provider — costs quota">Probe providers</button>
+</header>
+
+<main>
+  <div id="banners"></div>
+
+  <section>
+    <div class="head"><h2>Now</h2><span id="nowsub" class="sub"></span></div>
+    <div class="body"><div id="overview" class="cards"></div></div>
+  </section>
+
+  <section>
+    <div class="head"><h2>Safety nets</h2>
+      <span class="sub">the checks that are supposed to catch problems — are they alive?</span></div>
+    <div class="body" id="ladders"></div>
+  </section>
+
+  <section>
+    <div class="head"><h2>Providers &amp; API limits</h2>
+      <span id="probesub" class="sub"></span></div>
+    <div class="body" style="padding:0"><table id="providers"></table></div>
+  </section>
+
+  <section>
+    <div class="head"><h2>Recent ads — scored</h2>
+      <span class="sub">audio · render quality · consistency, measured from the finished file</span></div>
+    <div class="body" style="padding:0"><table id="renders"></table></div>
+  </section>
+
+  <div class="split">
+    <section>
+      <div class="head"><h2>Jobs</h2><span id="jobsub" class="sub"></span></div>
+      <div class="body" style="padding:0"><table id="jobs"></table></div>
+    </section>
+    <section>
+      <div class="head"><h2>Errors &amp; warnings</h2><span class="sub">durable log — survives restarts</span></div>
+      <div class="tabs" id="evtabs"></div>
+      <div class="body" style="padding:0"><table id="events"></table></div>
+    </section>
+  </div>
+
+  <section>
+    <div class="head"><h2>Model params</h2>
+      <span class="sub">read from the workflow graphs, not from a hand-kept list</span></div>
+    <div class="body" id="params"></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pill = (sev, txt) => `<span class="pill ${sev}">${esc(txt ?? sev)}</span>`;
+const ago = ts => {
+  if (!ts) return "";
+  const s = Math.max(0, Date.now()/1000 - ts);
+  if (s < 60) return Math.round(s) + "s ago";
+  if (s < 3600) return Math.round(s/60) + "m ago";
+  if (s < 86400) return Math.round(s/3600) + "h ago";
+  return Math.round(s/86400) + "d ago";
+};
+const j = async (u) => { const r = await fetch(u); if(!r.ok) throw new Error(u+" -> "+r.status); return r.json(); };
+
+let EVFILTER = null;
+
+function renderOverview(o){
+  $("#nowsub").textContent = o.jobs_are_in_memory
+    ? "live jobs are in memory — the log below is what survives a restart" : "";
+  const t = o.today || {}, p = o.providers || {};
+  $("#overview").innerHTML = [
+    [`${o.active_jobs}`, "rendering now", o.active_jobs ? "blue" : ""],
+    [`${t.renders_done ?? 0}`, "finished today", ""],
+    [`${t.errors ?? 0}`, "errors today", (t.errors>0) ? "red" : ""],
+    [`${t.warnings ?? 0}`, "warnings today", (t.warnings>0) ? "amber" : ""],
+    [`${p.down ?? 0}`, "providers down", (p.down>0) ? "red" : ""],
+    [`${p.throttled ?? 0}`, "throttled", (p.throttled>0) ? "amber" : ""],
+  ].map(([n,l,c]) => `<div class="card"><div class="n" ${c?`style="color:var(--${c})"`:""}>${n}</div><div class="l">${l}</div></div>`).join("");
+
+  const act = (o.active||[]).map(a => `
+    <div style="margin-top:10px;display:flex;align-items:center;gap:10px;font-size:13px">
+      <span class="mono dim">${esc(a.job_id)}</span>
+      <b>${esc(a.name||a.kind||"job")}</b>
+      <div class="bar" style="flex:1"><i style="width:${a.progress||0}%"></i></div>
+      <span class="dim mono">${a.progress||0}%</span>
+      ${a.warnings ? pill("amber", a.warnings+" warn") : ""}
+      <span class="dim" style="flex:2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.detail||"")}</span>
+    </div>`).join("");
+  if (act) $("#overview").insertAdjacentHTML("afterend", `<div id="actrows">${act}</div>`);
+}
+
+function renderLadders(ls){
+  if(!ls || !ls.length){ $("#ladders").innerHTML = `<div class="empty">no ladder data</div>`; return; }
+  $("#ladders").innerHTML = ls.map(l => `
+    <div style="display:flex;gap:12px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #1b1b1b">
+      <div style="min-width:110px"><b>${esc(l.ladder)}</b></div>
+      <div>${pill(l.severity)}</div>
+      <div style="flex:1">
+        <div>${esc(l.verdict)}</div>
+        ${l.dead && l.dead.length ? `<div class="why">dead rungs: ${l.dead.map(esc).join(", ")} — a model id that no longer exists never recovers on its own.</div>` : ""}
+      </div>
+    </div>`).join("");
+}
+
+function renderProviders(d){
+  $("#probesub").textContent = d.cached
+    ? `cached ${ago(Date.now()/1000 - d.age_s)} — probing costs quota, so it is never automatic`
+    : "just probed";
+  const rows = (d.results||[]).map(r => {
+    const sev = r.state==="ok" ? "green" : r.state==="throttled" ? "amber"
+              : r.state==="dead" ? "red" : "grey";
+    return `<tr>
+      <td>${pill(sev, r.state)}</td>
+      <td><b>${esc(r.provider)}</b><div class="dimmer" style="font-size:11px">${esc(r.role)}</div></td>
+      <td class="mono dim">${esc(r.model)}</td>
+      <td class="dim">${esc(r.detail||"")}${
+        typeof r.used==="number" && r.limit ? `<div class="bar" style="margin-top:5px;max-width:180px"><i style="width:${Math.min(100,100*r.used/r.limit)}%;background:${r.used/r.limit>0.9?"var(--red)":"var(--green)"}"></i></div>` : ""}</td>
+    </tr>`;
+  }).join("");
+  $("#providers").innerHTML =
+    `<thead><tr><th>state</th><th>provider</th><th>model</th><th>detail</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+function renderRenders(d){
+  const rows = (d.renders||[]).map(r => {
+    const cell = (v) => v ? `${pill(v.severity)}${v.issue?`<div class="why">${esc(v.issue)}</div>`:""}` : "";
+    return `<tr>
+      <td>${pill(r.severity)}</td>
+      <td><b class="mono" style="font-size:12px">${esc(r.name)}</b>
+          <div class="dimmer" style="font-size:11px">${r.duration_s}s · ${esc(r.resolution||"?")} · ${r.size_mb}MB · ${ago(r.mtime)}</div></td>
+      <td>${cell(r.audio)}</td>
+      <td>${cell(r.quality)}</td>
+      <td>${cell(r.consistency)}</td>
+    </tr>`;
+  }).join("");
+  $("#renders").innerHTML = rows
+    ? `<thead><tr><th></th><th>ad</th><th>audio</th><th>render quality</th><th>consistency</th></tr></thead><tbody>${rows}</tbody>`
+    : `<tbody><tr><td class="empty">no finished ads found</td></tr></tbody>`;
+}
+
+function renderJobs(d){
+  $("#jobsub").textContent = `${d.live_count} in memory · rest from the durable log`;
+  const rows = (d.jobs||[]).map(x => {
+    const sev = x.status==="error" ? "red" : x.status==="done" ? "green"
+              : x.status==="cancelled" ? "grey" : "blue";
+    return `<tr>
+      <td>${pill(sev, x.status)}</td>
+      <td><b>${esc(x.name||x.kind||"—")}</b>
+        <div class="dimmer mono" style="font-size:11px">${esc(x.job_id)} · ${ago(x.created)}${x.live?"":" · logged"}</div>
+        ${x.error?`<div class="why" style="color:#ffb3aa">${esc(x.error).slice(0,200)}</div>`:""}
+        ${x.warnings&&x.warnings.length?`<details><summary>${x.warnings.length} warning(s)</summary><pre>${x.warnings.map(esc).join("\n")}</pre></details>`:""}
+      </td>
+      <td class="dim mono" style="font-size:11px">${x.elapsed_s?x.elapsed_s+"s":(x.progress!=null?x.progress+"%":"")}</td>
+    </tr>`;
+  }).join("");
+  $("#jobs").innerHTML = rows
+    ? `<tbody>${rows}</tbody>` : `<tbody><tr><td class="empty">no jobs yet</td></tr></tbody>`;
+}
+
+function renderEvents(d){
+  const rows = (d.events||[]).map(e => {
+    const sev = e.kind==="job_error" ? "red" : e.kind==="warning" ? "amber"
+              : e.kind==="job_done" ? "green" : "grey";
+    const msg = e.message || e.error || (e.results ? `${e.results.length} providers probed` : e.name || "");
+    return `<tr>
+      <td>${pill(sev, (e.kind||"").replace("job_",""))}</td>
+      <td>${esc(msg).slice(0,220)}
+        ${e.name?`<div class="dimmer" style="font-size:11px">${esc(e.name)}</div>`:""}</td>
+      <td class="dimmer mono" style="font-size:11px;white-space:nowrap">${ago(e.ts)}</td>
+    </tr>`;
+  }).join("");
+  $("#events").innerHTML = rows
+    ? `<tbody>${rows}</tbody>`
+    : `<tbody><tr><td class="empty">nothing logged yet — this fills as renders run</td></tr></tbody>`;
+}
+
+function renderParams(d){
+  const c = d.constants||{};
+  const consts = Object.entries(c).map(([k,v]) =>
+    `<tr><td class="dim">${esc(k)}</td><td class="mono">${esc(v)}</td></tr>`).join("");
+  const graphs = Object.entries(d.graphs||{}).map(([name,g]) => {
+    const lora = (g.loras||[]).map(l=>`${l.strength} <span class="dimmer">${esc(String(l.name).slice(0,42))}</span>`).join("<br>") || "<span class='dimmer'>none</span>";
+    const sig  = (g.sigmas||[]).map(s=>`${s.steps} steps <span class="dimmer">(node ${s.node})</span>`).join("<br>") || "<span class='dimmer'>—</span>";
+    const cfg  = (g.cfg||[]).map(x=>x.cfg).join(", ") || "—";
+    return `<tr><td><b>${esc(name)}</b></td><td class="mono">${sig}</td><td class="mono">${esc(cfg)}</td><td class="mono">${lora}</td></tr>`;
+  }).join("");
+  const danger = (d.danger_params||[]).map(p => `
+    <div style="padding:9px 0;border-bottom:1px solid #1b1b1b">
+      <b class="mono" style="font-size:12px">${esc(p.param)}</b>
+      ${pill("green","safe: "+p.safe)}
+      <div class="why">${esc(p.why)}</div>
+    </div>`).join("");
+  $("#params").innerHTML = `
+    <div style="margin-bottom:14px">
+      <div class="dim" style="font-size:12px;margin-bottom:6px">Params where a wrong value silently destroys output</div>
+      ${danger}
+    </div>
+    <div class="split">
+      <div><div class="dim" style="font-size:12px;margin-bottom:6px">Workflow graphs</div>
+        <table><thead><tr><th>graph</th><th>steps</th><th>cfg</th><th>lora</th></tr></thead><tbody>${graphs}</tbody></table></div>
+      <div><div class="dim" style="font-size:12px;margin-bottom:6px">Runtime constants</div>
+        <table><tbody>${consts}</tbody></table></div>
+    </div>`;
+}
+
+async function loadAll(){
+  $("#clock").textContent = new Date().toLocaleTimeString();
+  document.querySelectorAll("#actrows").forEach(n=>n.remove());
+  const tasks = [
+    ["#overview", () => j("api/overview").then(o => { renderOverview(o); renderLadders(o.ladders); banners(o); })],
+    ["#providers", () => j("api/providers").then(renderProviders)],
+    ["#jobs", () => j("api/jobs?limit=40").then(renderJobs)],
+    ["#events", () => j("api/events?limit=120" + (EVFILTER?`&kind=${EVFILTER}`:"")).then(renderEvents)],
+    ["#params", () => j("api/params").then(renderParams)],
+  ];
+  await Promise.allSettled(tasks.map(([sel,f]) => f().catch(e => {
+    const el=$(sel); if(el) el.innerHTML = `<div class="empty">failed: ${esc(e.message)}</div>`;
+  })));
+  // Renders are the slow one (ffprobe per file) — load last so the page is usable first.
+  j("api/renders?limit=10").then(renderRenders).catch(e =>
+    $("#renders").innerHTML = `<tbody><tr><td class="empty">failed: ${esc(e.message)}</td></tr></tbody>`);
+}
+
+function banners(o){
+  const out = [];
+  for (const l of (o.ladders||[])) {
+    if (l.severity !== "green")
+      out.push(`<div class="banner ${l.severity}"><b>${esc(l.ladder)}</b><span>${esc(l.verdict)} — problems can ship unnoticed while this is down.</span></div>`);
+  }
+  const p = o.providers||{};
+  if (p.down) out.push(`<div class="banner red"><b>${p.down} provider(s) dead</b><span>A retired model id never recovers on its own — it needs a new id in .env.</span></div>`);
+  if (!out.length && (o.today||{}).errors === 0)
+    out.push(`<div class="banner green"><b>All safety nets up</b><span>Every fallback ladder has a live rung and nothing has errored today.</span></div>`);
+  $("#banners").innerHTML = out.join("");
+}
+
+const tabs = [["all",null],["errors","job_error"],["warnings","warning"],["finished","job_done"]];
+$("#evtabs").innerHTML = tabs.map(([l,k]) =>
+  `<button data-k="${k??""}" aria-selected="${k===EVFILTER}">${l}</button>`).join("");
+$("#evtabs").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  EVFILTER = b.dataset.k || null;
+  [...$("#evtabs").children].forEach(x => x.setAttribute("aria-selected", (x.dataset.k||"")===(EVFILTER||"")));
+  j("api/events?limit=120" + (EVFILTER?`&kind=${EVFILTER}`:"")).then(renderEvents);
+});
+
+$("#refresh").onclick = loadAll;
+$("#probe").onclick = async () => {
+  $("#probe").disabled = true; $("#probe").textContent = "Probing…";
+  try { renderProviders(await j("api/providers?force=true")); await loadAll(); }
+  finally { $("#probe").disabled = false; $("#probe").textContent = "Probe providers"; }
+};
+
+// Poll only the cheap endpoints. Never auto-probe providers (real quota), never
+// auto-rescan renders (ffprobe per file).
+loadAll();
+setInterval(() => {
+  $("#clock").textContent = new Date().toLocaleTimeString();
+  document.querySelectorAll("#actrows").forEach(n=>n.remove());
+  j("api/overview").then(o => { renderOverview(o); renderLadders(o.ladders); banners(o); }).catch(()=>{});
+  j("api/jobs?limit=40").then(renderJobs).catch(()=>{});
+  j("api/events?limit=120" + (EVFILTER?`&kind=${EVFILTER}`:"")).then(renderEvents).catch(()=>{});
+}, 5000);
+$("#autonote").textContent = "live every 5s · renders + providers on demand";
+</script>
+</body>
+</html>

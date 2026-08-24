@@ -32,8 +32,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import (avatars, characters, checkpoint, environments, episodes, keyframes,
-                 pipeline, postprocess, shows, starters)
+from app import (adminstore, avatars, characters, checkpoint, environments, episodes,
+                 keyframes, pipeline, postprocess, shows, starters)
 from app.assembly import ffmpeg
 from app.config import COMFY_POD_URLS, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 from app.providers import llm
@@ -47,6 +47,12 @@ app.mount("/files", StaticFiles(directory="outputs"), name="outputs")
 app.mount("/assets-files", StaticFiles(directory="assets"), name="assets")
 
 JOBS: dict[str, dict] = {}
+# Mounted after JOBS exists — admin_api reads it lazily inside handlers, so the
+# import order here is the only thing that matters.
+from app import admin_api  # noqa: E402  (deliberate: needs `app` and JOBS defined)
+
+app.include_router(admin_api.router)
+
 TERMINAL_STATES = {"done", "error", "cancelled"}
 POD_KINDS = {"generate", "postprocess"}  # kinds that occupy a pod (queue-relevant)
 
@@ -72,6 +78,9 @@ def _new_job(kind: str, name: str | None = None) -> str:
     JOBS[job_id] = {"status": "queued", "progress": 0, "detail": "",
                     "video_path": None, "error": None, "warnings": [],
                     "kind": kind, "name": name, "created": time.time()}
+    # JOBS is in-memory and dies with the process, so anything worth reviewing after
+    # the fact goes to the durable admin log too (adminstore).
+    adminstore.emit(adminstore.JOB_START, job_id=job_id, kind=kind, name=name)
     return job_id
 
 
@@ -80,7 +89,18 @@ def _update(job_id: str, **fields) -> None:
     running after cancel and must not resurrect the job as running/done."""
     job = JOBS.get(job_id)
     if job and job["status"] != "cancelled":
+        was = job.get("status")
         job.update(**fields)
+        now = job.get("status")
+        if now != was and now in ("done", "error", "cancelled"):
+            adminstore.emit(
+                {"done": adminstore.JOB_DONE, "error": adminstore.JOB_ERROR,
+                 "cancelled": adminstore.JOB_CANCELLED}[now],
+                job_id=job_id, kind=job.get("kind"), name=job.get("name"),
+                error=job.get("error"), error_kind=job.get("error_kind"),
+                video_path=job.get("video_path"),
+                warnings=list(job.get("warnings") or []),
+                elapsed_s=round(time.time() - (job.get("created") or time.time()), 1))
 
 
 def _warn(job_id: str, msg: str) -> None:
@@ -89,6 +109,8 @@ def _warn(job_id: str, msg: str) -> None:
     job = JOBS.get(job_id)
     if job and job["status"] != "cancelled":
         job.setdefault("warnings", []).append(msg)
+        adminstore.emit(adminstore.WARNING, job_id=job_id, kind=job.get("kind"),
+                        name=job.get("name"), message=msg)
 
 
 def _attach_sync(job_id: str, video_path: str, ok_tail_s: float = 1.0,
