@@ -7,7 +7,7 @@
 // Opens from any Library video ("Open in Timeline") via ?video=, or builds from
 // the media bin. ⌖ keeps the cinematic center-cut default (~2.2s middle).
 
-import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api, GenerateRequest, Job, OutputItem, PlanApproach, PRESET_HINTS, PRESETS, PresetKey, StillItem, Voice } from "@/lib/api";
 import { looksLikeScript, scriptSignals, spokenSeconds, suggestQuality } from "@/lib/script";
@@ -679,12 +679,31 @@ function TimelineStudio() {
   useEffect(() => {
     api.voices().then((d) => setVoices(d.voices ?? [])).catch(() => setVoices([]));
     api.characters()
-      // backend caps a plan's cast_ids at 4 (PlanRequest.cast_ids, main.py) — /characters
-      // returns newest-first, so take(4) keeps the 4 most recently saved and stops a
-      // growing character library from 422-ing every plan.
-      .then((d) => setCast((d.characters ?? []).slice(0, 4).map((c) => ({ id: c.id, name: c.name, anchor: c.anchor }))))
+      .then((d) => setCast((d.characters ?? []).map((c) => ({ id: c.id, name: c.name, anchor: c.anchor }))))
       .catch(() => setCast([]));
   }, []);
+  // Saved characters are a LIBRARY, not a default cast. Sending all of them injected
+  // whoever happened to be saved into EVERY ad — the planner is told to "build the
+  // shots around these" and inject_cast pastes each anchor verbatim into every shot,
+  // so an unrelated brand film silently came back cast with Motu & Patlu. Only cast
+  // the user actually NAMED in their own words is used. (Also keeps cast_ids inside
+  // the backend's max_length=4 without arbitrarily truncating a real cast.)
+  const castNamedIn = useCallback(
+    (...texts: (string | null | undefined)[]) => {
+      const hay = texts.filter(Boolean).join("\n");
+      if (!hay.trim() || !cast.length) return [];
+      return cast
+        .filter((c) => {
+          const n = c.name.trim();
+          if (n.length < 2) return false;
+          const esc = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          // \b is wrong for non-ASCII names (Devanagari), so bound on non-letters.
+          return new RegExp(`(^|[^\\p{L}\\p{N}])${esc}([^\\p{L}\\p{N}]|$)`, "iu").test(hay);
+        })
+        .slice(0, 4);
+    },
+    [cast],
+  );
   // Remember an image AND what it's for. Re-recording the same path updates its
   // role/approval instead of duplicating it.
   const rememberAsset = (a: SessionAsset) =>
@@ -1928,7 +1947,11 @@ function TimelineStudio() {
     try {
       const res = await api.plan({
         idea, language, format, duration_s,
-        ...(cast.length ? { cast_ids: cast.map((c) => c.id) } : {}),
+        // only characters the user NAMED — never the whole saved library
+        ...(() => {
+          const named = castNamedIn(idea, opts?.script);
+          return named.length ? { cast_ids: named.map((c) => c.id) } : {};
+        })(),
         ...(opts?.script ? { script: opts.script, verbatim: !!opts.verbatim } : {}),
       });
       lastPlanRef.current = { approaches: res.approaches, language };
@@ -2168,8 +2191,14 @@ function TimelineStudio() {
     }
     // the Director's chosen voice must reach the render, not just the re-voice
     if (sessionRef.current.voice?.voice_id) req.voice_id = sessionRef.current.voice.voice_id;
-    // inject_cast pastes each saved anchor verbatim into every shot, for every mode
-    if (cast.length) req.character_ids = cast.map((c) => c.id);
+    // inject_cast pastes each saved anchor verbatim into every shot, so this must be
+    // ONLY the characters this ad actually calls for — never the whole saved library.
+    const namedCast = castNamedIn(
+      sessionRef.current.brief?.idea, ap.title, ap.narration_script,
+      (ap.shots ?? []).map((sh) => (typeof sh === "string" ? sh : sh?.prompt ?? "")).join(" "),
+      (ap.segments ?? []).map((sg) => `${sg?.prompt ?? ""} ${sg?.script ?? ""}`).join(" "),
+    );
+    if (namedCast.length) req.character_ids = namedCast.map((c) => c.id);
     const { job_id } = await api.generate(req);
     // remember this render's own narration + language so the post-render "Add
     // narration" box can prefill the ad's script (user can still edit/replace).
@@ -2813,14 +2842,25 @@ function TimelineStudio() {
       return;
     }
     if (msg.length > 600) {
-      // a paste this long is a brief/script, not an edit command — send it to
-      // the planner VERBATIM (round-tripping it through the intent brain could
-      // paraphrase the user's words, and user content is never rewritten)
+      // A paste this long is a brief/script, not an edit command, so it skips the
+      // intent brain (round-tripping it could paraphrase the user's own words).
       const durM = msg.match(/(\d{2})\s*(?:seconds|second|secs|sec)\b/i);
       const dur = durM ? Math.max(10, Math.min(60, +durM[1])) : 20;
       const fmt = /16:9/.test(msg) ? "16:9" : /1:1/.test(msg) ? "1:1" : "9:16";
       const lang = /hindi|[ऀ-ॿ]/i.test(msg) ? "hi" : "en";
-      postChat("assistant", `Full brief received — straight to the planner, verbatim (${dur}s · ${fmt} · ${lang}).`);
+      // ...but it must NOT go straight to the planner. This branch used to announce
+      // "verbatim" and then call runPlan(msg) with no script/verbatim options at all —
+      // so the paste arrived as an `idea` the planner was free to rewrite, and the
+      // user's actual words were quietly replaced by invented copy. Always ask which
+      // they want; the answer is what genuinely drives verbatim mode.
+      if (looksLikeScript(msg)) {
+        pushMsg({
+          kind: "scriptask", idea: msg, language: lang, format: fmt, duration_s: dur,
+          signals: scriptSignals(msg), secs: spokenSeconds(msg, lang),
+        });
+        return;
+      }
+      postChat("assistant", `Full brief received — straight to the planner (${dur}s · ${fmt} · ${lang}).`);
       setChatBusy(true);
       try {
         await runPlan(msg, lang, fmt, dur);

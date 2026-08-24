@@ -9,12 +9,20 @@
 // Length alone is a bad signal: a long rambling brief is still an idea, and a tight
 // 30-word VO is still a script. So we look for the SHAPE of a script instead.
 
+// Scripts are usually PASTED, and people paste from Docs/Notion/ChatGPT — so the
+// line rarely starts with the keyword. `### Scene 1 — Hook`, `**Scene 1**`, `- VO:`
+// and `> NARRATOR:` all read as scripts to a human and all missed the old anchors
+// (which required the keyword at column 0). LEAD covers that ornamentation.
+const LEAD = String.raw`^[\s>#*_\-–—•\d.)\]]*`;
+
 const MARKERS: RegExp[] = [
-  /^\s*(vo|v\.o\.|voice ?over|narrator|narration|script)\s*[:\-—]/im, // VO: / NARRATOR:
-  /^\s*(scene|shot|frame|beat)\s*\d+\s*[:\-—.]/im, // SCENE 1: / Shot 2 -
+  new RegExp(`${LEAD}(vo|v\\.o\\.|voice ?over|narrator|narration|script)\\s*[:\\-—]`, "im"),
+  // SCENE 1: / ### Scene 1 — Hook / **Shot 2 -** ... also allows a trailing title
+  new RegExp(`${LEAD}(scene|shot|frame|beat|sequence)\\s*\\d+\\s*[:\\-—.|]`, "im"),
   /^\s*\d{1,2}\s*[:.]\s*\d{2}\s*[-–—]/m, // 00:04 – timecodes
+  /\b\d{1,3}\s*[-–—]\s*\d{1,3}\s*(sec|s|seconds)\b/i, // "0–6 sec" beat ranges
   /\b(end ?frame|end ?card|fade (in|out)|cut to|title card|super:)\b/i,
-  /^\s*(tagline|cta|call to action|logo)\s*[:\-—]/im,
+  new RegExp(`${LEAD}(tagline|cta|call to action|logo|dialogue|visual|on-?screen)\\s*[:\\-—]`, "im"),
   /\b(on-?screen text|supers?)\s*[:\-—]/i,
   /"[^"]{25,}"/, // a long quoted spoken line
   /[“][^”]{25,}[”]/,
