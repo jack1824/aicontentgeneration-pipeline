@@ -31,16 +31,18 @@ QC_MAX_TAKES = max(1, int(os.getenv("QC_MAX_TAKES", "3")))
 # planner (same Gemini free-tier pools). Falls back to the shared key.
 QC_GEMINI_API_KEY = os.getenv("QC_GEMINI_API_KEY") or GEMINI_API_KEY
 
-# Second judge: NVIDIA NIM vision (Qwen 3.5 VLM — different model family from
-# both Gemini and the Groq Llama rung, so the ladder never shares one family's
-# blind spots). OpenAI-compatible endpoint, account-wide key.
+# Second judge: NVIDIA NIM vision. Model ids here ROT FAST — the previous two both
+# went 410 Gone within weeks (qwen3.5-397b, then nemotron-nano-vl-8b hours after it
+# was wired in). The admin dashboard's provider probe exists to catch exactly that;
+# when it flags this rung dead, swap the id via QC_NVIDIA_MODEL rather than deploying.
+# NOTE: NVIDIA vision NIMs accept ONE image per prompt — see vision_review.
 NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip().strip("\"'“”")
 if NVIDIA_API_KEY and not NVIDIA_API_KEY.startswith("nvapi-"):
     NVIDIA_API_KEY = ""  # non-NVIDIA paste — ignore it
 # Vision-capable and CURRENT — see the note in llm.py: the previous ids were dead,
 # which is why a Gemini 429 produced "vision QC unavailable" instead of degrading
 # to another vendor as designed.
-_NVIDIA_MODEL = os.getenv("QC_NVIDIA_MODEL", "nvidia/llama-3.1-nemotron-nano-vl-8b-v1")
+_NVIDIA_MODEL = os.getenv("QC_NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct")
 _NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
 # Third judge: Groq-hosted Llama-4 vision (OpenAI-compatible API, separate
@@ -237,10 +239,11 @@ def _openai_style_review(url: str, key: str, model: str, judge: str,
                 ]},
             ],
         }
+        # max_tokens on BOTH paths: a NIM in json_object mode still needs room, and
+        # its low default truncated the verdict mid-object so every parse failed.
+        body["max_tokens"] = 2048
         if json_mode:
             body["response_format"] = {"type": "json_object"}
-        else:
-            body["max_tokens"] = 2048
         r = httpx.post(url, headers={"Authorization": f"Bearer {key}"},
                        json=body, timeout=timeout)
         r.raise_for_status()
@@ -258,10 +261,15 @@ def _openai_style_review(url: str, key: str, model: str, judge: str,
 
 
 def _nvidia_review(frames: list[str], context: str) -> dict | None:
-    """Second judge: Qwen 3.5 VLM on NVIDIA NIM."""
+    """Second judge: NVIDIA NIM vision.
+
+    json_mode=True is REQUIRED here, not optional: without it Llama-3.2-vision
+    narrates the frames in prose ("**Frame 1:** the man is sitting...") and the
+    rubric JSON never appears, so the rung silently returned None and the ladder
+    fell through as if NVIDIA were down."""
     return _openai_style_review(_NVIDIA_URL, NVIDIA_API_KEY, _NVIDIA_MODEL,
-                                "nvidia-qwen3.5", frames, context,
-                                json_mode=False, timeout=90)  # big MoE: slow cold starts
+                                "nvidia", frames, context,
+                                json_mode=True, timeout=90)
 
 
 def _groq_review(frames: list[str], context: str) -> dict | None:
@@ -316,7 +324,10 @@ def vision_review(path: str, context: str) -> dict | None:
                 return out
         except Exception:
             pass
-    out = _nvidia_review(frames, context)
+    # NVIDIA's vision NIMs cap at ONE image per prompt ("At most 1 image(s) may be
+    # provided"), so this rung gets the middle frame only — a single mid-take frame
+    # still catches blur/darkness/wrong-subject, which is what the fallback is for.
+    out = _nvidia_review(frames[len(frames) // 2:len(frames) // 2 + 1], context)
     if out:
         return out
     # Last rung. Groq's vision context is tighter than the others' — full-size frames
