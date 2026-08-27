@@ -133,7 +133,7 @@ def jobs(limit: int = Query(60, ge=1, le=500)):
                      "status": {"job_done": "done", "job_error": "error",
                                 "job_cancelled": "cancelled"}[e["kind"]],
                      "progress": 100 if e["kind"] == adminstore.JOB_DONE else None,
-                     "kind": e.get("kind_"), "name": e.get("name"),
+                     "kind": e.get("job_kind"), "name": e.get("name"),
                      "error": e.get("error"), "error_kind": e.get("error_kind"),
                      "video_path": e.get("video_path"),
                      "elapsed_s": e.get("elapsed_s"),

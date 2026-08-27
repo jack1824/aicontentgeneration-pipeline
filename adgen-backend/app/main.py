@@ -80,7 +80,7 @@ def _new_job(kind: str, name: str | None = None) -> str:
                     "kind": kind, "name": name, "created": time.time()}
     # JOBS is in-memory and dies with the process, so anything worth reviewing after
     # the fact goes to the durable admin log too (adminstore).
-    adminstore.emit(adminstore.JOB_START, job_id=job_id, kind=kind, name=name)
+    adminstore.emit(adminstore.JOB_START, job_id=job_id, job_kind=kind, name=name)
     return job_id
 
 
@@ -96,7 +96,7 @@ def _update(job_id: str, **fields) -> None:
             adminstore.emit(
                 {"done": adminstore.JOB_DONE, "error": adminstore.JOB_ERROR,
                  "cancelled": adminstore.JOB_CANCELLED}[now],
-                job_id=job_id, kind=job.get("kind"), name=job.get("name"),
+                job_id=job_id, job_kind=job.get("kind"), name=job.get("name"),
                 error=job.get("error"), error_kind=job.get("error_kind"),
                 video_path=job.get("video_path"),
                 warnings=list(job.get("warnings") or []),
@@ -109,7 +109,7 @@ def _warn(job_id: str, msg: str) -> None:
     job = JOBS.get(job_id)
     if job and job["status"] != "cancelled":
         job.setdefault("warnings", []).append(msg)
-        adminstore.emit(adminstore.WARNING, job_id=job_id, kind=job.get("kind"),
+        adminstore.emit(adminstore.WARNING, job_id=job_id, job_kind=job.get("kind"),
                         name=job.get("name"), message=msg)
 
 
