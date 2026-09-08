@@ -95,10 +95,13 @@ mode_models() {
     keyframes)   echo "qwen_edit qwen_vl qwen_vae" ;;
     duo)         echo "longcat longcat_lora longcat_vae longcat_umt5" ;;
     demo)        echo "ltx_dev ltx_gemma ltx_upscaler ltx_lora" ;;   # the lane that looks best
+    # everything the workflow graphs reference — derived from the registry, so a model
+    # added above is automatically part of `all` and cannot be silently forgotten
+    all)         printf '%s\n' "$MODELS" | awk -F'|' 'NF==5{printf "%s ", $1}' ;;
     *) echo "" ;;
   esac
 }
-VALID_MODES="cinematic ingredients overlay lipsync keyframes duo demo"
+VALID_MODES="all cinematic ingredients overlay lipsync keyframes duo demo"
 
 row()  { printf '%s\n' "$MODELS" | awk -F'|' -v k="$1" '$1==k{print; exit}'; }
 f_dir()  { row "$1" | cut -d'|' -f2; }
@@ -164,7 +167,7 @@ cap_gb() {
   # the shared MooseFS mount), so measure it directly rather than using VOLUME_GB —
   # which describes the network volume and would be the wrong budget entirely.
   if [ "${MODELS_ON_VOLUME:-1}" = 0 ]; then
-    local d; d="$(df -B1 --output=size "$MODELS_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')"
+    local d; d="$( trap - ERR; df -B1 --output=size "$MODELS_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9' )" || true
     [ -n "$d" ] && [ "$d" -gt 0 ] && { echo $(( d / 1073741824 )); return 0; }
   fi
   if [ -n "${VOLUME_GB:-}" ]; then echo "$VOLUME_GB"; return 0; fi
@@ -174,7 +177,7 @@ cap_gb() {
       | grep -oE '"size"[: ]+[0-9]+' | grep -oE '[0-9]+' | head -1)"
     [ -n "$s" ] && { echo "$s"; return 0; }
   fi
-  local d; d="$(df -B1 --output=size "$VOLUME_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')"
+  local d; d="$( trap - ERR; df -B1 --output=size "$VOLUME_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9' )" || true
   if [ -n "$d" ] && [ "$d" -gt 0 ] && [ "$d" -le 4400000000000 ]; then
     echo $(( d / 1073741824 )); return 0
   fi
