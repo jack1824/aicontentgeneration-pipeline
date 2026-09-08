@@ -247,7 +247,31 @@ deps() {
   local miss=""
   for b in aria2c python3 curl; do command -v "$b" >/dev/null 2>&1 || miss="$miss $b"; done
   [ -z "$miss" ] || { echo "!! missing required binaries:$miss — refusing to continue"; exit 12; }
-  echo "deps ok: aria2c $(aria2c --version 2>/dev/null | head -1 | awk '{print $3}')"
+
+  # PYTHON deps live on the container disk too, so they vanish with every restart —
+  # and their absence is SILENT. comfy-kitchen/comfy-aimdo are the fp8/fp4 backends
+  # that load fp8_scaled weights natively on Ada (L40S). Without them the Wan 2.2
+  # fp8_scaled models load wrong and denoise to a blank white frame while ComfyUI
+  # still reports the prompt as "success" — no error anywhere, just an empty ad.
+  # (LTX is unaffected: its checkpoint loads through a different path, which is why
+  # cinematic rendered fine on a pod where every Wan lane produced white.)
+  # kornia is pinned for ComfyUI-LTXVideo import compatibility.
+  local pymiss=""
+  python3 -c "import comfy_kitchen" 2>/dev/null || pymiss="$pymiss comfy-kitchen"
+  python3 -c "import comfy_aimdo"   2>/dev/null || pymiss="$pymiss comfy-aimdo"
+  if [ -n "$pymiss" ]; then
+    echo ">> installing fp8 backends:$pymiss (container disk — re-runs after every restart)"
+    python3 -m pip install -q -U comfy-kitchen comfy-aimdo 2>&1 | tail -2 ||       echo "?? fp8 backend install failed — fp8_scaled models may render blank"
+  fi
+  python3 -c "import kornia,sys; sys.exit(0 if kornia.__version__.startswith('0.7') else 1)" 2>/dev/null ||     python3 -m pip install -q "kornia==0.7.3" 2>&1 | tail -1 || true
+  # custom-node requirements also live on the container disk
+  if [ -d "$COMFY_ROOT/custom_nodes" ]; then
+    local d
+    for d in "$COMFY_ROOT"/custom_nodes/*/; do
+      [ -f "$d/requirements.txt" ] && python3 -m pip install -q -r "$d/requirements.txt" 2>/dev/null || true
+    done
+  fi
+  echo "deps ok: aria2c $(aria2c --version 2>/dev/null | head -1 | awk '{print $3}')  fp8-backends $(python3 -c 'import comfy_kitchen;print("yes")' 2>/dev/null || echo NO)"
 }
 
 # A safetensors file starts with an 8-byte little-endian header length followed by
@@ -539,7 +563,9 @@ case "$CMD" in
   deps)    env_resolve; deps ;;
   install) env_resolve; deps; install_comfy ;;
   models)  env_resolve; env_links; deps; get_models "$MODE" ;;
-  launch)  env_resolve; env_links; comfy_write_yaml; comfy_link_models; comfy_link_files; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
+  # launch runs deps too: the container disk is wiped on restart, so launching without
+  # re-installing the fp8 backends is how you get a running ComfyUI that renders blank.
+  launch)  env_resolve; env_links; deps; comfy_write_yaml; comfy_link_models; comfy_link_files; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
   probe)   env_resolve; comfy_probe "$MODE" ;;
   prune)   env_resolve; prune "$MODE" ;;
   up)      env_resolve; env_links; deps; get_models "$MODE"; comfy_write_yaml; comfy_link_models; comfy_link_files; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
