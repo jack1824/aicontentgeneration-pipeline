@@ -329,6 +329,24 @@ prune() {
 # on the container disk, this is what makes them visible — without it you download
 # 38 GB successfully and /object_info still shows nothing, which looks identical to a
 # failed download and is exactly the kind of dead end that cost us a day.
+# Point ComfyUI's OWN models dir at the store via a symlink, rather than relying on
+# extra_model_paths.yaml. Measured on ComfyUI 0.26.2: the yaml mapped 18 of 20 files,
+# but `latent_upscale_models` and `audio_encoders` were silently ignored — their
+# loaders showed empty dropdowns — which broke cinematic and lipsync while every file
+# sat verified on disk. A symlink needs no key names to match, so it cannot half-work.
+comfy_link_models() {
+  local d="$COMFY_ROOT/models" tgt; tgt="$(readlink -f "$MODELS_ROOT")"
+  [ "$(readlink -f "$d" 2>/dev/null)" = "$tgt" ] && { echo "models dir already -> $tgt"; return 0; }
+  if [ -d "$d" ] && [ ! -L "$d" ]; then
+    # Only move it aside when it holds no real weights — never discard models.
+    if [ -n "$(find "$d" -type f \( -name '*.safetensors' -o -name '*.pth' -o -name '*.gguf' \) -print -quit 2>/dev/null)" ]; then
+      echo "?? $d contains model files — leaving it, relying on extra_model_paths.yaml"; return 0
+    fi
+    mv "$d" "$d.empty.$$" && echo "moved empty $d aside"
+  fi
+  ln -sfn "$tgt" "$d" && echo "linked $d -> $tgt"
+}
+
 comfy_write_yaml() {
   local yml="$COMFY_ROOT/extra_model_paths.yaml"
   if [ "${MODELS_ON_VOLUME:-1}" = 1 ]; then
@@ -489,10 +507,10 @@ case "$CMD" in
   deps)    env_resolve; deps ;;
   install) env_resolve; deps; install_comfy ;;
   models)  env_resolve; env_links; deps; get_models "$MODE" ;;
-  launch)  env_resolve; env_links; comfy_write_yaml; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
+  launch)  env_resolve; env_links; comfy_write_yaml; comfy_link_models; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
   probe)   env_resolve; comfy_probe "$MODE" ;;
   prune)   env_resolve; prune "$MODE" ;;
-  up)      env_resolve; env_links; deps; get_models "$MODE"; comfy_write_yaml; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
+  up)      env_resolve; env_links; deps; get_models "$MODE"; comfy_write_yaml; comfy_link_models; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
   *) echo "usage: pod.sh {doctor|inventory|plan|deps|install|models|launch|probe|prune|up} [mode]"
      echo "modes: $VALID_MODES"; exit 64 ;;
 esac
