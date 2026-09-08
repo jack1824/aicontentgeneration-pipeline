@@ -103,6 +103,16 @@ mode_models() {
 }
 VALID_MODES="all cinematic ingredients overlay lipsync keyframes duo demo"
 
+# Float maths without bc. bc is NOT installed on these pods, and its absence was not
+# harmless: the fit check `[ "$(echo "$need > $free - 5" | bc)" = "1" ]` evaluated to
+# an empty string, fell through, and printed "OK - fits" WITHOUT CHECKING. That is the
+# same fail-open behaviour this script was written to eliminate, reintroduced through a
+# missing dependency. awk is POSIX and present everywhere, so the guard cannot be
+# disarmed by a lean container image.
+fadd() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{printf "%.1f", a+b}'; }
+fsub() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{printf "%.1f", a-b}'; }
+fgt()  { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN{exit !(a>b)}'; }
+
 row()  { printf '%s\n' "$MODELS" | awk -F'|' -v k="$1" '$1==k{print; exit}'; }
 f_dir()  { row "$1" | cut -d'|' -f2; }
 f_name() { row "$1" | cut -d'|' -f3; }
@@ -206,9 +216,9 @@ plan() {
   for k in $keys; do
     p="$MODELS_ROOT/$(f_dir "$k")/$(f_name "$k")"
     if have_one "$k"; then printf "   have  %-58s %5s GB\n" "$(f_name "$k")" "$(f_gb "$k")"
-                         have=$(echo "$have + $(f_gb "$k")" | bc)
+                         have=$(fadd "$have" "$(f_gb "$k")")
     else printf "   FETCH %-58s %5s GB\n" "$(f_name "$k")" "$(f_gb "$k")"
-         need=$(echo "$need + $(f_gb "$k")" | bc); fi
+         need=$(fadd "$need" "$(f_gb "$k")"); fi
   done
   local cap used free
   cap="$(cap_gb)"; used="$(used_gb)"
@@ -221,7 +231,7 @@ plan() {
   fi
   free=$(( cap - used ))
   printf "  volume      : %s GB total, %s GB used by models, %s GB free\n" "$cap" "$used" "$free"
-  if [ "$(echo "$need > $free - 5" | bc)" = "1" ]; then
+  if fgt "$need" "$(fsub "$free" 5)"; then
     echo "  !! DOES NOT FIT (need ${need} GB, ${free} GB free, keeping 5 GB headroom)"
     echo "     Either grow the volume, or free space:  bash pod.sh prune <wan|ltx|qwen|longcat>"
     return 4
@@ -409,24 +419,24 @@ inventory() {
     local sz rel gb st
     sz="$(stat -c %s "$f" 2>/dev/null || echo 0)"
     rel="${f#"$MODELS_ROOT"/}"
-    gb="$(echo "scale=1; $sz/1073741824" | bc | sed 's/^\./0./')"
-    total=$(echo "$total + $gb" | bc); nfiles=$((nfiles+1))
+    gb="$(awk -v s="$sz" 'BEGIN{printf "%.1f", s/1073741824}')"
+    total=$(fadd "$total" "$gb"); nfiles=$((nfiles+1))
     case "$f" in
       *.safetensors) if verify_one "$f"; then st="ok"; else st="CORRUPT"; bad=$((bad+1)); fi ;;
       *) st="ok" ;;
     esac
     local tag=""
-    printf '%s\n' "$known" | grep -qxF "$(basename "$f")" || { tag="  <- not used by any workflow"; unknown_gb=$(echo "$unknown_gb + $gb" | bc); }
+    printf '%s\n' "$known" | grep -qxF "$(basename "$f")" || { tag="  <- not used by any workflow"; unknown_gb=$(fadd "$unknown_gb" "$gb"); }
     printf "  %8s GB  %-8s %s%s\n" "$gb" "$st" "$rel" "$tag"
   done < <(find "$MODELS_ROOT" -type f \( -name '*.safetensors' -o -name '*.pth' -o -name '*.pt' -o -name '*.gguf' \) 2>/dev/null | sort)
   [ "$nfiles" = 0 ] && echo "  (none)"
   echo "--------------------------------------------------------------------"
   printf "  %s file(s), %s GB total" "$nfiles" "$total"
   [ "$bad" -gt 0 ] && printf "  — %s CORRUPT (delete and refetch)" "$bad"
-  [ "$(echo "$unknown_gb > 0" | bc)" = 1 ] && printf "  — %s GB unused by any workflow" "$unknown_gb"
+  fgt "$unknown_gb" 0 && printf "  — %s GB unused by any workflow" "$unknown_gb"
   echo
   local cap; cap="$(cap_gb)"
-  if [ -n "$cap" ]; then printf "  volume %s GB total, %s GB free\n" "$cap" "$(echo "$cap - $total" | bc)"
+  if [ -n "$cap" ]; then printf "  volume %s GB total, %s GB free\n" "$cap" "$(fsub "$cap" "$total")"
   else echo "  volume size UNKNOWN — set VOLUME_GB (RunPod console -> Storage)"; fi
 
   echo
@@ -437,7 +447,7 @@ inventory() {
     for k in $(mode_models "$m"); do
       t=$((t+1))
       if have_one "$k"; then n=$((n+1))
-      else missing_gb=$(echo "$missing_gb + $(f_gb "$k")" | bc); fi
+      else missing_gb=$(fadd "$missing_gb" "$(f_gb "$k")"); fi
     done
     if [ "$n" = "$t" ]; then printf "  %-12s READY      %s/%s files\n" "$m" "$n" "$t"
     else printf "  %-12s needs %5s GB  (%s/%s files)\n" "$m" "$missing_gb" "$n" "$t"; fi
