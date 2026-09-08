@@ -276,6 +276,28 @@ deps() {
 
 # A safetensors file starts with an 8-byte little-endian header length followed by
 # that many bytes of JSON. Truncated downloads and HTML error pages both fail this.
+# A safetensors header sits at the START of the file, so a header check passes happily
+# on a file whose TAIL is missing — which is how a truncated 12.9 GB copy of a 13.31 GB
+# model was accepted, loaded with absent weights, and rendered a blank white frame while
+# ComfyUI reported success. Compare against the server's content-length instead.
+remote_size() {
+  local url="$1" sz
+  sz="$( curl -sIL --max-time 30 "$url" 2>/dev/null | grep -i '^content-length' | tail -1 | tr -dc '0-9' )" || true
+  echo "${sz:-0}"
+}
+
+verify_size() {
+  local path="$1" url="$2" want got
+  want="$(remote_size "$url")"
+  [ "${want:-0}" -gt 0 ] || { echo "   ?? could not read upstream size — size check skipped"; return 0; }
+  got="$( stat -c %s "$path" 2>/dev/null )" || got=0
+  if [ "$got" != "$want" ]; then
+    echo "   !! SIZE MISMATCH: have $got bytes, upstream $want ($(awk -v a="$got" -v b="$want" 'BEGIN{printf "%.1f", 100*a/b}')% — TRUNCATED)"
+    return 1
+  fi
+  return 0
+}
+
 verify_one() {
   python3 - "$1" <<'PY' 2>/dev/null
 import json,struct,sys
@@ -306,8 +328,10 @@ get_one() {
   path="$dir/$name"; mkdir -p "$dir"
   if [ -s "$path" ]; then
     case "$name" in *.safetensors)
-      verify_one "$path" && { echo "   ok (present) $name"; return 0; }
-      echo "   !! $name present but header invalid — refetching"; rm -f "$path"* ;;
+      if verify_one "$path" && verify_size "$path" "$url"; then
+        echo "   ok (present) $name"; return 0
+      fi
+      echo "   !! $name is incomplete — refetching"; rm -f "$path"* ;;
     *) echo "   ok (present) $name"; return 0 ;; esac
   fi
   echo ">> $name  ($(f_gb "$k") GB)"
@@ -318,9 +342,10 @@ get_one() {
     return 1
   fi
   case "$name" in *.safetensors)
-    verify_one "$path" || { echo "   !! $name downloaded but header is invalid (truncated? out of quota?)"; return 1; } ;;
+    verify_one "$path" || { echo "   !! $name downloaded but its header is invalid"; return 1; }
+    verify_size "$path" "$url" || { echo "   !! $name is short — disk quota, or the transfer was cut"; return 1; } ;;
   esac
-  echo "   verified $name"
+  echo "   verified $name (header + size)"
 }
 
 get_models() {
@@ -496,7 +521,20 @@ inventory() {
     gb="$(awk -v s="$sz" 'BEGIN{printf "%.1f", s/1073741824}')"
     total=$(fadd "$total" "$gb"); nfiles=$((nfiles+1))
     case "$f" in
-      *.safetensors) if verify_one "$f"; then st="ok"; else st="CORRUPT"; bad=$((bad+1)); fi ;;
+      *.safetensors)
+        if ! verify_one "$f"; then st="CORRUPT"; bad=$((bad+1))
+        else
+          st="ok"
+          # cross-check the size against the registry's source URL where we know it
+          local key ksrc
+          for key in $(printf '%s\n' "$MODELS" | awk -F'|' 'NF==5{print $1}'); do
+            if [ "$(f_name "$key")" = "$(basename "$f")" ]; then
+              ksrc="$(f_url "$key")"
+              verify_size "$f" "$ksrc" >/dev/null 2>&1 || { st="SHORT"; bad=$((bad+1)); }
+              break
+            fi
+          done
+        fi ;;
       *) st="ok" ;;
     esac
     local tag=""
