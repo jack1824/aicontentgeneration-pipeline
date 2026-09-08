@@ -426,14 +426,22 @@ comfy_probe() {
   curl -sf --max-time 10 "http://127.0.0.1:$PORT/system_stats" >/dev/null || { echo "!! ComfyUI not answering on $PORT"; return 1; }
   local seen; seen="$(curl -sf --max-time 40 "http://127.0.0.1:$PORT/object_info" 2>/dev/null \
     | python3 -c 'import json,sys
+# ComfyUI has TWO /object_info schemas for a file dropdown and both must be read:
+#   legacy  : [[ "a.safetensors", ... ], {...}]
+#   current : [ "COMBO", {"options": ["a.safetensors", ...]} ]
+# Reading only the legacy form made this probe report MISS for models ComfyUI could
+# see perfectly well, which sent us chasing a path bug that did not exist.
 d=json.load(sys.stdin); out=set()
 for n in d.values():
     try: req=n["input"]["required"]
     except Exception: continue
     for v in req.values():
-        if isinstance(v,list) and v and isinstance(v[0],list):
-            for x in v[0]:
-                if isinstance(x,str): out.add(x.split("/")[-1])
+        if not isinstance(v,list) or not v: continue
+        opts=[]
+        if isinstance(v[0],list): opts=v[0]
+        elif v[0]=="COMBO" and len(v)>1 and isinstance(v[1],dict): opts=v[1].get("options") or []
+        for x in opts:
+            if isinstance(x,str): out.add(x.split("/")[-1])
 print("\n".join(sorted(out)))' 2>/dev/null)"
   echo "ComfyUI on :$PORT sees $(printf '%s\n' "$seen" | grep -c . ) model file(s)"
   [ -n "$mode" ] || return 0
