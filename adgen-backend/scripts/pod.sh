@@ -347,6 +347,30 @@ comfy_link_models() {
   ln -sfn "$tgt" "$d" && echo "linked $d -> $tgt"
 }
 
+# Belt and braces for the case comfy_link_models refuses (a models dir that already
+# holds real weights, so it must not be moved). Symlink each registry file into
+# ComfyUI's DEFAULT models tree, which needs no yaml key to be recognised. Measured:
+# with only the yaml, latent_upscale_models and audio_encoders were dropped and
+# cinematic/lipsync reported MISS while the files sat verified on disk.
+comfy_link_files() {
+  local k src dst n=0
+  for k in $(printf '%s\n' "$MODELS" | awk -F'|' 'NF==5{print $1}'); do
+    src="$MODELS_ROOT/$(f_dir "$k")/$(f_name "$k")"
+    dst="$COMFY_ROOT/models/$(f_dir "$k")/$(f_name "$k")"
+    [ -s "$src" ] || continue
+    # readlink on a not-yet-existing dst exits non-zero. `local x=$(...)` would mask the
+    # status on `local` rather than the assignment, so declare first; and clear ERR
+    # inside the subshell because set -E propagates the trap into it.
+    local have
+    have="$( trap - ERR; readlink -f "$dst" 2>/dev/null )" || true
+    [ "$have" = "$(readlink -f "$src")" ] && continue
+    [ -e "$dst" ] && [ ! -L "$dst" ] && continue     # a real file already there — leave it
+    mkdir -p "$(dirname "$dst")"
+    ln -sfn "$src" "$dst" && n=$((n+1))
+  done
+  [ "$n" -gt 0 ] && echo "linked $n model file(s) into $COMFY_ROOT/models" || true
+}
+
 comfy_write_yaml() {
   local yml="$COMFY_ROOT/extra_model_paths.yaml"
   if [ "${MODELS_ON_VOLUME:-1}" = 1 ]; then
@@ -507,10 +531,10 @@ case "$CMD" in
   deps)    env_resolve; deps ;;
   install) env_resolve; deps; install_comfy ;;
   models)  env_resolve; env_links; deps; get_models "$MODE" ;;
-  launch)  env_resolve; env_links; comfy_write_yaml; comfy_link_models; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
+  launch)  env_resolve; env_links; comfy_write_yaml; comfy_link_models; comfy_link_files; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
   probe)   env_resolve; comfy_probe "$MODE" ;;
   prune)   env_resolve; prune "$MODE" ;;
-  up)      env_resolve; env_links; deps; get_models "$MODE"; comfy_write_yaml; comfy_link_models; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
+  up)      env_resolve; env_links; deps; get_models "$MODE"; comfy_write_yaml; comfy_link_models; comfy_link_files; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
   *) echo "usage: pod.sh {doctor|inventory|plan|deps|install|models|launch|probe|prune|up} [mode]"
      echo "modes: $VALID_MODES"; exit 64 ;;
 esac
