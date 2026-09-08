@@ -125,10 +125,23 @@ env_resolve() {
   fi
   [ -n "$COMFY_ROOT" ] || { echo "!! no ComfyUI found under $VOLUME_ROOT — run: bash pod.sh install"; exit 11; }
 
-  MODELS_ROOT="$COMFY_ROOT/models"
+  # Where the weights live. Default: beside ComfyUI on the NETWORK VOLUME (persists).
+  # MODELS_ROOT=/... puts them on the CONTAINER DISK instead — far bigger on most
+  # pods (270 GB vs a 50 GB volume) but EPHEMERAL: it is wiped when the pod stops,
+  # so the models must be re-fetched on the next boot. That is a deliberate, and
+  # sometimes correct, trade: a demo today beats a volume you cannot afford to grow.
+  MODELS_ROOT="${MODELS_ROOT:-$COMFY_ROOT/models}"
   mkdir -p "$MODELS_ROOT"/{checkpoints,diffusion_models,diffusion_models/LongCat,text_encoders,vae,loras,audio_encoders,latent_upscale_models}
-  export VOLUME_ROOT COMFY_ROOT MODELS_ROOT
+  MODELS_ON_VOLUME=1
+  case "$(readlink -f "$MODELS_ROOT")" in "$VOLUME_ROOT"/*) ;; *) MODELS_ON_VOLUME=0 ;; esac
+  export VOLUME_ROOT COMFY_ROOT MODELS_ROOT MODELS_ON_VOLUME
   echo "volume=$VOLUME_ROOT  comfy=$COMFY_ROOT"
+  if [ "$MODELS_ON_VOLUME" = 1 ]; then
+    echo "models=$MODELS_ROOT  (network volume — persists across restarts)"
+  else
+    echo "models=$MODELS_ROOT  (CONTAINER DISK — EPHEMERAL, wiped when the pod stops)"
+    echo "   re-run 'bash pod.sh up <mode>' after every restart to refetch."
+  fi
 }
 
 # Legacy paths other scripts and older notes assume. Only ever links where nothing real is.
@@ -147,6 +160,13 @@ env_links() {
 #   3. df, but ONLY if it returns something physically plausible (<= 4 TB, RunPod's cap)
 #   4. refuse, and say exactly how to fix it
 cap_gb() {
+  # Models on the container disk: df is TRUSTWORTHY there (a real block device, not
+  # the shared MooseFS mount), so measure it directly rather than using VOLUME_GB —
+  # which describes the network volume and would be the wrong budget entirely.
+  if [ "${MODELS_ON_VOLUME:-1}" = 0 ]; then
+    local d; d="$(df -B1 --output=size "$MODELS_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')"
+    [ -n "$d" ] && [ "$d" -gt 0 ] && { echo $(( d / 1073741824 )); return 0; }
+  fi
   if [ -n "${VOLUME_GB:-}" ]; then echo "$VOLUME_GB"; return 0; fi
   if [ -n "${RUNPOD_API_KEY:-}" ] && [ -n "${RUNPOD_VOLUME_ID:-}" ]; then
     local s; s="$(curl -s --max-time 15 -H "Authorization: Bearer $RUNPOD_API_KEY" \
@@ -160,7 +180,20 @@ cap_gb() {
   fi
   echo ""   # unmeasurable -> callers must refuse, never assume room
 }
-used_gb() { du -sBG "$MODELS_ROOT" 2>/dev/null | awk '{gsub(/G/,"",$1); print $1+0}'; }
+# Never let a size probe abort a read-only command: `set -e` plus a du that is
+# unavailable or permission-denied would otherwise kill `plan`/`doctor` outright.
+# -BG is GNU; the -k path is the portable fallback.
+used_gb() {
+  local g
+  # `|| true` on the ASSIGNMENT: under `set -e` a failing command substitution fails
+  # the assignment itself, so silencing errors inside the subshell is not enough.
+  # `set -E` propagates the ERR trap into command substitutions, so the trap is
+  # cleared INSIDE the subshell (cosmetic) and `|| true` guards the assignment
+  # (functional). Both are needed; either alone still leaks.
+  g="$( trap - ERR; du -sBG "$MODELS_ROOT" 2>/dev/null | awk '{gsub(/G/,"",$1); print $1+0}' )" || true
+  [ -n "$g" ] || g="$( trap - ERR; du -sk "$MODELS_ROOT" 2>/dev/null | awk '{printf "%d", $1/1048576}' )" || true
+  echo "${g:-0}"
+}
 
 plan() {
   local mode="$1" keys need=0 have=0 k p
@@ -169,7 +202,7 @@ plan() {
   echo "mode '$mode' needs:"
   for k in $keys; do
     p="$MODELS_ROOT/$(f_dir "$k")/$(f_name "$k")"
-    if [ -s "$p" ]; then printf "   have  %-58s %5s GB\n" "$(f_name "$k")" "$(f_gb "$k")"
+    if have_one "$k"; then printf "   have  %-58s %5s GB\n" "$(f_name "$k")" "$(f_gb "$k")"
                          have=$(echo "$have + $(f_gb "$k")" | bc)
     else printf "   FETCH %-58s %5s GB\n" "$(f_name "$k")" "$(f_gb "$k")"
          need=$(echo "$need + $(f_gb "$k")" | bc); fi
@@ -217,6 +250,17 @@ try:
         json.loads(f.read(n).decode('utf-8'))
 except Exception: sys.exit(1)
 PY
+}
+
+# "Present" must mean USABLE, not merely non-empty. A truncated .safetensors and an
+# HTML error page saved under a .safetensors name both satisfy `[ -s ]` and both die
+# mid-render, after TTS credits and earlier clips are already spent. Every
+# present/missing decision in this script goes through here.
+have_one() {
+  local p="$MODELS_ROOT/$(f_dir "$1")/$(f_name "$1")"
+  [ -s "$p" ] || return 1
+  case "$p" in *.safetensors) verify_one "$p" || return 1 ;; esac
+  return 0
 }
 
 get_one() {
@@ -268,6 +312,36 @@ prune() {
 }
 
 # --- ComfyUI -------------------------------------------------------------------
+# ComfyUI only looks in <ComfyUI>/models unless told otherwise. When the weights live
+# on the container disk, this is what makes them visible — without it you download
+# 38 GB successfully and /object_info still shows nothing, which looks identical to a
+# failed download and is exactly the kind of dead end that cost us a day.
+comfy_write_yaml() {
+  local yml="$COMFY_ROOT/extra_model_paths.yaml"
+  if [ "${MODELS_ON_VOLUME:-1}" = 1 ]; then
+    # Default layout: remove any stale override so ComfyUI cannot read a path that
+    # no longer exists (a wiped container disk) and silently see zero models.
+    [ -f "$yml" ] && grep -q "# written by pod.sh" "$yml" && { rm -f "$yml"; echo "removed stale extra_model_paths.yaml"; }
+    return 0
+  fi
+  cat > "$yml" <<YML
+# written by pod.sh — models are on the CONTAINER DISK (ephemeral).
+adgen:
+  base_path: $MODELS_ROOT
+  checkpoints: checkpoints
+  diffusion_models: diffusion_models
+  unet: diffusion_models
+  text_encoders: text_encoders
+  clip: text_encoders
+  vae: vae
+  loras: loras
+  audio_encoders: audio_encoders
+  latent_upscale_models: latent_upscale_models
+  upscale_models: upscale_models
+YML
+  echo "wrote $yml -> $MODELS_ROOT"
+}
+
 comfy_kill() {
   # The RunPod template starts its own stock ComfyUI here. It has no custom nodes
   # and no models, but it answers /system_stats with 200 — so every health check
@@ -316,6 +390,60 @@ print("\n".join(sorted(out)))' 2>/dev/null)"
                      || { echo "!! '$mode' is NOT ready — models missing from ComfyUI's view"; return 1; }
 }
 
+# --- inventory: what is ACTUALLY on the volume right now ------------------------
+# Answers three separate questions the old tooling conflated:
+#   1. which files exist, and how big are they
+#   2. is each one INTACT (a truncated .safetensors and an HTML 404 page saved
+#      under a .safetensors name both look fine to `ls`)
+#   3. which files are UNKNOWN to us — dead weight from an old tier that no
+#      workflow loads, i.e. the first thing to prune when space is tight
+inventory() {
+  local total=0 nfiles=0 bad=0 unknown_gb=0
+  echo "== files on the volume =="
+  local known; known="$(printf '%s\n' "$MODELS" | awk -F'|' 'NF==5{print $3}')"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    local sz rel gb st
+    sz="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+    rel="${f#"$MODELS_ROOT"/}"
+    gb="$(echo "scale=1; $sz/1073741824" | bc | sed 's/^\./0./')"
+    total=$(echo "$total + $gb" | bc); nfiles=$((nfiles+1))
+    case "$f" in
+      *.safetensors) if verify_one "$f"; then st="ok"; else st="CORRUPT"; bad=$((bad+1)); fi ;;
+      *) st="ok" ;;
+    esac
+    local tag=""
+    printf '%s\n' "$known" | grep -qxF "$(basename "$f")" || { tag="  <- not used by any workflow"; unknown_gb=$(echo "$unknown_gb + $gb" | bc); }
+    printf "  %8s GB  %-8s %s%s\n" "$gb" "$st" "$rel" "$tag"
+  done < <(find "$MODELS_ROOT" -type f \( -name '*.safetensors' -o -name '*.pth' -o -name '*.pt' -o -name '*.gguf' \) 2>/dev/null | sort)
+  [ "$nfiles" = 0 ] && echo "  (none)"
+  echo "--------------------------------------------------------------------"
+  printf "  %s file(s), %s GB total" "$nfiles" "$total"
+  [ "$bad" -gt 0 ] && printf "  — %s CORRUPT (delete and refetch)" "$bad"
+  [ "$(echo "$unknown_gb > 0" | bc)" = 1 ] && printf "  — %s GB unused by any workflow" "$unknown_gb"
+  echo
+  local cap; cap="$(cap_gb)"
+  if [ -n "$cap" ]; then printf "  volume %s GB total, %s GB free\n" "$cap" "$(echo "$cap - $total" | bc)"
+  else echo "  volume size UNKNOWN — set VOLUME_GB (RunPod console -> Storage)"; fi
+
+  echo
+  echo "== per mode =="
+  local m k n t missing_gb
+  for m in $VALID_MODES; do
+    n=0; t=0; missing_gb=0
+    for k in $(mode_models "$m"); do
+      t=$((t+1))
+      if have_one "$k"; then n=$((n+1))
+      else missing_gb=$(echo "$missing_gb + $(f_gb "$k")" | bc); fi
+    done
+    if [ "$n" = "$t" ]; then printf "  %-12s READY      %s/%s files\n" "$m" "$n" "$t"
+    else printf "  %-12s needs %5s GB  (%s/%s files)\n" "$m" "$missing_gb" "$n" "$t"; fi
+  done
+  echo
+  echo "  next:  bash pod.sh plan <mode>     # check it fits"
+  echo "         bash pod.sh up <mode>       # download + launch + verify"
+}
+
 doctor() {
   echo "== paths ==";  echo "  volume=$VOLUME_ROOT  comfy=$COMFY_ROOT  models=$MODELS_ROOT"
   echo "== capacity =="
@@ -328,7 +456,7 @@ doctor() {
   echo "== modes =="; local m
   for m in $VALID_MODES; do
     local n=0 t=0 k
-    for k in $(mode_models "$m"); do t=$((t+1)); [ -s "$MODELS_ROOT/$(f_dir "$k")/$(f_name "$k")" ] && n=$((n+1)); done
+    for k in $(mode_models "$m"); do t=$((t+1)); have_one "$k" && n=$((n+1)); done
     printf "  %-12s %s/%s files present\n" "$m" "$n" "$t"
   done
 }
@@ -343,14 +471,15 @@ install_comfy() {
 CMD="${1:-doctor}"; MODE="${2:-}"
 case "$CMD" in
   doctor)  env_resolve; doctor ;;
+  inventory|ls) env_resolve; inventory ;;
   plan)    env_resolve; plan "$MODE" ;;
   deps)    env_resolve; deps ;;
   install) env_resolve; deps; install_comfy ;;
   models)  env_resolve; env_links; deps; get_models "$MODE" ;;
-  launch)  env_resolve; env_links; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
+  launch)  env_resolve; env_links; comfy_write_yaml; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
   probe)   env_resolve; comfy_probe "$MODE" ;;
   prune)   env_resolve; prune "$MODE" ;;
-  up)      env_resolve; env_links; deps; get_models "$MODE"; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
-  *) echo "usage: pod.sh {doctor|plan|deps|install|models|launch|probe|prune|up} [mode]"
+  up)      env_resolve; env_links; deps; get_models "$MODE"; comfy_write_yaml; comfy_kill; comfy_launch; comfy_probe "$MODE" ;;
+  *) echo "usage: pod.sh {doctor|inventory|plan|deps|install|models|launch|probe|prune|up} [mode]"
      echo "modes: $VALID_MODES"; exit 64 ;;
 esac
