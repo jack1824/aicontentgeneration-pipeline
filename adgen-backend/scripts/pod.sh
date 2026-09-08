@@ -413,7 +413,19 @@ comfy_link_files() {
     local have
     have="$( trap - ERR; readlink -f "$dst" 2>/dev/null )" || true
     [ "$have" = "$(readlink -f "$src")" ] && continue
-    [ -e "$dst" ] && [ ! -L "$dst" ] && continue     # a real file already there — leave it
+    # A REAL file at dst shadows the store copy — ComfyUI's own models dir wins over
+    # anything extra_model_paths.yaml adds. That is fine when it is a good file and
+    # actively harmful when it is not: a truncated 12.9 GB low-noise expert left on the
+    # volume kept masking a freshly downloaded 13.31 GB one, so every re-download
+    # produced byte-identical white output and looked like the fix had failed.
+    # Keep a real file only when it matches upstream; otherwise move it aside.
+    if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+      if verify_one "$dst" && verify_size "$dst" "$(f_url "$k")" >/dev/null 2>&1; then
+        continue                                   # genuine and complete — leave it
+      fi
+      echo "   !! $(basename "$dst") in ComfyUI/models is incomplete and was SHADOWING the store copy — setting aside"
+      mv "$dst" "$dst.bad.$$" 2>/dev/null || true
+    fi
     mkdir -p "$(dirname "$dst")"
     ln -sfn "$src" "$dst" && n=$((n+1))
   done
