@@ -2613,7 +2613,7 @@ function TimelineStudio() {
           const lang = raw.startsWith("hi") ? "hi" : raw.startsWith("en") ? "en" : raw.slice(0, 2);
           const idea = String(op.idea || "");
           const fmt = String(op.format || "9:16");
-          const dur = Math.max(10, Math.min(60, num(op.duration_s) ?? 20));
+          const dur = Math.max(10, Math.min(60, num(op.duration_s) ?? 15));
           // Thin brief -> interview first (the brain's tailored questions with
           // tappable suggestions), exactly like the Create page. A detailed
           // brief (or full script) skips straight to treatments — the user
@@ -2844,8 +2844,10 @@ function TimelineStudio() {
     if (msg.length > 600) {
       // A paste this long is a brief/script, not an edit command, so it skips the
       // intent brain (round-tripping it could paraphrase the user's own words).
-      const durM = msg.match(/(\d{2})\s*(?:seconds|second|secs|sec)\b/i);
-      const dur = durM ? Math.max(10, Math.min(60, +durM[1])) : 20;
+      // \d{1,2}, not \d{2}: "a 5 second ad" matched nothing and silently fell
+      // through to the default.
+      const durM = msg.match(/(\d{1,2})\s*(?:seconds|second|secs|sec)\b/i);
+      const dur = durM ? Math.max(10, Math.min(60, +durM[1])) : 15;
       const fmt = /16:9/.test(msg) ? "16:9" : /1:1/.test(msg) ? "1:1" : "9:16";
       const lang = /hindi|[ऀ-ॿ]/i.test(msg) ? "hi" : "en";
       // ...but it must NOT go straight to the planner. This branch used to announce

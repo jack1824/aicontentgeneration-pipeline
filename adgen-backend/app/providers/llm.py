@@ -201,7 +201,21 @@ Rules:
   a bicycle passing, two birds lifting off a roof, a dog crossing the lane — the
   world must feel inhabited, never a sterile empty set. NEVER dense crowds or
   groups of extras (crowd anatomy breaks on every model; 1-2 elements maximum).
-- BREATHING INSERTS: any ad of 20s or longer includes at least 2 atmospheric
+- SHORT-FORM OVERRIDE (3 shots or fewer — READ THIS BEFORE THE CRAFT RULES BELOW).
+  Every rule after this point was written for a 5+ shot ad. At 3 shots the
+  SIGNATURE SHOT, the ENDING RULE and the mandatory detail insert each claim a
+  beat, which is all three — leaving a 15-second ad with no product and no CTA.
+  15s is the STANDARD length, so this is the common case, not the edge case.
+  At 3 shots the running order is FIXED and the craft rules yield to it:
+    shot 1 = HOOK — the problem, visible on a face or in an object, inside 2s.
+    shot 2 = PRODUCT — the product in contact: poured, held, drunk, applied.
+             This is the shot the ad exists for. A product macro with NO people
+             is usually the strongest choice here.
+    shot 3 = PAYOFF — the change the product bought, landing on the brand's world.
+  Skip the signature shot, the breathing insert and the environment-as-hero
+  ending entirely rather than spending one of three beats on them. NEVER ship a
+  3-shot ad in which the product never appears.
+- BREATHING INSERTS: any ad of 25s or longer includes at least 2 atmospheric
   non-character inserts — dust motes drifting in a shaft of light, wind moving
   through crops, cloth swinging, a loom wheel turning, water dripping. These are
   the pauses that make premium ads feel cinematic; they cost zero identity risk.
@@ -257,7 +271,10 @@ Rules:
   the user has provided one — always list the required asset in needs_from_user.
 - lipsync needs no shot list (one continuous take) — give ONE scene/action prompt plus a
   narration script instead.
-- Narration scripts: conversational ad copy; ~3 words/second budget (e.g. ~13s of speech
+- Narration scripts: conversational ad copy. Budget ~2.6 words/second in English
+  and ~2.1 in Hindi — these are the rates ad_script_word_budget() actually uses,
+  minus a 12% safety margin, so a script written to "3 words/second" overruns the
+  video every time (e.g. ~13s of speech
   for a 14s lipsync video; ~5s of speech per pair of overlay shots). Scripts must read
   aloud NATURALLY: flowing spoken sentences a person would actually say — never choppy
   fragment lists or colon constructions ("X: luxury and tradition."), which sound robotic
@@ -305,7 +322,9 @@ Rules:
     wide shot where the world dwarfs the character.
   * Detail inserts are mandatory world-building: macro hands-on-texture shots
     (earth, fabric, product surface, steam) with very shallow depth of field —
-    at least one per 15s of runtime. They add sensory realism no wide can.
+    at least one per 20s of runtime, and NONE in a 3-shot ad (see the
+    SHORT-FORM OVERRIDE — at 3 beats an insert costs the product shot).
+    They add sensory realism no wide can.
   * Every shot carries exactly ONE subtle motivated movement (the camera preset
     menu above) — no static tripod frames, no flashy transitions; straight cuts
     motivated by movement or composition.

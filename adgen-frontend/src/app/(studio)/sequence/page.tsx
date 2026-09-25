@@ -89,7 +89,10 @@ export default function SequencePage() {
         idea,
         language,
         format: aspect,
-        duration_s: 30,
+        // 20, not the app-wide 15 default: segSeconds charges 14.4s for a
+        // lipsync segment, so a sequence with a lipsync closer cannot fit in
+        // 15s. 20 is the smallest ask that still leaves room for a hook.
+        duration_s: 20,
         avoid: [],
         cast_ids: [],
         mode: "sequence", // force the dedicated sequence-editor brain, not the auto-router
