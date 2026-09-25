@@ -490,23 +490,42 @@ def generate_endpoint(req: GenerateRequest):
                 src_fps = pre_info["fps"] if pre_info["fps"] > 1 else (
                     25.0 if req.mode in ("cinematic", "ingredients") else 16.0)
                 pre_post = final
-                final = postprocess.postprocess_video(
-                    final,
-                    restore_face=restore,
-                    resolution=min(1088, 2 * min(req.width or 640, req.height or 640)),
-                    source_fps=src_fps,
-                    on_submit=on_submit,
-                )
-                # Belt-and-braces: the chain must never change wall-clock length.
-                # If it did, ship the un-posted final instead of a slow-mo file —
-                # and delete the rejected -post file so the Library never lists it.
-                post_dur = ffmpeg.probe(final)["duration"]
-                if abs(post_dur - pre_info["duration"]) > 0.3:
-                    _warn(job_id, f"post chain changed duration "
-                          f"{pre_info['duration']:.2f}s -> {post_dur:.2f}s — "
-                          f"kept the un-enhanced final")
-                    Path(final).unlink(missing_ok=True)
-                    Path(final).with_suffix(".meta.json").unlink(missing_ok=True)
+                # The post chain is an ENHANCEMENT of a video that is already
+                # finished and on disk. It must never be able to destroy it.
+                # It used to: postprocess.json needs VideoHelperSuite, CodeFormer,
+                # SeedVR2 and RIFE, none of which survive a container reset and
+                # none of which are on a freshly built pod — so ComfyUI answered
+                # 400 missing_node_type, the exception escaped to the outer
+                # handler, and a complete render died at 95% with nothing shipped.
+                try:
+                    final = postprocess.postprocess_video(
+                        final,
+                        restore_face=restore,
+                        resolution=min(1088, 2 * min(req.width or 640, req.height or 640)),
+                        source_fps=src_fps,
+                        on_submit=on_submit,
+                    )
+                    # Belt-and-braces: the chain must never change wall-clock length.
+                    # If it did, ship the un-posted final instead of a slow-mo file —
+                    # and delete the rejected -post file so the Library never lists it.
+                    post_dur = ffmpeg.probe(final)["duration"]
+                    if abs(post_dur - pre_info["duration"]) > 0.3:
+                        _warn(job_id, f"post chain changed duration "
+                              f"{pre_info['duration']:.2f}s -> {post_dur:.2f}s — "
+                              f"kept the un-enhanced final")
+                        Path(final).unlink(missing_ok=True)
+                        Path(final).with_suffix(".meta.json").unlink(missing_ok=True)
+                        final = pre_post
+                except JobCancelled:
+                    raise  # a cancel is the user's decision, not a chain failure
+                except Exception as pe:
+                    detail = str(pe)
+                    missing = "missing_node_type" in detail or "not found" in detail
+                    _warn(job_id,
+                          "post-enhance chain unavailable on this pod "
+                          + ("(VideoHelperSuite / CodeFormer / SeedVR2 / RIFE not installed) "
+                             if missing else f"({type(pe).__name__}) ")
+                          + "— shipped the finished render without it")
                     final = pre_post
             _attach_sync(job_id, final)
             _update(job_id, status="done", progress=100, detail="", video_path=final)

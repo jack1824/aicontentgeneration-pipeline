@@ -307,6 +307,24 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
     # _generate_sequence computes its resume hash (checkpoint.seg_hash), so an
     # enhanced prompt correctly invalidates cached clips instead of silently
     # reusing footage rendered from the old un-enhanced text.
+    # Vagueness gate, BEFORE the GPU. An unrenderable prompt does not cost one
+    # generation, it costs three: QC fails the take, the seed re-rolls, and the
+    # shot ships failing anyway. Refusing here costs nothing and says exactly
+    # what is missing. The bar is deliberately low — it catches "cinematic
+    # beautiful epic shot", not merely plain writing.
+    thin: list[str] = []
+    for idx, item in enumerate([*(req.get("shots") or []),
+                                *(s for s in (req.get("segments") or []) if s.get("prompt"))]):
+        verdict = promptcraft.assess(item.get("prompt", ""))
+        if not verdict["ok"]:
+            thin.append(f"shot {idx + 1} (score {verdict['score']}/100): "
+                        + "; ".join(verdict["reasons"]))
+    if thin:
+        raise ValueError(
+            "These shots are too vague to render — they would fail QC and burn "
+            "three generations each:\n  " + "\n  ".join(thin)
+            + "\nName the concrete objects in frame and one physical action.")
+
     for shot in req.get("shots") or []:
         locked = identity_on and wants_identity(shot, True)
         # A shot that animates FROM the character's portrait must NOT also carry

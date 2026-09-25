@@ -119,18 +119,104 @@ _HAS_CAMERA = re.compile(
 # speed or end state produces the unbounded push-in that collapses into an ugly
 # extreme close-up by the last second.
 _DEFAULT_CAMERA = {
-    # LTX renders ~5s; a slow settle reads as deliberate at that length.
-    "ltx": "slow push-in from wide over three seconds, settling at a medium shot and holding there",
-    "wan_t2v": "slow lateral dolly at walking pace settling into a steady medium shot",
-    # Image-anchored engines must not wander off the reference framing.
-    "wan_i2v": "static locked-off medium shot, holding chest-up",
-    "wan_s2v": "static locked-off medium shot, holding chest-up",
-    "longcat": "static locked-off medium shot, holding chest-up",
+    # CONTINUOUS moves only. These clips are ~4.84s and qc.FREEZE_FAIL_S is 0.8s,
+    # so any camera that arrives somewhere and HOLDS spends its last second static
+    # and fails the freeze gate. Measured on the-awakening-ritual: a "settling ...
+    # and holding there" phrasing produced frame-to-frame deltas of 0.02-0.10 for
+    # the first 16 and last 15 frames against a mid-clip peak of 1.40 — QC read
+    # 0.92s frozen on all three takes, so the shot burned every re-roll and still
+    # shipped failing. A move that never settles keeps the whole clip alive.
+    "ltx": "slow continuous push-in at a steady creep throughout the shot, never settling",
+    "wan_t2v": "slow continuous lateral dolly at walking pace throughout the shot",
+    # Image-anchored engines must not wander off the reference framing, so the
+    # camera stays put — but the SUBJECT has to carry the motion. These lanes are
+    # safe because their subject is inherently moving (a talking head on s2v, a
+    # turning product on i2v); a still camera over a still subject would freeze.
+    "wan_i2v": "locked-off medium shot, framing held steady while the subject moves",
+    "wan_s2v": "locked-off medium shot, framing held steady while the subject speaks",
+    "longcat": "locked-off medium shot, framing held steady while the subject speaks",
 }
 _FALLBACK_CAMERA = _DEFAULT_CAMERA["ltx"]
 
-# Applied once, at the end, so a second pass is a no-op.
-_STAMP = "  "  # two spaces: invisible in output, but see _already_enhanced
+# --- light / contrast -------------------------------------------------------
+# Haze is the one defect we CANNOT fix with a negative prompt on the cinematic
+# lane (proven on the pod: a negative naming "potted green plant, plant, leaves"
+# left the plant fully present at NAG scale 5, 15 AND 30 — negated content is not
+# removed there at any scale). So contrast has to be asked for POSITIVELY.
+#
+# The measured signature of a hazy render is a compressed luma range: the
+# awakening-ritual render sat at black 78 / white 156 = 79 levels against 102 on
+# a clean one, and measured 0.78 sharpness against 2.47.
+_HAS_LIGHT = re.compile(
+    r"\b(light|lighting|lit|sunlight|sunlit|daylight|backlit|golden hour|shadow\w*|"
+    r"contrast|silhouett\w+|grade[dr]?|tones?|overcast|neon|lamp|glow|dim|bright)\b",
+    re.I,
+)
+# Deliberately names CONTRAST, not just a mood. "soft diffused morning light" is
+# what produces the flat grey frame; a stated black point is what prevents it.
+CONTRAST_CLAUSE = ("Crisp directional light with deep true blacks and clean bright "
+                   "highlights, strong tonal contrast, no haze")
+
+# --- vagueness gate ---------------------------------------------------------
+# A prompt too thin to render reliably costs THREE generations, not one: QC fails
+# the take, the seed re-rolls, and the shot ships failing anyway (measured on
+# the-awakening-ritual, where all three takes failed and the third still shipped).
+# Catching it before the first GPU second is far cheaper than after the third.
+#
+# Threshold logic is deliberately crude and permissive. It exists to catch "a man
+# drinking coffee", not to grade prose — a false block on a good prompt is worse
+# than a wasted render.
+_ACTION_VERB = re.compile(
+    r"\b\w+(s|es|ing)\b", re.I)          # any inflected verb: lifts, pouring, taps
+_CONCRETE_HINT = re.compile(
+    r"\b(a|an|the)\s+\w+", re.I)         # article + noun ~ a named thing
+
+# Words that carry no visual information. A prompt made mostly of these is the
+# "cinematic advertisement shot." failure mode the formula bans.
+_FILLER = frozenset({
+    "cinematic", "beautiful", "stunning", "amazing", "nice", "good", "great",
+    "dynamic", "epic", "professional", "high", "quality", "best", "awesome",
+    "shot", "video", "footage", "scene", "clip", "ad", "advertisement",
+})
+
+
+def assess(prompt: str) -> dict:
+    """Score how renderable a prompt is. Returns {score, ok, reasons}.
+
+    score 0-100. Not a style judgement — purely "does this name enough concrete
+    things for a video model to land them repeatably". The A/B that motivated
+    this: "alarm clock / bedside table" drifted and failed three takes, while
+    "RED ALARM CLOCK on a WOODEN BEDSIDE TABLE beside a small POTTED GREEN PLANT"
+    landed every object first try on the same model and seed."""
+    text = (prompt or "").strip()
+    words = re.findall(r"[A-Za-z']+", text)
+    n = len(words)
+    reasons: list[str] = []
+
+    if n < 12:
+        reasons.append(f"only {n} words — too thin to pin down a shot (aim for 45-90)")
+    nouns = len(_CONCRETE_HINT.findall(text))
+    if nouns < 3:
+        reasons.append(f"names only {nouns} concrete thing(s) — say WHICH objects are in frame")
+    if not _ACTION_VERB.search(text):
+        reasons.append("no action verb — a shot with no motion renders as a frozen frame")
+    meaningful = [w for w in words if w.lower() not in _FILLER]
+    if n and len(meaningful) / n < 0.6:
+        reasons.append("mostly vibe words (cinematic/beautiful/epic) — these direct nothing")
+
+    score = 100
+    score -= 34 * (n < 12)
+    score -= 26 * (nouns < 3)
+    score -= 20 * (not _ACTION_VERB.search(text))
+    score -= 20 * bool(n and len(meaningful) / n < 0.6)
+    score = max(0, score)
+    return {"score": score, "ok": score >= MIN_RENDERABLE_SCORE, "reasons": reasons}
+
+
+# Below this a prompt is refused BEFORE any GPU spend. Set low on purpose: it
+# should only catch prompts that are genuinely unrenderable, never merely plain
+# ones. Everything between this and 100 renders, with thin prompts noted.
+MIN_RENDERABLE_SCORE = 40
 
 
 def _split_terms(neg: str) -> list[str]:
@@ -198,6 +284,13 @@ def enhance_prompt(prompt: str,
         cam = _DEFAULT_CAMERA.get(
             "wan_i2v" if image_anchored else engine, _FALLBACK_CAMERA)
         text = f"{text.rstrip().rstrip('.')}. {cam[0].upper()}{cam[1:]}."
+
+    # 3. LIGHT/CONTRAST. Only when the author described none, and only for
+    #    photoreal shots. This is the sole defence against the flat grey frame on
+    #    the cinematic lane, where a negative prompt provably cannot remove
+    #    anything — so "no haze" has to be asserted positively or not at all.
+    if not stylised and not _HAS_LIGHT.search(text):
+        text = f"{text.rstrip().rstrip('.')}. {CONTRAST_CLAUSE}."
 
     return text, build_negative(negative, stylised=stylised)
 

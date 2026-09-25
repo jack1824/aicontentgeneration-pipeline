@@ -138,6 +138,15 @@ Rules:
       "top-down static tabletop shot"
       "crane rise from chest height to a high wide reveal"
       "rack focus from foreground product to subject at medium, camera static"
+    THE FREEZE RULE — half these presets end with the camera parked ("static",
+    "holding", "settling"). A clip is only ~4.8s and QC FAILS any take with 0.8s
+    of near-identical frames, so a parked camera over a subject who has stopped
+    moving reads as buffering and burns every re-roll. Whenever you pick a preset
+    containing "static", "holding" or "settling", the ACTION sentence must give
+    that shot a continuous physical motion that runs the WHOLE beat — steam
+    curling, fingers still working, fabric shifting, liquid still pouring — not a
+    gesture that completes early and leaves the frame dead. If the beat has no
+    sustained motion in it, pick a moving preset instead.
   * LIGHT/COLOR carries the EMOTION — never name a feeling, grade it: sadness =
     "desaturated cold blue-grey tones, heavy silence"; dread = "lit from below, cold
     shadows"; hope = "sudden warm golden light floods the room"; success = "warm
