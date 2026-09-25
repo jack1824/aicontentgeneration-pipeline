@@ -586,7 +586,12 @@ def _grade_for(clip: str) -> str:
     # but colour barely followed (SATAVG 9.4 -> 13.6) and the frame still read as
     # washed out. Saturation took it to 19.0 and the wood, skin and foliage came
     # back. A curve cannot restore colour a flat render never had.
-    satur = 1.15 + 0.25 * k
+    # Kept deliberately small. An earlier 1.15 + 0.25k pushed a finished ad to
+    # SATAVG 22.8 against 10.0 on the reference render the client approved — the
+    # lamp-lit bedroom went orange. Saturation multiplies what is already there,
+    # so a warm scene needs far less help than a grey one; the ceiling here is
+    # 1.18 rather than 1.40.
+    satur = 1.06 + 0.12 * k
     # The honest limit: even at full strength this tops out near range ~104 from a
     # 68.6 source — a deliberately stronger curve only reached 104.1 — so a
     # genuinely hazy GENERATION cannot be rescued here. That has to be fixed in
