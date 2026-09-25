@@ -154,8 +154,24 @@ _HAS_LIGHT = re.compile(
 )
 # Deliberately names CONTRAST, not just a mood. "soft diffused morning light" is
 # what produces the flat grey frame; a stated black point is what prevents it.
+# Measured cause of the worst haze we ship: a bright window BEHIND the subject.
+# The model exposes for the room, the window blows to pure white, and the bloom
+# washes the frame — luma range 68.6 against 180 on a clean render. Post cannot
+# recover it: a tone curve tops out near 104 from that source, and a deliberately
+# stronger one reached only 104.1.
+#
+# But the cure is easy to overdose. A version of this clause that stacked "lit
+# from the side", "background stays darker than the subject", "deep true blacks"
+# and "no bloom, no fog" traded haze for murk: same seed, saturation collapsed
+# 4.3 -> 1.3 (essentially monochrome) and luma range fell 194.7 -> 144.5. Washed
+# out became lightless, which is not an improvement.
+#
+# So this stays close to the clause that measurably worked (that one produced
+# range 171 with the watermark and letterbox gone) and adds exactly ONE targeted
+# phrase for the actual failure — the window — rather than re-describing the
+# whole lighting setup.
 CONTRAST_CLAUSE = ("Crisp directional light with deep true blacks and clean bright "
-                   "highlights, strong tonal contrast, no haze")
+                   "highlights, strong tonal contrast, no haze, no blown-out windows")
 
 # --- vagueness gate ---------------------------------------------------------
 # A prompt too thin to render reliably costs THREE generations, not one: QC fails
