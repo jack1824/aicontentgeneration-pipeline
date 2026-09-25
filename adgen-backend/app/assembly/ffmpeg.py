@@ -506,10 +506,12 @@ def cut_audio(src: str, start_s: float, dur_s: float, out: str) -> str:
 _GRADE = ("curves=all='0/0 0.06/0.045 0.3/0.42 0.6/0.76 0.85/0.95 1/1',"
           "unsharp=5:5:0.8:5:5:0.0")
 
-# Above this measured luma range a clip is already well exposed and the curve
-# would push highlights to 255 on its brightest frames. Applied to the good
-# reference it did exactly that, so the grade is GATED rather than unconditional.
-_GRADE_RANGE_CEILING = 150.0
+# The TARGET luma range, not a safety gate. Set from the reference render the
+# client approved (coffee-enhanced-clip1, measured 180.2) rather than from a round
+# number: a clip already at 176 still reads flat next to that, and an earlier
+# ceiling of 150 left those shots ungraded and the finished film duller than the
+# look that was signed off. Clips at or above this get nothing.
+_GRADE_RANGE_CEILING = 185.0
 
 
 def _luma_range(path: str, sample_fps: float = 2.0) -> float | None:
@@ -544,6 +546,53 @@ def _needs_grade(clips: list[str]) -> bool:
     if not measured:
         return True  # unmeasurable: a flat render is the common case, so grade it
     return (sum(measured) / len(measured)) < _GRADE_RANGE_CEILING
+
+
+def _grade_for(clip: str) -> str:
+    """A curve sized to THIS clip's measured haze, as a leading-comma filter chain.
+
+    Haze is a compressed luma range: a dim interior comes off the model at ~69
+    while a sunlit exterior lands at ~177, in the same ad. One curve cannot serve
+    both — sized for the mean it leaves the dark shot milky AND pushes the bright
+    one toward clipped highlights.
+
+    So the lift scales with the deficit against _GRADE_RANGE_CEILING. A clip
+    already at or above the ceiling gets NOTHING (returns ""), which keeps
+    well-exposed footage byte-identical to before this change. The curve stays
+    monotonic and ends at 1/1 at every strength, so highlights never clip and the
+    black point is lifted rather than crushed — the failure mode of eq=contrast,
+    which widened the range on paper by collapsing YLOW 19.2 -> 0.2.
+    """
+    rng = _luma_range(clip)
+    if rng is None:
+        rng = 120.0  # unmeasurable: assume typical flat output and grade moderately
+    deficit = (_GRADE_RANGE_CEILING - rng) / _GRADE_RANGE_CEILING
+    if deficit <= 0.02:
+        return ""  # already at the approved look — leave it completely alone
+    k = max(0.0, min(1.0, deficit / 0.63))  # 0 at the ceiling, 1 at range ~68
+
+    # The CURVE runs at full strength on every clip that needs grading at all.
+    # An earlier version scaled the curve down for brighter clips too, and the
+    # finished film measured FLATTER than the single global curve it replaced
+    # (range 150.7 vs 171.4, sharpness 1.95 vs 3.69) — it fixed the over-cooking
+    # of good shots by under-treating everything. Wrong trade: the complaint was
+    # haze. This pass is never weaker than the global grade was; k only decides
+    # how much EXTRA the haziest shots get on top.
+    pts = "0/0 0.06/0.045 0.3/0.42 0.6/0.76 0.85/0.95 1/1"
+    # Floors match the old global pass (unsharp 0.8); k adds on top for flat clips.
+    amount = 0.80 + 0.40 * k
+    # Saturation, because haze is not only a contrast problem. Measured on the
+    # haziest clip in a 6-shot ad: the tone curve moved luma range 68.6 -> 101.9
+    # but colour barely followed (SATAVG 9.4 -> 13.6) and the frame still read as
+    # washed out. Saturation took it to 19.0 and the wood, skin and foliage came
+    # back. A curve cannot restore colour a flat render never had.
+    satur = 1.15 + 0.25 * k
+    # The honest limit: even at full strength this tops out near range ~104 from a
+    # 68.6 source — a deliberately stronger curve only reached 104.1 — so a
+    # genuinely hazy GENERATION cannot be rescued here. That has to be fixed in
+    # the prompt and the conditioning still; this only recovers what is left.
+    return (f",curves=all='{pts}',eq=saturation={satur:.2f},"
+            f"unsharp=5:5:{amount:.2f}:5:5:0.0")
 
 
 def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
@@ -604,9 +653,15 @@ def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
                       f"me_mode=bidir:vsbmc=1")
         else:
             retime = f"fps={canon_fps:g}"
+        # PER-CLIP grade, not one curve for the whole film. Measured on a 6-shot
+        # ad, the clips ranged 68.6 to 177.3 — a single global curve sized to the
+        # 136.8 mean left the hazy 68.6 shot still hazy while pushing the two
+        # already-good 177s toward clipped highlights. Haze is per-shot (a dim
+        # bedroom next to a sunlit cafe), so the correction has to be per-shot.
         parts.append(
             f"[{i}:v]scale={canon_w}:{canon_h}:force_original_aspect_ratio=decrease,"
-            f"pad={canon_w}:{canon_h}:(ow-iw)/2:(oh-ih)/2,{retime},setsar=1[v{i}]"
+            f"pad={canon_w}:{canon_h}:(ow-iw)/2:(oh-ih)/2,{retime},setsar=1"
+            f"{_grade_for(clips[i])}[v{i}]"
         )
         a_src = f"[{null_index[i]}:a]" if i in null_index else f"[{i}:a]"
         # Pin every audio lane to its clip's VIDEO duration: concat joins the
@@ -621,25 +676,12 @@ def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
         lanes += [f"[v{i}]", f"[a{i}]"]
     fc = ";".join(parts) + f";{''.join(lanes)}concat=n={len(clips)}:v=1:a=1[v][a]"
 
-    # FINISHING GRADE. Measured, not guessed: quality is lost in GENERATION, not
-    # here — this re-encode costs 1.4-4.7% of laplacian sharpness and ~0% of luma
-    # range. But it is the ONE re-encode on the narration path, so it is the only
-    # free place to put a finishing pass, and flat LTX output needs one. On
-    # coffee-ad-15s-final the curve below moved luma range 120.6 -> 155.8 and
-    # laplacian 1.669 -> 2.875 against a well-exposed reference of 180.2 / 2.913,
-    # for 3.5s of wall clock on a 14s film.
-    #
-    # `curves`, NOT `eq=contrast`. eq=contrast=1.25 reports a wider range purely by
-    # crushing blacks — YLOW collapsed 19.2 -> 0.2 and YMIN to 0.0, destroying
-    # shadow detail. This curve is monotonic and ends at 1/1, so YLOW moves only
-    # 19.2 -> 17.6 and nothing clips.
-    if _needs_grade(clips):
-        fc += f";[v]{_GRADE}[vg]"
-        vmap = "[vg]"
-    else:
-        vmap = "[v]"
-
-    cmd += ["-filter_complex", fc, "-map", vmap, "-map", "[a]",
+    # The finishing grade is applied PER CLIP above (see _grade_for), not once to
+    # the concatenated film. Quality is lost in GENERATION, not here — this
+    # re-encode costs 1.4-4.7% of laplacian sharpness and ~0% of luma range — but
+    # it is the only re-encode on the narration path, so it is the one free place
+    # to put a finishing pass, and flat LTX output needs one.
+    cmd += ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
             "-c:v", "libx264", "-crf", "16", "-preset", "medium",
             "-pix_fmt", "yuv420p", "-c:a", "aac", out]
     _run(cmd)
