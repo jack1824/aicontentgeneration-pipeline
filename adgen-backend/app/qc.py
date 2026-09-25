@@ -181,6 +181,42 @@ def blur_mean(path: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+# A take with more of its frame than this clipped to pure white reads as HAZY —
+# a blown-out window or doorway behind the subject, washing the picture. Set from
+# measurement: a clean lamp-lit take reads 0.1%, an approved reference 0.4%, while
+# the shots a client twice called "very hazy" read 14-19%.
+BLOWN_FAIL_PCT = 8.0
+
+
+def blown_pct(path: str, samples: int = 5) -> float | None:
+    """Percent of frame area clipped to near-white, averaged over the take.
+
+    This exists because the metric we USED to judge haze by — luma range — is
+    actively wrong for it. A blown window puts pixels at both 0 and 255, so range
+    reads HIGH: the two haziest shots in a 30s ad scored 212.9, the best numbers in
+    the film, while a fifth of each frame was pure white. Range measures contrast,
+    not clipping, and haze is clipping.
+
+    Uses ffmpeg's histogram rather than a Python pixel loop so it stays cheap
+    enough to run on every take."""
+    dur = _duration(path)
+    if dur <= 0:
+        return None
+    vals: list[float] = []
+    for frac in [(i + 0.5) / samples for i in range(samples)]:
+        err = _ffmpeg_stderr([
+            "-ss", f"{dur * frac:.2f}", "-i", path, "-frames:v", "1", "-an",
+            # Isolate pixels at/above 245 and read what fraction of the frame they are.
+            "-vf", "format=gray,geq=lum='if(gte(p(X,Y),245),255,0)',signalstats,"
+                   "metadata=print:key=lavfi.signalstats.YAVG",
+        ])
+        m = re.findall(r"YAVG=([0-9.]+)", err)
+        if m:
+            # YAVG of a 0/255 mask is 255 * (fraction blown).
+            vals.append(float(m[-1]) / 255.0 * 100.0)
+    return sum(vals) / len(vals) if vals else None
+
+
 def _frames_b64(path: str, n: int = 3, width: int = 768, q: int = 4) -> list[str]:
     """n frames sampled across the take, base64 JPEG. `width`/`q` exist because the
     rungs do NOT share a payload budget: Groq 413s on three 768px frames that Gemini
@@ -508,11 +544,20 @@ def review_clip(path: str, context: str = "") -> dict:
     ok=False means a client-rejectable defect (worth a re-roll). sharpness==3
     passes but scores lower, so a re-rolled sharper take still wins best-of-N."""
     rec: dict = {"clip": Path(path).name, "blur": blur_mean(path),
-                 "frozen_s": freeze_scan(path), "vision": None,
+                 "frozen_s": freeze_scan(path), "blown_pct": blown_pct(path),
+                 "vision": None,
                  "issues": [], "ok": True, "score": 0.0,
                  "vision_failures": []}
     if rec["frozen_s"] > FREEZE_FAIL_S:
         rec["issues"].append(f"frozen frames for {rec['frozen_s']:.1f}s")
+    # Haze, as a LOCAL check. It belongs here rather than in the vision rubric
+    # because it is exactly measurable and the vision rungs are the first thing to
+    # go dark under quota. Shots a client twice called "very hazy" measured 14-19%
+    # of frame clipped to white and passed every gate we had.
+    if rec["blown_pct"] is not None and rec["blown_pct"] > BLOWN_FAIL_PCT:
+        rec["issues"].append(
+            f"hazy: {rec['blown_pct']:.0f}% of frame blown to white "
+            f"(a window or doorway behind the subject)")
     v = vision_review(path, context, rec["vision_failures"])
     if v is not None:
         rec["vision"] = v

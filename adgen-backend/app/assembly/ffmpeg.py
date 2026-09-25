@@ -578,7 +578,14 @@ def _grade_for(clip: str) -> str:
     # of good shots by under-treating everything. Wrong trade: the complaint was
     # haze. This pass is never weaker than the global grade was; k only decides
     # how much EXTRA the haziest shots get on top.
-    pts = "0/0 0.06/0.045 0.3/0.42 0.6/0.76 0.85/0.95 1/1"
+    # HIGHLIGHT ROLL-OFF, not a lift. The previous control points ran
+    # "... 0.6/0.76 0.85/0.95 1/1", which pushed bright tones toward white and made
+    # the very defect this pass exists to fix WORSE: on a cafe shot, area clipped to
+    # near-white went 6.2% raw -> 9.3% after grading. Rolling the top down instead
+    # (0.85/0.88, ending 1/0.96) takes the same clip to 0.1%. Shadows and mids keep
+    # their lift; only the top is protected, which is what a film grade does and
+    # what "no haze" actually requires.
+    pts = "0/0 0.06/0.045 0.3/0.42 0.6/0.72 0.85/0.88 1/0.96"
     # Floors match the old global pass (unsharp 0.8); k adds on top for flat clips.
     amount = 0.80 + 0.40 * k
     # Saturation, because haze is not only a contrast problem. Measured on the
