@@ -220,77 +220,121 @@ def _normalize_verdict(v: dict) -> dict:
 
 def _openai_style_review(url: str, key: str, model: str, judge: str,
                          frames: list[str], context: str,
-                         json_mode: bool, timeout: float = 60) -> dict | None:
+                         json_mode: bool, timeout: float = 60,
+                         attempts: int = 1,
+                         notes: list[str] | None = None) -> dict | None:
     """One rubric review over an OpenAI-compatible vision endpoint (Groq, NVIDIA
     NIM). json_mode toggles response_format — NIM support varies per model, so
-    the NVIDIA rung instructs JSON and parses defensively instead."""
+    the NVIDIA rung instructs JSON and parses defensively instead.
+
+    `attempts` retries ONLY the prose failure: some vision models accept
+    response_format={"type":"json_object"} with a 200 and then narrate the frames
+    anyway ("The image shows a man sitting at a table..."). Measured on
+    llama-3.2-11b-vision: ~60% JSON per call, so one attempt silently dropped 40%
+    of a live judge's verdicts. Retrying a 200-but-unparseable response takes that
+    to ~94% at three attempts. An HTTP error is NOT retried here — a 404 (dead
+    model id) or 401 never becomes valid by asking twice, and the render thread
+    is blocked while we ask.
+
+    `notes` collects a one-line reason per rung so the caller can say WHICH judge
+    failed instead of blaming the first one. It is a caller-owned list, not module
+    state, so concurrent renders never cross-contaminate each other's warnings."""
+    def _note(msg: str) -> None:
+        if notes is not None:
+            notes.append(f"{judge}: {msg}")
+
     if not key:
+        _note("no API key configured")
         return None
-    try:
-        body: dict = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": _RUBRIC.format(context=context[:600] or "(no brief)")},
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Frames from the take, in order:"},
-                    *({"type": "image_url",
-                       "image_url": {"url": f"data:image/jpeg;base64,{b}"}}
-                      for b in frames),
-                ]},
-            ],
-        }
-        # max_tokens on BOTH paths: a NIM in json_object mode still needs room, and
-        # its low default truncated the verdict mid-object so every parse failed.
-        body["max_tokens"] = 2048
-        if json_mode:
-            body["response_format"] = {"type": "json_object"}
-        r = httpx.post(url, headers={"Authorization": f"Bearer {key}"},
-                       json=body, timeout=timeout)
-        r.raise_for_status()
-        text = r.json()["choices"][0]["message"]["content"].strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            return None
-        out = _normalize_verdict(json.loads(text[start:end + 1]))
-        out["judge"] = judge
-        return out
-    except Exception:
-        return None
+    body: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _RUBRIC.format(context=context[:600] or "(no brief)")},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Frames from the take, in order:"},
+                *({"type": "image_url",
+                   "image_url": {"url": f"data:image/jpeg;base64,{b}"}}
+                  for b in frames),
+            ]},
+        ],
+    }
+    # max_tokens on BOTH paths: a NIM in json_object mode still needs room, and
+    # its low default truncated the verdict mid-object so every parse failed.
+    body["max_tokens"] = 2048
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    for i in range(max(1, attempts)):
+        try:
+            r = httpx.post(url, headers={"Authorization": f"Bearer {key}"},
+                           json=body, timeout=timeout)
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+            start, end = text.find("{"), text.rfind("}")
+            if start >= 0 and end > start:
+                out = _normalize_verdict(json.loads(text[start:end + 1]))
+                out["judge"] = judge
+                return out
+            # 200 but no JSON object: the prose failure. Worth another roll.
+            if i == attempts - 1:
+                _note(f"returned prose instead of JSON on all {attempts} attempts")
+        except httpx.HTTPStatusError as e:
+            _note(f"HTTP {e.response.status_code}"
+                  + (" — model id retired upstream" if e.response.status_code == 404 else ""))
+            return None  # a bad id / bad key / quota does not improve on retry
+        except Exception as e:  # transport, decode, schema
+            if i == attempts - 1:
+                _note(f"{type(e).__name__}")
+    return None
 
 
-def _nvidia_review(frames: list[str], context: str) -> dict | None:
+def _nvidia_review(frames: list[str], context: str,
+                   notes: list[str] | None = None) -> dict | None:
     """Second judge: NVIDIA NIM vision.
 
     json_mode=True is REQUIRED here, not optional: without it Llama-3.2-vision
     narrates the frames in prose ("**Frame 1:** the man is sitting...") and the
     rubric JSON never appears, so the rung silently returned None and the ladder
-    fell through as if NVIDIA were down."""
+    fell through as if NVIDIA were down. json_mode alone is NOT sufficient either
+    — it holds only ~60% of the time on this model — hence attempts=3."""
     return _openai_style_review(_NVIDIA_URL, NVIDIA_API_KEY, _NVIDIA_MODEL,
                                 "nvidia", frames, context,
-                                json_mode=True, timeout=90)
+                                json_mode=True, timeout=90,
+                                attempts=3, notes=notes)
 
 
-def _groq_review(frames: list[str], context: str) -> dict | None:
-    """Third judge: Llama-4 vision on Groq, same rubric, JSON mode."""
+def _groq_review(frames: list[str], context: str,
+                 notes: list[str] | None = None) -> dict | None:
+    """Third judge: Groq-hosted vision, same rubric, JSON mode."""
     return _openai_style_review(_GROQ_URL, GROQ_API_KEY, _GROQ_MODEL,
-                                "groq", frames, context, json_mode=True)
+                                "groq", frames, context, json_mode=True,
+                                attempts=3, notes=notes)
 
 
-def vision_review(path: str, context: str) -> dict | None:
+def vision_review(path: str, context: str,
+                  notes: list[str] | None = None) -> dict | None:
     """One rubric-scored vision pass over 3 frames — a three-vendor ladder:
-    Gemini -> NVIDIA (Qwen 3.5) -> Groq (Llama-4). Returns None only when ALL
-    fail — the gate must degrade, never block a render on a judge outage.
+    Gemini -> NVIDIA -> Groq. Returns None only when ALL fail — the gate must
+    degrade, never block a render on a judge outage.
 
     Quota manners: on Gemini 429 we skip down the ladder IMMEDIATELY (no
     sleep-and-retry, no fallback-model hop) — QC runs per take and must never
-    drain the planner's quota ladder while a render thread sits blocked."""
+    drain the planner's quota ladder while a render thread sits blocked.
+
+    `notes` (caller-owned list) collects one line per failed rung. The caller
+    surfaces those instead of the old hardcoded "(Gemini)", which blamed the top
+    rung for every outage and sent us hunting a Gemini quota problem while the
+    real faults were a retired Groq model id and a 40%-prose NVIDIA rung."""
     if not QC_GEMINI_API_KEY and not NVIDIA_API_KEY and not GROQ_API_KEY:
+        if notes is not None:
+            notes.append("no vision judge is configured (no Gemini/NVIDIA/Groq key)")
         return None
     try:
         frames = _frames_b64(path)
-    except Exception:
+    except Exception as e:
+        if notes is not None:
+            notes.append(f"clip unreadable for frame sampling ({type(e).__name__})")
         return None  # unreadable clip — no judge can help
     if QC_GEMINI_API_KEY:
         try:
@@ -312,8 +356,13 @@ def vision_review(path: str, context: str) -> dict | None:
                     break
                 except httpx.HTTPStatusError as e:
                     r = None
-                    if i == 2 or e.response.status_code not in (500, 503):
-                        break  # 429/4xx: fall through to the Groq judge now
+                    code = e.response.status_code
+                    if i == 2 or code not in (500, 503):
+                        if notes is not None:
+                            notes.append(
+                                f"gemini: HTTP {code}"
+                                + (" — daily free-tier quota exhausted" if code == 429 else ""))
+                        break  # 429/4xx: fall through to the NVIDIA judge now
                     time.sleep(2 * (i + 1))
             if r is not None:
                 text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -322,12 +371,13 @@ def vision_review(path: str, context: str) -> dict | None:
                 out = _normalize_verdict(json.loads(text))
                 out["judge"] = "gemini"
                 return out
-        except Exception:
-            pass
+        except Exception as e:
+            if notes is not None:
+                notes.append(f"gemini: {type(e).__name__}")
     # NVIDIA's vision NIMs cap at ONE image per prompt ("At most 1 image(s) may be
     # provided"), so this rung gets the middle frame only — a single mid-take frame
     # still catches blur/darkness/wrong-subject, which is what the fallback is for.
-    out = _nvidia_review(frames[len(frames) // 2:len(frames) // 2 + 1], context)
+    out = _nvidia_review(frames[len(frames) // 2:len(frames) // 2 + 1], context, notes)
     if out:
         return out
     # Last rung. Groq's vision context is tighter than the others' — full-size frames
@@ -336,7 +386,20 @@ def vision_review(path: str, context: str) -> dict | None:
         small = _frames_b64(path, n=2, width=448, q=6)
     except Exception:
         small = frames
-    return _groq_review(small, context) or _groq_review(frames, context)
+    probe: list[str] = []
+    out = _groq_review(small, context, probe)
+    if out:
+        return out
+    # Only re-try at full size if the small payload failed for a NON-HTTP reason.
+    # A 404 (retired model id) or 401 repeats identically at full size, and each
+    # wasted round-trip blocks the render thread.
+    if not any("HTTP" in p for p in probe):
+        out = _groq_review(frames, context, probe)
+        if out:
+            return out
+    if notes is not None:
+        notes.extend(probe)
+    return None
 
 
 _IDENTITY_RUBRIC = """\
@@ -412,10 +475,11 @@ def review_clip(path: str, context: str = "") -> dict:
     passes but scores lower, so a re-rolled sharper take still wins best-of-N."""
     rec: dict = {"clip": Path(path).name, "blur": blur_mean(path),
                  "frozen_s": freeze_scan(path), "vision": None,
-                 "issues": [], "ok": True, "score": 0.0}
+                 "issues": [], "ok": True, "score": 0.0,
+                 "vision_failures": []}
     if rec["frozen_s"] > FREEZE_FAIL_S:
         rec["issues"].append(f"frozen frames for {rec['frozen_s']:.1f}s")
-    v = vision_review(path, context)
+    v = vision_review(path, context, rec["vision_failures"])
     if v is not None:
         rec["vision"] = v
         if v["sharpness"] <= 2:

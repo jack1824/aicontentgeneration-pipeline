@@ -16,6 +16,7 @@ import json
 import re
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 # Narration starts 300ms in (proven value; `|300` covers a 2nd channel if the file is stereo).
@@ -612,14 +613,100 @@ _FONT_CANDIDATES = [
 ]
 
 
+class TextBurnUnavailable(RuntimeError):
+    """This host's ffmpeg cannot burn text. Raised with the exact fix.
+
+    Every on-screen-text path (captions, end cards, cover hooks) needs the
+    `drawtext` filter, which only exists if ffmpeg was built --enable-libfreetype.
+    Homebrew's default bottle is NOT, so `ffmpeg -vf drawtext=...` dies with
+    "No such filter: 'drawtext'" — a failure that used to surface only at burn
+    time, after a full render had been paid for.
+    """
+
+
+@lru_cache(maxsize=1)
+def text_support() -> dict:
+    """Probe THIS host's ffmpeg once for the two things burned text needs.
+
+    Returns {drawtext: bool, shaping: bool, font: str|None, detail: str}.
+      drawtext — the filter exists at all (--enable-libfreetype).
+      shaping  — libharfbuzz is linked. WITHOUT it, drawtext renders Devanagari
+                 glyph-by-glyph in logical order with no shaping: conjuncts break
+                 apart and matras that must reorder (ि before its consonant) land
+                 in the wrong place. The text is legible-ish to a Latin reader and
+                 plainly WRONG to a Hindi one, which is the worst failure mode
+                 because it ships silently.
+    """
+    try:
+        filters = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                                 capture_output=True, text=True, timeout=20).stdout
+        cfg = subprocess.run(["ffmpeg", "-hide_banner", "-version"],
+                             capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"drawtext": False, "shaping": False, "font": None,
+                "detail": f"ffmpeg not runnable: {e}"}
+    has_dt = bool(re.search(r"^\s*\S*\s+drawtext\s", filters, re.M))
+    has_hb = "libharfbuzz" in cfg
+    font = next((f for f in _FONT_CANDIDATES if Path(f).exists()), None)
+    bits = []
+    if not has_dt:
+        bits.append("drawtext filter MISSING (ffmpeg built without libfreetype)")
+    if not has_hb:
+        bits.append("libharfbuzz MISSING (Devanagari will not shape correctly)")
+    if not font:
+        bits.append(f"no usable font found in {_FONT_CANDIDATES}")
+    return {"drawtext": has_dt, "shaping": has_hb, "font": font,
+            "detail": "; ".join(bits) or "ok"}
+
+
+# U+0900-U+097F. Any of these in a caption means the burn NEEDS shaping to be
+# correct — Latin text survives an unshaped drawtext, Devanagari does not.
+_DEVANAGARI = re.compile(r"[\u0900-\u097F]")
+
+
+def shaping_warning(texts) -> str | None:
+    """Warn when we are about to burn Devanagari through an unshaped drawtext.
+
+    Returns None when the burn is safe. This does NOT block the render: the user
+    may legitimately want Latin/Hinglish supers on a Hindi ad, and refusing would
+    take away a working feature. But an unshaped Devanagari burn produces text a
+    Hindi reader sees as broken, so it must never happen silently.
+    """
+    if not any(_DEVANAGARI.search(str(t or "")) for t in texts):
+        return None
+    if text_support()["shaping"]:
+        return None
+    return ("Devanagari text is being burned by an ffmpeg without libharfbuzz: "
+            "conjuncts and matras will render in the wrong shape/order. "
+            "Use Latin-script supers, or rebuild ffmpeg with harfbuzz. " + FFMPEG_TEXT_FIX)
+
+
+FFMPEG_TEXT_FIX = (
+    "Rebuild ffmpeg with text support:\n"
+    "  brew uninstall --ignore-dependencies ffmpeg\n"
+    "  brew install --build-from-source ffmpeg  # pulls freetype + harfbuzz\n"
+    "Verify with:  ffmpeg -filters | grep drawtext"
+)
+
+
 def _font() -> str:
-    for f in _FONT_CANDIDATES:
-        if Path(f).exists():
-            return f
-    raise RuntimeError("no usable font found for end-card drawtext")
+    """The font for drawtext — but check the FILTER first.
+
+    A missing font and a missing filter used to produce the same confusing error;
+    only one of them is the usual cause, and it isn't the font.
+    """
+    cap = text_support()
+    if not cap["drawtext"]:
+        raise TextBurnUnavailable(
+            f"cannot burn on-screen text: {cap['detail']}.\n{FFMPEG_TEXT_FIX}")
+    if not cap["font"]:
+        raise TextBurnUnavailable(
+            f"cannot burn on-screen text: {cap['detail']}")
+    return cap["font"]
 
 
-def burn_captions(video: str, captions: list[dict], out: str = "captioned.mp4") -> str:
+def burn_captions(video: str, captions: list[dict], out: str = "captioned.mp4",
+                  on_warning=None) -> str:
     """Burn timed caption/super overlays into a video (the muted-viewer layer).
 
     captions: [{start, end, text, position?: "top"|"bottom"|"center", accent?: bool}]
@@ -630,6 +717,9 @@ def burn_captions(video: str, captions: list[dict], out: str = "captioned.mp4") 
     Keep lines short — drawtext does not wrap (use \\n for manual breaks)."""
     if not captions:
         return video
+    warn = shaping_warning(c.get("text") for c in captions)
+    if warn and on_warning:
+        on_warning(warn)
     info = probe(video)
     h = info["height"] or 1280
     w = info["width"] or 720

@@ -108,8 +108,13 @@ function GeminiPanel({
       setError(null);
       setApproaches(null);
       try {
-        // A finished script is finished work: hand it over AS a script so the planner
-        // reproduces it instead of authoring its own narration over the top.
+        // Three fates, not two (2026-09-08). A finished script is finished work and
+        // is reproduced verbatim. But a BRIEF used to be handed over as `idea` alone,
+        // which let the planner author its own narration out of a 266-line
+        // documentary-film prompt — the reason ads came back feeling like random
+        // b-roll instead of ads. A brief now goes through the SCRIPT DOCTOR first:
+        // it becomes real ad copy (hook/problem/turn/solution/proof/CTA) and the
+        // pictures get built around THAT.
         const isScript = looksLikeScript(ideaText);
         const res = await api.plan({
           idea: ideaText.trim(),
@@ -117,7 +122,9 @@ function GeminiPanel({
           format: aspect,
           duration_s: dur,
           ...(avoid?.length ? { avoid } : {}),
-          ...(isScript ? { script: ideaText.trim(), verbatim: verbatim !== false } : {}),
+          ...(isScript
+            ? { script: ideaText.trim(), verbatim: verbatim !== false }
+            : { structure: true }),
         });
         setApproaches(res.approaches);
         onPlanned();

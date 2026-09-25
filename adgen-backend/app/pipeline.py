@@ -17,7 +17,7 @@ import httpx
 OUTPUT_VIDEO_DIR = Path("outputs/video")
 OUTPUT_AUDIO_DIR = Path("outputs/audio")
 
-from app import checkpoint, qc
+from app import checkpoint, promptcraft, qc
 from app.assembly import ffmpeg
 from app.config import COMFY_POD_URLS
 from app.providers import comfy
@@ -36,6 +36,25 @@ from app.workflow_mappings import (
 )
 
 DEFAULT_BASE_SEED = 1000
+
+# Ceiling for the narration-overrun auto-extend (~60s of LTX video at 4.84s/clip).
+# 15s is the STANDARD ad length, not a limit — a user asking for 30s, or pasting a
+# script that needs more room, must still generate. This bound exists only so one
+# runaway script cannot silently spend an unbounded number of generations.
+MAX_AUTO_SHOTS = 12
+
+# Which render engine each mode/segment-pipeline ends up on. Used only to pick an
+# engine-appropriate default camera when a prompt directs none — an i2v-style lane
+# must not be handed a push-in that walks off its reference framing.
+_ENGINE_FOR_MODE = {
+    "cinematic": "ltx", "ingredients": "ltx",
+    "overlay": "wan_t2v", "sequence": "wan_t2v", "duo": "wan_t2v",
+    "product": "wan_i2v", "lipsync": "wan_s2v", "longcat": "longcat",
+}
+_ENGINE_FOR_PIPELINE = {
+    "cinematic": "ltx", "overlay": "wan_t2v",
+    "product": "wan_i2v", "lipsync": "wan_s2v",
+}
 
 # Identity backstop (nextplan Phase 1): bounded re-rolls when frame-0 of an
 # identity-locked S2V take clearly breaks from its approved keyframe (garment/
@@ -96,6 +115,29 @@ def inject_cast(prompt: str, anchors: list[str]) -> str:
         return prompt
     block = " ".join(a.strip().rstrip(".") + "." for a in anchors if a.strip())
     return f"Featuring {block}\n\n{prompt}"
+
+
+def wants_identity(shot: dict, default: bool) -> bool:
+    """Should THIS shot be locked to the character's portrait?
+
+    Text anchors cannot hold a face. `inject_cast` pastes a ~25-word description
+    into every shot and the platform called that "consistency", but WAN_T2V_MAPPING
+    has no image input at all — so on the t2v path the model re-samples a new
+    person from that description on every shot, with a different seed each time
+    (base_seed + i). Different faces are the EXPECTED output of that design, not a
+    glitch. The only fix is to stop describing the face and start conditioning on
+    a picture of it, which means routing character shots to i2v.
+
+    An explicit shot["identity"] always wins. Otherwise the default applies to
+    every shot EXCEPT "detail" inserts — those are the atmospheric non-character
+    beats (dust motes, cloth swinging, a loom wheel) the planner is instructed to
+    include, and starting them from a face portrait would put the character in a
+    shot deliberately designed to have no one in it.
+    """
+    explicit = shot.get("identity")
+    if explicit is not None:
+        return bool(explicit)
+    return default and shot.get("shot_type") != "detail"
 
 
 # Role-first labels for the Library's recipe chips (clients care what a model
@@ -167,8 +209,13 @@ def _render_takes(render, out_path: str, *, label: str, context: str,
             rec.update(take=take, shot=label, shipped=False)
             records.append(rec)
             if take == 1 and rec["vision"] is None:
+                # Name the rungs that ACTUALLY failed. This used to read
+                # "(Gemini)" unconditionally, which sent us chasing a Gemini
+                # quota problem while the real faults were a retired Groq model
+                # id and an NVIDIA rung that returned prose 40% of the time.
+                why = "; ".join(rec.get("vision_failures") or []) or "all judges returned no verdict"
                 report("generating", pct,
-                       f"⚠ {label}: vision QC unavailable (Gemini) — only local freeze/blur checks ran")
+                       f"⚠ {label}: vision QC unavailable ({why}) — only local freeze/blur checks ran")
             if best is None or (rec["ok"], rec["score"]) > (best[0], best[1]):
                 best = (rec["ok"], rec["score"], path, rec)
             if rec["ok"]:
@@ -215,6 +262,11 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
         seed: int | None      # base seed; shot i uses seed + i (reproducible)
         music: str | None     # optional music file path
         quality: "quality" | "fast"   # fast = Lightning LoRA 4-step (previews); default quality
+        identity_image: str | None    # a portrait of the recurring character. When set,
+                                      # every character shot animates FROM this image
+                                      # (i2v) instead of being re-imagined from text
+                                      # (t2v) — the only thing that actually holds a
+                                      # face across cuts. Per-shot override: shot["identity"].
 
     on_progress(status, progress_pct, detail) is called at each stage transition.
     """
@@ -243,12 +295,37 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
     # describe camera/light around a photographed product, and a character
     # anchor there would fight the i2v start image.
     anchors = req.get("cast_anchors") or []
-    if anchors and mode != "product":
-        for shot in req.get("shots") or []:
+    identity_on = bool(req.get("identity_image"))
+    # Prompt enhancement runs at this SAME site, but UNCONDITIONALLY — note it is
+    # outside the `if anchors` guard. Cast injection only matters when the job has
+    # saved characters; the house formula and the canonical negative matter on
+    # every render, and the jobs most in need of them (a hand-typed prompt, a
+    # pasted script, an episode beat) are exactly the ones with no cast.
+    #
+    # Placement is load-bearing in two ways. It is BEFORE the mode dispatch below,
+    # so all nine modes are covered by one call site. And it is before
+    # _generate_sequence computes its resume hash (checkpoint.seg_hash), so an
+    # enhanced prompt correctly invalidates cached clips instead of silently
+    # reusing footage rendered from the old un-enhanced text.
+    for shot in req.get("shots") or []:
+        locked = identity_on and wants_identity(shot, True)
+        # A shot that animates FROM the character's portrait must NOT also carry
+        # a text description of that character: the anchor competes with the
+        # start image and pulls the render back toward a re-imagined face. This
+        # is the same reason product/i2v has always been exempt.
+        if anchors and mode != "product" and not locked:
             shot["prompt"] = inject_cast(shot["prompt"], anchors)
-        for seg in req.get("segments") or []:
-            if seg.get("prompt") and seg.get("pipeline") != "product":
-                seg["prompt"] = inject_cast(seg["prompt"], anchors)
+        promptcraft.enhance_shot(
+            shot, engine=_ENGINE_FOR_MODE.get(mode, "ltx"),
+            image_anchored=locked or mode in ("product", "ingredients"))
+    for seg in req.get("segments") or []:
+        if not seg.get("prompt"):
+            continue
+        if anchors and seg.get("pipeline") != "product":
+            seg["prompt"] = inject_cast(seg["prompt"], anchors)
+        promptcraft.enhance_shot(
+            seg, engine=_ENGINE_FOR_PIPELINE.get(seg.get("pipeline"), "wan_t2v"),
+            image_anchored=seg.get("pipeline") == "product")
     if mode == "sequence":
         return _generate_sequence(req, name, report, on_submit)
     if mode == "lipsync":
@@ -290,12 +367,34 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
     wf = comfy.load_workflow("wan_t2v")
     shots = req["shots"]
     base_seed = req.get("seed") or DEFAULT_BASE_SEED
+
+    # IDENTITY LOCK. With a portrait supplied, character shots stop being text-to-
+    # video (which re-invents the face every clip) and become image-to-video FROM
+    # that one portrait — the same mechanism the product pipeline uses to hold a
+    # label. Uploaded ONCE; every locked shot animates the same pod-side file.
+    identity_image = req.get("identity_image")
+    wf_i2v = identity_name = None
+    if identity_image:
+        if not Path(identity_image).exists():
+            raise FileNotFoundError(f"identity_image not found: {identity_image}")
+        report("uploading", 8, "character portrait -> pod")
+        identity_name = comfy.upload_file(pod, identity_image)
+        wf_i2v = comfy.load_workflow("wan_i2v")
+
     clips: list[str] = []
     qc_records: list[dict] = []
     for i, shot in enumerate(shots):
         pct = 10 + int(75 * i / len(shots))
-        report("generating", pct, f"clip {i + 1}/{len(shots)} (several min each)")
+        locked = bool(identity_name) and wants_identity(shot, True)
+        report("generating", pct,
+               f"clip {i + 1}/{len(shots)}{' (identity-locked)' if locked else ''} "
+               f"(several min each)")
         inputs = {"prompt": shot["prompt"], "seed": base_seed + i}
+        if locked:
+            # I2V_PRESERVE tells the model the start image is the source of truth;
+            # without it an i2v prompt invites re-imagination and drifts anyway.
+            inputs["prompt"] = shot["prompt"] + I2V_PRESERVE
+            inputs["start_image"] = identity_name
         if shot.get("negative_prompt"):
             inputs["negative_prompt"] = shot["negative_prompt"]
         if req.get("width"):
@@ -304,13 +403,17 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
             inputs["height"] = req["height"]
         if req.get("quality") == "fast":
             # Lightning LoRA 4-step preset (file 06). Previews/iteration only —
-            # finals should stay on the default QUALITY (20-step) path.
+            # finals should stay on the default QUALITY (20-step) path. NOTE: the
+            # FAST branch also drops CFG to 1.0, which makes negative_prompt inert
+            # on both t2v and i2v — anti-text/anti-drift negatives do nothing here.
             inputs["lightning_lora"] = True
 
-        def render(out, bump, inputs=inputs):
+        def render(out, bump, inputs=inputs, locked=locked):
             inp = {k: (v + bump if k.startswith("seed") else v) for k, v in inputs.items()}
-            return comfy.comfy_generate(pod, wf, inp, WAN_T2V_MAPPING,
-                                        out_path=out, on_submit=on_submit)
+            return comfy.comfy_generate(
+                pod, wf_i2v if locked else wf, inp,
+                WAN_I2V_MAPPING if locked else WAN_T2V_MAPPING,
+                out_path=out, on_submit=on_submit)
         clips.append(_render_takes(
             render, str(OUTPUT_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),
             label=f"clip {i + 1}", context=shot["prompt"], report=report, pct=pct,
@@ -1014,18 +1117,36 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
             output_path=str(LTX_AUDIO_DIR / f"{name}-narration.mp3"),
         )
         # A narration that outruns the video gets tempo-fit only up to ~1.12x —
-        # past that it would be CUT mid-sentence. Fail now with the exact fix
-        # instead of shipping half a script (the sa01 lesson: 91s VO, 53s video).
+        # past that it would be CUT mid-sentence (the sa01 lesson: 91s VO, 53s video).
+        # We used to RAISE here. That was survivable while the default ad was 6 shots
+        # (capacity ~29s, so the check effectively never fired), but at the 15s/3-shot
+        # default capacity is ~14.5s and any pasted or hand-edited script trips it —
+        # killing the render AFTER the TTS spend, with every clip still unrendered.
+        # A duration the user asked for must never block generation, so we EXTEND the
+        # shot list to carry the script instead of failing. Extra shots cycle the
+        # existing prompts; each renders at seed base_seed+i (see the loop below), so
+        # a reused prompt yields NEW footage of that beat rather than a duplicate clip.
         ndur = ffmpeg.probe(narration)["duration"]
         clip_s = 4.84  # measured real seconds per LTX clip (121f @25fps after mux)
         capacity = len(req["shots"]) * clip_s
         if ndur > capacity * 1.10:
             import math
             need = math.ceil((ndur / 1.08 - capacity) / clip_s)
-            raise ValueError(
-                f"narration runs {ndur:.0f}s but {len(req['shots'])} shots give only "
-                f"~{capacity:.0f}s of video — add ~{need} more shots or shorten the script."
-            )
+            have = len(req["shots"])
+            # Bound the auto-extend: past this the script is not an ad, and silently
+            # spending 13+ generations on one job is its own failure.
+            if have + need > MAX_AUTO_SHOTS:
+                raise ValueError(
+                    f"narration runs {ndur:.0f}s but {have} shots give only "
+                    f"~{capacity:.0f}s of video — that needs {have + need} shots, over the "
+                    f"{MAX_AUTO_SHOTS}-shot ceiling. Shorten the script or split the ad."
+                )
+            src = list(req["shots"])
+            req["shots"] = src + [dict(src[i % len(src)]) for i in range(need)]
+            report("tts", 6,
+                   f"⚠ narration runs {ndur:.0f}s but {have} shots gave only ~{capacity:.0f}s — "
+                   f"extended to {len(req['shots'])} shots so the full script is heard "
+                   f"(the added shots re-cover earlier beats with fresh seeds)")
 
     # 2. GENERATE — one LTX clip per shot. The workflow renders at HALF size then
     # 2x latent-upsamples, so the injected width/height are final//2.

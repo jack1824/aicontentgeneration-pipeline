@@ -322,6 +322,34 @@ export type PlanRequest = {
   // Force a specialized director brain (every approach commits to this pipeline)
   // instead of the generic auto-router. Set from the surface the user is on.
   mode?: "cinematic" | "sequence" | "product" | "lipsync" | "overlay";
+  // Run the SCRIPT DOCTOR before planning pictures: rewrite the brief into real
+  // ad copy (hook/problem/turn/solution/proof/CTA) and build the film around it.
+  // Overrides `verbatim` — the doctor's output becomes the verbatim script.
+  structure?: boolean;
+};
+
+// One beat of a structured ad script. `super` is the <=4-word phrase meant to be
+// BURNED on screen for muted viewers — never spoken, it reinforces the line.
+export type AdScriptBeat = {
+  role: "hook" | "problem" | "turn" | "solution" | "proof" | "cta";
+  line: string;
+  super: string | null;
+  visual: string;
+};
+
+export type AdScript = {
+  script: string;
+  beats: AdScriptBeat[];
+  brand: string | null;
+  offer: string | null;
+  // Facts the copywriter needed and the brief did not supply. Surfacing these is
+  // how the user learns WHY the ad is vague, instead of us inventing a claim.
+  missing: string[];
+  rationale: string;
+  spoken_s: number;
+  structure: string[];
+  word_budget: number;
+  words: number;
 };
 
 export type PlanApproach = {
@@ -430,6 +458,15 @@ export const api = {
   // treatments land. Each request is <1s, so a 60-100s Gemini plan can never trip
   // the Cloudflare tunnel's ~100s cap (524) or a proxy/serverless timeout again.
   // Signature is unchanged, so callers keep `await api.plan(...)`.
+  adScript: (req: {
+    brief: string; language?: string; duration_s?: number; product?: string;
+  }): Promise<AdScript> =>
+    fetch(`${BASE}/ad-script`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }).then(jsonOrThrow),
+
   plan: async (req: PlanRequest): Promise<{ approaches: PlanApproach[] }> => {
     const { job_id } = await fetch(`${BASE}/plan`, {
       method: "POST",

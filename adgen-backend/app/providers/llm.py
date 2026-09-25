@@ -209,8 +209,13 @@ Rules:
   anatomy, extra fingers, extra limbs, mismatched hands, swapped objects, morphing props,
   cloned faces, identity drift, face morphing, robotic movement, synchronized movement,
   frozen expressions, jerky motion, flickering, temporal inconsistency, unstable camera,
-  static camera, frozen background, stiff walk, sliding feet,
+  still photograph, motionless subject, frozen background, stiff walk, sliding feet,
   oversaturated colors, harsh shadows, watermark, logo, subtitles, blurry, low quality"
+  NEVER add "static camera" (or "locked camera", "no camera movement") to a negative block.
+  Four of the camera presets deliberately hold the camera still; negating it there tells the
+  model to hold and not hold at once, which produces the drifting, unstable framing those
+  presets exist to prevent. The negatives above target a DEAD SCENE (a still photograph, a
+  motionless subject) — never a deliberately still CAMERA.
 - product REQUIRES a product photo and lipsync REQUIRES a reference face image. Never assume
   the user has provided one — always list the required asset in needs_from_user.
 - lipsync needs no shot list (one continuous take) — give ONE scene/action prompt plus a
@@ -409,22 +414,39 @@ def _nvidia_json(system_prompt: str, user_msg: str, temperature: float) -> dict:
 
 
 def _fallback_json(system_prompt: str, user_msg: str, temperature: float,
-                   require: str | None = None) -> dict | None:
+                   require: str | None = None,
+                   notes: list[str] | None = None) -> dict | None:
     """The non-Gemini rungs, in order: NVIDIA (Qwen) then Groq (Llama).
     `require` names a top-level key the answer must carry — a rung returning
     valid-but-wrong-shape JSON counts as a failure so the NEXT rung is tried
     (otherwise one confused model short-circuits the whole ladder). Rung
     exceptions are swallowed broadly: a fallback must never crash the ladder.
-    Returns None only when every configured rung fails."""
-    for enabled, call in ((NVIDIA_API_KEY, _nvidia_json), (GROQ_API_KEY, _groq_json)):
+    Returns None only when every configured rung fails.
+
+    `notes` (optional) collects a one-line reason per failed rung. Without it the
+    caller could only report the FIRST vendor's error, so a total ladder outage
+    surfaced to the user as "Gemini plan failed (503)" — which sent debugging at
+    Gemini while the actual story was that NVIDIA was 503 too and Groq returned
+    the wrong shape. Silent rungs are how the ladder rotted unnoticed for weeks
+    once already (see the NVIDIA_MODEL note at the top of this file).
+    """
+    for label, enabled, call in (("nvidia", NVIDIA_API_KEY, _nvidia_json),
+                                 ("groq", GROQ_API_KEY, _groq_json)):
         if not enabled:
+            if notes is not None:
+                notes.append(f"{label}: no API key configured")
             continue
         try:
             out = call(system_prompt, user_msg, temperature)
             if isinstance(out, dict) and (not require or require in out):
                 return out
-        except Exception:
-            pass
+            if notes is not None:
+                keys = list(out)[:6] if isinstance(out, dict) else type(out).__name__
+                notes.append(f"{label}: answered without required key "
+                             f"'{require}' (got {keys})")
+        except Exception as e:  # a fallback must never crash the ladder
+            if notes is not None:
+                notes.append(f"{label}: {type(e).__name__}: {str(e)[:160]}")
     return None
 
 
@@ -438,13 +460,14 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float,
                                quotas are per model, so its pool is separate.
       Both Gemini pools dry -> Groq-hosted Llama (separate vendor entirely).
     """
+    rungs: list[str] = []  # why each non-Gemini rung failed, for the error message
     if not GEMINI_API_KEY:
-        fb = _fallback_json(system_prompt, user_msg, temperature, require)
+        fb = _fallback_json(system_prompt, user_msg, temperature, require, rungs)
         if fb is not None:
             return fb
         raise PlanError(
             "GEMINI_API_KEY is not set (and no NVIDIA/Groq fallback answered). "
-            "Add keys to adgen-backend/.env."
+            "Add keys to adgen-backend/.env. Fallbacks: " + "; ".join(rungs)
         )
     body = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
@@ -484,10 +507,14 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float,
             retryable = code is None or code in (429, 500, 503)
             if is_last or not retryable:
                 # separate vendors — NVIDIA (Qwen) then Groq (Llama)
-                fb = _fallback_json(system_prompt, user_msg, temperature, require)
+                fb = _fallback_json(system_prompt, user_msg, temperature, require, rungs)
                 if fb is not None:
                     return fb
-                raise PlanError(last_err) from None
+                # Name EVERY rung. "Gemini failed (503)" alone sends debugging at
+                # Gemini when the real story is that the whole ladder is down.
+                raise PlanError(
+                    f"{last_err} | fallbacks also failed -> {'; '.join(rungs)}"
+                ) from None
             if code == 429 and is_status:
                 m = re.search(r"retry in ([0-9.]+)s", e.response.text)
                 time.sleep(min(float(m.group(1)) + 1.0 if m else 30.0, 45.0))
@@ -510,10 +537,13 @@ def _gemini_json(system_prompt: str, user_msg: str, temperature: float,
         # a 200 response can still carry broken/wrong-shape JSON (long verbatim
         # briefs are the usual trigger) — that must fall through to NVIDIA/Groq
         # exactly like an HTTP error does, not dead-end the whole ladder.
-        fb = _fallback_json(system_prompt, user_msg, temperature, require)
+        fb = _fallback_json(system_prompt, user_msg, temperature, require, rungs)
         if fb is not None:
             return fb
-        raise PlanError(f"Gemini returned an unparseable plan: {e}") from None
+        raise PlanError(
+            f"Gemini returned an unparseable plan: {e} | "
+            f"fallbacks also failed -> {'; '.join(rungs)}"
+        ) from None
 
 
 QUESTIONS_PROMPT = """\
@@ -573,6 +603,141 @@ def spoken_seconds(script: str, language: str = "en") -> float:
     return round(words / rate + breaths, 1)
 
 
+# ---------------------------------------------------------------------------
+# THE SCRIPT DOCTOR (2026-09-08). The stage this platform never had.
+#
+# Before today the user's words had exactly two fates, both wrong:
+#   * text that did not trip looksLikeScript() was passed as `idea` only — the
+#     planner then AUTHORED its own narration from SYSTEM_PROMPT, which is 266
+#     lines of documentary-film craft and 4 lines about selling. The output was
+#     a beautiful short film that never made an argument.
+#   * text that did trip it was passed with verbatim=True and copied back
+#     byte-identically by _enforce_verbatim.
+# Neither path ever turned a brief into AD COPY. That is what this does. It is a
+# separate call on purpose: writing the words and directing the pictures are
+# different jobs, and fusing them into SYSTEM_PROMPT is what let the film craft
+# drown the selling in the first place.
+AD_SCRIPT_PROMPT = """\
+You are a senior AD COPYWRITER at an Indian performance-creative shop. You are NOT a
+film director — you do not describe shots, cameras or lighting. You write the WORDS a
+short social ad says out loud, and only those.
+
+Turn the user's brief into a finished ad script with a real selling structure:
+
+  HOOK      the first line. It must stop a thumb in under 2 seconds. Open on the
+            viewer's problem, a sharp question, or a concrete surprising claim —
+            never on the brand's name, never on "introducing", never on a greeting.
+  PROBLEM   name the pain the viewer already feels, in their own words.
+  TURN      the pivot — the moment the ad stops agreeing with the problem and
+            introduces the thing that changes it.
+  SOLUTION  what the product actually does about it. Concrete, not adjectives.
+  PROOF     one credible reason to believe: a number, a guarantee, a duration, a
+            named ingredient, a person who uses it. Skip ONLY if the brief gives
+            you nothing to stand on — never fabricate one.
+  CTA       the last line. One unmistakable next action ("Order on WhatsApp today",
+            "Visit our Andheri store this Sunday"). An ad without a CTA has failed.
+
+HARD RULES
+- NEVER INVENT FACTS. Prices, discounts, offers, delivery times, certifications,
+  ratings, medical or income claims, and the brand name itself may appear ONLY if
+  the brief supplies them. If the brief has no offer, write a CTA that needs none
+  ("Order on WhatsApp today"). Inventing a claim for an Indian SMB is a legal
+  problem for them, not a creative flourish. List anything you WISH you had in
+  `missing`.
+- The brief's own specifics are sacred: keep the brand name, product name, the
+  offer and any number exactly as the user wrote them.
+- BUDGET THE WORDS. You are given a word budget for the target duration. The whole
+  script must fit inside it — a script that overruns gets cut off mid-sentence by
+  the renderer, which is the single most common way an ad ships broken. Count.
+- SPOKEN, NOT WRITTEN. Every line must survive being read aloud by a text-to-speech
+  voice: flowing natural sentences a person would actually say. Never colon
+  constructions or fragment lists ("X: luxury and tradition.") — they synthesize
+  robotic. Never a sentence longer than ~14 words.
+- LANGUAGE. Write in the requested language. In Hindi, use DEVANAGARI for the
+  speech, but keep brand names and English product terms in Latin script — that is
+  how real Hinglish ad copy reads and how the voice engine pronounces them right.
+- ON-SCREEN TEXT is a separate layer from speech. For each beat you MAY give a
+  `super`: at most 4 words, the phrase worth burning on screen for the ~70% who
+  watch muted. The brand and the offer belong here. Never put the super's words in
+  the spoken line as well — they should reinforce, not echo.
+- Do not write shot descriptions, camera moves, or visual direction anywhere. A
+  different brain does the pictures. `visual` is a one-line note about WHAT WE SEE
+  in plain words (a person, a place, the product) — no film vocabulary.
+
+Return STRICT JSON only (no markdown fences):
+{"beats": [{"role": "hook|problem|turn|solution|proof|cta",
+            "line": "<the exact spoken words for this beat>",
+            "super": "<= 4 words burned on screen, or null>",
+            "visual": "<plain words: what we see>"}],
+ "brand": "<brand name if the brief gave one, else null>",
+ "offer": "<the offer if the brief gave one, else null>",
+ "missing": ["<facts you needed and the brief did not supply>"],
+ "rationale": "<one sentence: why this angle sells this product>"}
+Order the beats as the ad plays. 4-7 beats."""
+
+# Roles that make an ad an ad. `cta` is non-negotiable — a script without one is a
+# brand film, and the whole complaint that started this work was "it doesn't feel
+# like an ad".
+_AD_ROLES = ("hook", "problem", "turn", "solution", "proof", "cta")
+
+
+def ad_script_word_budget(duration_s: int, language: str = "en") -> int:
+    """How many spoken words actually fit in `duration_s`.
+
+    Mirrors spoken_seconds() in the other direction, minus a 12% safety margin so
+    the assembly-time fit (which speeds a long voice up to 1.12x) never has to
+    rescue us. Hindi runs far slower per word than English, so an English budget
+    applied to a Hindi script overruns by ~25% every time.
+    """
+    rate = WORDS_PER_SEC.get((language or "en")[:2], 2.4)
+    return max(8, int(duration_s * rate * 0.88))
+
+
+def write_ad_script(brief: str, language: str = "en", duration_s: int = 15,
+                    product: str | None = None) -> dict:
+    """Turn a rough brief (or a rough script) into structured AD COPY.
+
+    Returns {script, beats, brand, offer, missing, rationale, spoken_s, structure}.
+    `script` is the assembled spoken words, ready to hand to plan(verbatim=True) or
+    to show the user for approval BEFORE any GPU is spent on pictures.
+    """
+    if not brief or not brief.strip():
+        raise PlanError("write_ad_script needs a brief")
+    budget = ad_script_word_budget(duration_s, language)
+    user_msg = (
+        f"Language for the spoken words: {language}\n"
+        f"Target duration: {duration_s} seconds\n"
+        f"WORD BUDGET for the whole script: {budget} words maximum. Count before answering.\n"
+        + (f"Product/business: {product.strip()}\n" if product and product.strip() else "")
+        + f"\n=== THE BRIEF — write the ad from this ===\n{brief.strip()}\n=== END BRIEF ==="
+    )
+    out = _gemini_json(AD_SCRIPT_PROMPT, user_msg, temperature=0.8, require="beats")
+    beats = [b for b in (out.get("beats") or []) if (b.get("line") or "").strip()]
+    if not beats:
+        raise PlanError("the copywriter returned no beats")
+    for b in beats:
+        role = str(b.get("role") or "").strip().lower()
+        b["role"] = role if role in _AD_ROLES else "solution"
+        sup = (b.get("super") or "").strip()
+        # A "super" longer than 4 words does not fit a 9:16 safe zone and drawtext
+        # does not wrap — clamp here rather than discover it at burn time.
+        b["super"] = " ".join(sup.split()[:4]) if sup else None
+        b["visual"] = (b.get("visual") or "").strip()
+    script = " ".join(b["line"].strip() for b in beats)
+    return {
+        "script": script,
+        "beats": beats,
+        "brand": (out.get("brand") or None),
+        "offer": (out.get("offer") or None),
+        "missing": [str(m)[:120] for m in (out.get("missing") or [])[:6]],
+        "rationale": str(out.get("rationale") or "")[:400],
+        "spoken_s": spoken_seconds(script, language),
+        "structure": [b["role"] for b in beats],
+        "word_budget": budget,
+        "words": len(_words(script)),
+    }
+
+
 # Per-MODE director personas. When the user is on a specific mode's surface we force
 # every approach onto that pipeline and put the brain in that director's chair, instead
 # of the generic 3-approach planner that MAY pick the pipeline. This is the "each brain
@@ -611,7 +776,8 @@ MODE_DIRECTIVES = {
 def plan(idea: str, language: str = "en", ad_format: str = "9:16",
          duration_s: int = 15, avoid: list[str] | None = None,
          cast: list[dict] | None = None, script: str | None = None,
-         verbatim: bool = False, mode: str | None = None) -> dict:
+         verbatim: bool = False, mode: str | None = None,
+         structure: bool = False) -> dict:
     """Ask Gemini for 3 proposed ad approaches. Returns the parsed proposals dict.
 
     `avoid` carries the titles of directions the user already rejected (the
@@ -623,13 +789,38 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
     `mode` (optional) locks every approach to one pipeline and puts the brain in
     that mode's director chair (MODE_DIRECTIVES) — e.g. a cinematic surface plans
     like a cinematic director instead of the generic auto-router.
+    `structure` (2026-09-08) runs the SCRIPT DOCTOR first: whatever the user gave
+    us — a one-line brief or a rough script — is rewritten into real ad copy
+    (hook/problem/turn/solution/proof/CTA, inside the duration's word budget) and
+    THAT becomes the verbatim script the pictures are built around. This is the
+    third option the platform was missing; without it the user's words were either
+    discarded (planner authors its own) or frozen (verbatim), never converted.
     """
+    # THE SCRIPT DOCTOR runs BEFORE any picture planning: words first, then the
+    # film that carries them. Its output is fed back in as a verbatim script, so
+    # the existing (well-tested) verbatim path does the rest unchanged.
+    ad_script: dict | None = None
+    if structure:
+        ad_script = write_ad_script(script or idea, language=language,
+                                    duration_s=duration_s, product=idea)
+        script = ad_script["script"]
+        verbatim = True
     user_msg = (
         f"Ad idea: {idea}\n"
         f"Language for narration: {language}\n"
         f"Format: {ad_format}\n"
         f"Target duration: {duration_s} seconds"
     )
+    if ad_script:
+        # Tell the director what each line is DOING. Without the beat roles the
+        # planner grades a CTA like any other line and the ad ends on a mood shot.
+        roles = " -> ".join(b["role"] for b in ad_script["beats"])
+        user_msg += (
+            f"\n\nThis script is already structured as an AD: {roles}. Give each "
+            f"beat a picture that serves its job — the hook must land a face or the "
+            f"problem in frame within 2 seconds, and the CTA beat must stay on the "
+            f"product/brand, NOT drift to an empty landscape."
+        )
     if mode and mode in MODE_DIRECTIVES:
         user_msg += f"\n\n{MODE_DIRECTIVES[mode]}"
     if cast:
@@ -709,6 +900,10 @@ def plan(idea: str, language: str = "en", ad_format: str = "9:16",
     proposals["approaches"] = proposals["approaches"][:PLAN_APPROACHES]
     if verbatim and script and script.strip():
         _enforce_verbatim(proposals, script.strip())
+    if ad_script:
+        # The UI shows this for approval/editing BEFORE any GPU spend, and the
+        # caption layer reads `beats[].super` for the muted-viewer text.
+        proposals["ad_script"] = ad_script
     return proposals
 
 

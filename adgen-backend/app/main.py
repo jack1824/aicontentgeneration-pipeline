@@ -173,6 +173,13 @@ def _voice_locked(path: Path) -> bool:
 class Shot(BaseModel):
     prompt: str                          # Wan 2.2 positive box
     negative_prompt: str | None = None   # Wan 2.2 negative box
+    # Craft fields the planner emits (cinematic requires them; optional elsewhere).
+    # shot_type also decides identity locking: "detail" inserts are the atmospheric
+    # non-character beats, so they stay text-to-video even when a portrait is locked.
+    shot_type: Literal["wide", "medium", "close", "detail"] | None = None
+    # Explicit per-shot override of the identity lock. None = decide from shot_type.
+    # True forces this shot to animate from `identity_image`; False forces t2v.
+    identity: bool | None = None
 
 
 class DuoTurn(BaseModel):
@@ -211,6 +218,11 @@ class GenerateRequest(BaseModel):
     music: str | None = None             # optional path to a music bed
     end_card: dict | None = None         # branded end frame {brand, tagline?, offer?, image?}
     quality: Literal["quality", "fast"] = "quality"   # fast = 4-step preview mode
+    # IDENTITY LOCK (2026-09-08): a portrait of the recurring character. With it,
+    # character shots animate FROM this image (Wan i2v) instead of being re-invented
+    # from a text description on every clip (Wan t2v, which has no image input at
+    # all and so cannot hold a face across cuts). Per-shot override: Shot.identity.
+    identity_image: str | None = None
     name: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9._-]+$")
     # ^ prefixes output files (outputs/video/<name>-*.mp4); defaults to the job id
     avatar_image: str | None = None      # lipsync: path to the reference face image
@@ -263,6 +275,11 @@ class PlanRequest(BaseModel):
     # and the film is sized to it; otherwise it is treated as a draft to improve.
     script: str | None = Field(default=None, max_length=12000)
     verbatim: bool = False
+    # Run the SCRIPT DOCTOR first (2026-09-08): rewrite whatever the user gave us
+    # into real ad copy — hook/problem/turn/solution/proof/CTA, inside the
+    # duration's word budget — and build the pictures around THAT. Overrides
+    # `verbatim` (the doctor's output becomes the verbatim script).
+    structure: bool = False
     # Force a specialized director brain instead of the generic 3-approach planner.
     # None = auto (the brain picks the pipeline). Set from the mode the user is on so
     # a cinematic surface plans like a cinematic director, a sequence surface like an
@@ -281,6 +298,30 @@ def plan_questions_endpoint(req: PlanQuestionsRequest):
     hardcoded audience/vibe questions). Rides the full LLM ladder incl. Groq."""
     try:
         return llm.plan_questions(req.idea, language=req.language)
+    except llm.PlanError as e:
+        raise HTTPException(502, str(e))
+
+
+class AdScriptRequest(BaseModel):
+    """Brief -> finished AD COPY, with nothing rendered yet."""
+    brief: str = Field(min_length=3, max_length=12000)
+    language: str = "en"
+    duration_s: int = Field(default=15, ge=5, le=60)
+    product: str | None = Field(default=None, max_length=400)
+
+
+@app.post("/ad-script")
+def ad_script_endpoint(req: AdScriptRequest):
+    """Turn a rough brief (or a rough script) into a structured ad script.
+
+    The stage the platform never had. Synchronous on purpose: this is ONE short
+    Gemini call (no shot planning), it returns in a few seconds, and the user is
+    sitting in front of the words waiting to edit them. The ~100s tunnel cap that
+    forced /plan to go async does not bite here.
+    """
+    try:
+        return llm.write_ad_script(req.brief, language=req.language,
+                                   duration_s=req.duration_s, product=req.product)
     except llm.PlanError as e:
         raise HTTPException(502, str(e))
 
@@ -306,7 +347,8 @@ def plan_endpoint(req: PlanRequest):
             result = llm.plan(req.idea, language=req.language, ad_format=req.format,
                               duration_s=req.duration_s, avoid=req.avoid or None,
                               cast=cast or None, script=req.script,
-                              verbatim=req.verbatim, mode=req.mode)
+                              verbatim=req.verbatim, mode=req.mode,
+                              structure=req.structure)
             _update(job_id, status="done", progress=100, detail="", plan=result)
         except llm.PlanError as e:
             _update(job_id, status="error", error=str(e))
@@ -861,7 +903,10 @@ def brand_pass_endpoint(req: BrandPassRequest):
                 _update(job_id, status="assembling", progress=25, detail="burning captions")
                 work = ffmpeg.burn_captions(
                     work, [c.model_dump() for c in req.captions],
-                    out=str(src.with_name(f"{src.stem}-captioned.mp4")))
+                    out=str(src.with_name(f"{src.stem}-captioned.mp4")),
+                    # Devanagari through an unshaped drawtext renders broken. It
+                    # must reach job.warnings, not vanish into the worker thread.
+                    on_warning=lambda w: _warn(job_id, w))
             final = work
             if req.brand:
                 _update(job_id, status="assembling", progress=60, detail="product end card")
