@@ -45,13 +45,18 @@ if NVIDIA_API_KEY and not NVIDIA_API_KEY.startswith("nvapi-"):
 _NVIDIA_MODEL = os.getenv("QC_NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct")
 _NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
-# Third judge: Groq-hosted Llama-4 vision (OpenAI-compatible API, separate
-# vendor = truly independent quota). The gate must never go blind just
-# because one or two vendors throttle us.
+# Third judge: Groq-hosted Qwen vision (OpenAI-compatible API, separate vendor =
+# truly independent quota). The gate must never go blind just because one or two
+# vendors throttle us. There is no Llama-4 vision model on this account despite
+# what these comments used to claim — qwen3.8 is the ONLY vision-capable id Groq
+# exposes here; every other chat model rejects image_url parts with a 400.
+# The id carries a MINOR version: 3.6 was retired and 404'd silently for weeks,
+# which is how the last rung died. When the dashboard probe flags it, bump the
+# minor version via QC_GROQ_MODEL first — it is usually a rename, not an outage.
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip().strip("\"'“”")
 if GROQ_API_KEY and not GROQ_API_KEY.startswith("gsk_"):
     GROQ_API_KEY = ""  # a non-Groq paste (e.g. an AIza Google key) — ignore it
-_GROQ_MODEL = os.getenv("QC_GROQ_MODEL", "qwen/qwen3.6-27b")
+_GROQ_MODEL = os.getenv("QC_GROQ_MODEL", "qwen/qwen3.8-27b")
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 # A freeze under this long can be a deliberate hold; over it reads as a glitch
 # (the dentist audit found a 1.2s dead-frame span a viewer reads as buffering).
@@ -261,6 +266,13 @@ def _openai_style_review(url: str, key: str, model: str, judge: str,
     # max_tokens on BOTH paths: a NIM in json_object mode still needs room, and
     # its low default truncated the verdict mid-object so every parse failed.
     body["max_tokens"] = 2048
+    # Scoring must be DETERMINISTIC. Left unset, these endpoints default to ~1.0
+    # and the same pixels scored sharpness 5, then 3, then 3 on consecutive calls,
+    # with brand_legible flipping "yes"/"n/a". review_clip's caller ships the
+    # best-scoring take, so a +/-2 swing on identical frames made take selection
+    # partly a coin flip — the gate is supposed to be selection, not luck. At 0.1
+    # the same clip returns byte-identical verdicts across runs.
+    body["temperature"] = 0.1
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     for i in range(max(1, attempts)):
@@ -280,9 +292,26 @@ def _openai_style_review(url: str, key: str, model: str, judge: str,
             if i == attempts - 1:
                 _note(f"returned prose instead of JSON on all {attempts} attempts")
         except httpx.HTTPStatusError as e:
-            _note(f"HTTP {e.response.status_code}"
-                  + (" — model id retired upstream" if e.response.status_code == 404 else ""))
-            return None  # a bad id / bad key / quota does not improve on retry
+            code = e.response.status_code
+            # Split permanent from transient. A retired id (404), a bad key (401)
+            # or a forbidden model (403) is identical on the next call, so bail and
+            # let the ladder move on. But Groq's on-demand tier meters ~8k input
+            # tokens/min — roughly three QC calls — and throws 429/503 under load;
+            # treating those as permanent blinded the LAST rung for a reason that
+            # clears in seconds, which is the same silent-fallthrough class as the
+            # NVIDIA prose bug. Backoff stays small: a render thread waits here.
+            # 429 is NOT retried here even though it is transient. Groq's on-demand
+            # tier meters ~8k input tokens on a ROLLING MINUTE and one 3-frame call
+            # is ~2.5k, so a rate-limited rung needs tens of seconds to clear — far
+            # longer than a render thread should sit blocked, and a short backoff
+            # just burns 4.5s to fail anyway (measured). Let the ladder degrade and
+            # say so. 5xx is genuine momentary capacity and does clear in seconds.
+            if code not in (500, 502, 503, 504) or i == attempts - 1:
+                _note(f"HTTP {code}"
+                      + (" — model id retired upstream" if code == 404 else "")
+                      + (" — rate limited, ladder degraded to local checks" if code == 429 else ""))
+                return None
+            time.sleep(1.5 * (i + 1))
         except Exception as e:  # transport, decode, schema
             if i == attempts - 1:
                 _note(f"{type(e).__name__}")
@@ -380,21 +409,26 @@ def vision_review(path: str, context: str,
     out = _nvidia_review(frames[len(frames) // 2:len(frames) // 2 + 1], context, notes)
     if out:
         return out
-    # Last rung. Groq's vision context is tighter than the others' — full-size frames
-    # come back 413 Payload Too Large — so re-sample lighter instead of losing the judge.
-    try:
-        small = _frames_b64(path, n=2, width=448, q=6)
-    except Exception:
-        small = frames
+    # Last rung, FULL SIZE FIRST. This used to send 2 frames re-sampled to 448px to
+    # dodge a 413 that no longer occurs — a 3-frame 768px request now returns 200,
+    # and Groq bills a flat ~790 tokens per image regardless of resolution, so the
+    # only cost of full size is the third frame. The downsample was not free: on the
+    # same clip the 448px thumbnails passed it clean while full size caught
+    # "background car distorts and disappears". We were handing the judge degraded
+    # thumbnails and then asking it to rate sharpness.
     probe: list[str] = []
-    out = _groq_review(small, context, probe)
+    out = _groq_review(frames, context, probe)
     if out:
         return out
-    # Only re-try at full size if the small payload failed for a NON-HTTP reason.
-    # A 404 (retired model id) or 401 repeats identically at full size, and each
-    # wasted round-trip blocks the render thread.
-    if not any("HTTP" in p for p in probe):
-        out = _groq_review(frames, context, probe)
+    # Fall back to the light payload only when the full-size call was REJECTED for
+    # size or rate (413/429). A 404 or 401 repeats identically when smaller, and
+    # each wasted round-trip blocks the render thread.
+    if any(("413" in p or "429" in p) for p in probe):
+        try:
+            small = _frames_b64(path, n=2, width=448, q=6)
+        except Exception:
+            small = frames
+        out = _groq_review(small, context, probe)
         if out:
             return out
     if notes is not None:
