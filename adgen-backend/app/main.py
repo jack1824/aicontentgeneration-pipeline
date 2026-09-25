@@ -180,6 +180,13 @@ class Shot(BaseModel):
     # Explicit per-shot override of the identity lock. None = decide from shot_type.
     # True forces this shot to animate from `identity_image`; False forces t2v.
     identity: bool | None = None
+    # An approved still this shot animates FROM (stills-first cinematic). Its
+    # presence is what switches ltx2_av.json's dormant first-frame lane on — see
+    # workflow_mappings.enable_ltx_first_frame. Without it three shots of one ad
+    # are three unconditioned text-to-video rolls, which is why the same ad came
+    # back with three different sweaters, mugs and kitchens despite byte-identical
+    # character blocks. Segment already had this field; Shot did not.
+    image: str | None = None
 
 
 class DuoTurn(BaseModel):
@@ -223,6 +230,17 @@ class GenerateRequest(BaseModel):
     # from a text description on every clip (Wan t2v, which has no image input at
     # all and so cannot hold a face across cuts). Per-shot override: Shot.identity.
     identity_image: str | None = None
+    # STILLS-FIRST CINEMATIC. With lock_identity, a cinematic ad renders in two
+    # stages: one Qwen-Image-Edit keyframe per shot, every one derived from the
+    # SAME identity_image (and plate_image, when given), then each shot animates
+    # FROM its own approved still. Without it, three shots of one ad are three
+    # unconditioned text-to-video rolls — which is how the coffee ad came back
+    # with three different sweaters, three mugs and two kitchens despite
+    # byte-identical character blocks. Costs one still per shot (~30-45s each).
+    lock_identity: bool = False
+    # The room. Held as the third Qwen reference so the SET stops drifting too —
+    # identity alone fixed the sweater but not the kitchen.
+    plate_image: str | None = None
     name: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9._-]+$")
     # ^ prefixes output files (outputs/video/<name>-*.mp4); defaults to the job id
     avatar_image: str | None = None      # lipsync: path to the reference face image

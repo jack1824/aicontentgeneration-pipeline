@@ -8,6 +8,7 @@ Output layout (user's rule: exactly TWO flat folders, matching names, no per-job
     outputs/video/<name>-clip1.mp4, <name>-clip2.mp4, ..., <name>-final.mp4
     outputs/audio/<name>-narration.mp3
 """
+import copy
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,7 @@ from app.workflow_mappings import (
     WAN_S2V_MAPPING,
     WAN_S2V_FAST_INPUTS,
     WAN_T2V_MAPPING,
+    enable_ltx_first_frame,
 )
 
 DEFAULT_BASE_SEED = 1000
@@ -325,8 +327,16 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
             "three generations each:\n  " + "\n  ".join(thin)
             + "\nName the concrete objects in frame and one physical action.")
 
+    # `locked` must only be true where an image lane actually EXISTS. It strips
+    # cast injection and re-points the camera defaults at a reference frame, so
+    # asserting it on a mode that then renders pure text-to-video is strictly
+    # worse than not asking for identity at all: the one consistency mechanism
+    # that lane had is removed and nothing replaces it. Cinematic qualifies only
+    # per-shot, when that shot carries an approved still.
+    _IMAGE_LANE_MODES = ("overlay", "product", "ingredients")
     for shot in req.get("shots") or []:
-        locked = identity_on and wants_identity(shot, True)
+        has_lane = mode in _IMAGE_LANE_MODES or (mode == "cinematic" and shot.get("image"))
+        locked = bool(identity_on and has_lane and wants_identity(shot, True))
         # A shot that animates FROM the character's portrait must NOT also carry
         # a text description of that character: the anchor competes with the
         # start image and pulls the render back toward a re-imagined face. This
@@ -335,7 +345,8 @@ def generate(req: dict, name: str, on_progress=None, on_submit=None) -> str:
             shot["prompt"] = inject_cast(shot["prompt"], anchors)
         promptcraft.enhance_shot(
             shot, engine=_ENGINE_FOR_MODE.get(mode, "ltx"),
-            image_anchored=locked or mode in ("product", "ingredients"))
+            image_anchored=bool(locked or shot.get("image")
+                                or mode in ("product", "ingredients")))
     for seg in req.get("segments") or []:
         if not seg.get("prompt"):
             continue
@@ -1180,6 +1191,42 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
     fast = req.get("quality") == "fast"
     clips: list[str] = []
     qc_records: list[dict] = []
+    # Pod-side name per local reference path, so a still reused across shots
+    # (one locked room plate, say) uploads once instead of once per take.
+    _uploaded: dict[str, str] = {}
+
+    # STILLS-FIRST PRE-PASS. One keyframe per shot, every one derived from the
+    # SAME hero portrait (and room plate when supplied), then each shot animates
+    # from its own still. This is the fix for shot-to-shot drift: three shots of
+    # one ad rendered as independent text-to-video rolls produced three different
+    # sweaters, three mugs and two kitchens even with byte-identical character
+    # blocks, because identical TEXT cannot constrain separate diffusion runs.
+    # Shots that already carry an approved `image` are left alone — a human
+    # approval must never be silently regenerated.
+    if req.get("lock_identity") and req.get("identity_image") and any(
+            not s.get("image") for s in shots):
+        from app import keyframes
+        pending = [(i, s) for i, s in enumerate(shots) if not s.get("image")]
+        report("generating", 6,
+               f"locking identity — deriving {len(pending)} keyframe(s) from the hero still")
+        try:
+            stills = keyframes.derive_action_set(
+                hero_still=req["identity_image"],
+                character_image=req["identity_image"],
+                plate_image=req.get("plate_image"),
+                actions=[s["prompt"] for _, s in pending],
+                name=name,
+                seed=(req.get("seed") or DEFAULT_BASE_SEED),
+                on_submit=on_submit)
+            for (idx, shot_), still in zip(pending, stills):
+                shot_["image"] = still
+        except Exception as e:
+            # Degrade to text-to-video rather than lose the ad. Continuity will be
+            # weaker and the warning says so, which is far better than a job that
+            # dies after the TTS spend because a keyframe edit failed.
+            report("generating", 6,
+                   f"⚠ identity lock unavailable ({type(e).__name__}) — rendering "
+                   f"text-to-video; shot-to-shot consistency will be weaker")
     for i, shot in enumerate(shots):
         pct = 10 + int(75 * i / len(shots))
         report("generating", pct, f"cinematic clip {i + 1}/{len(shots)} (~5s @25fps + audio)")
@@ -1202,9 +1249,32 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
         if shot.get("negative_prompt"):
             inputs["negative_prompt"] = shot["negative_prompt"]
 
-        def render(out, bump, inputs=inputs):
+        # IDENTITY LOCK. When a shot carries an approved still, animate FROM it
+        # instead of from text alone. Three shots of one ad rendered as three
+        # independent text-to-video rolls gave three different sweaters, mugs and
+        # kitchens even with byte-identical character/setting blocks — identical
+        # text is simply not a strong enough constraint across separate runs.
+        # Anchored on a still, the same generation holds face, wardrobe, room,
+        # lighting and grade while the action still plays out.
+        shot_wf = wf
+        if shot.get("image"):
+            ref = Path(shot["image"])
+            if not ref.exists():
+                raise FileNotFoundError(f"shot {i + 1} keyframe not found: {ref}")
+            pod_name = _uploaded.get(str(ref))
+            if pod_name is None:
+                # Unique pod-side name: two ads can both have a "k1.png".
+                pod_name = comfy.upload_file(
+                    pod, str(ref), remote_name=f"{name}-ref{i + 1}{ref.suffix}")
+                _uploaded[str(ref)] = pod_name
+            # Per-shot copy: enable_ltx_first_frame mutates the graph, and every
+            # shot needs its own reference image.
+            shot_wf = enable_ltx_first_frame(copy.deepcopy(wf), pod_name,
+                                             final_w, final_h)
+
+        def render(out, bump, inputs=inputs, shot_wf=shot_wf):
             inp = {k: (v + bump if k.startswith("seed") else v) for k, v in inputs.items()}
-            return comfy.comfy_generate(pod, wf, inp, LTX2_MAPPING,
+            return comfy.comfy_generate(pod, shot_wf, inp, LTX2_MAPPING,
                                         out_path=out, on_submit=on_submit)
         clips.append(_render_takes(
             render, str(LTX_VIDEO_DIR / f"{name}-clip{i + 1}.mp4"),

@@ -137,6 +137,14 @@ def _derive_keyframe_pod(pod: str, scene: str, out_path: str,
         wf.pop("79", None)
         for enc in ("76", "77"):
             wf[enc]["inputs"].pop("image2", None)
+    # Node 80 (image3) exists in the graph for the three-reference path
+    # (derive_action_set: approved keyframe + person + room). Every OTHER caller
+    # must strip it, or the pod tries to LoadImage a ref3.png that was never
+    # uploaded and the whole edit 400s on a missing file.
+    if "image3" not in inputs:
+        wf.pop("80", None)
+        for enc in ("76", "77"):
+            wf[enc]["inputs"].pop("image3", None)
     tmp_png = str(Path(out_path).with_suffix(".tmp.png"))
     try:
         comfy.comfy_generate(pod, wf, inputs, QWEN_EDIT_MAPPING,
@@ -330,6 +338,11 @@ def composite_into_scene(character_image: str, plate_image: str, out_path: str,
                 pod, character_image,
                 remote_name=f"kf-{uuid.uuid4().hex[:8]}-2{Path(character_image).suffix}"),
         }
+        # This is a TWO-reference edit; strip the third LoadImage the graph now
+        # carries for derive_action_set, or the pod 400s on a missing ref3.png.
+        wf.pop("80", None)
+        for enc in ("76", "77"):
+            wf[enc]["inputs"].pop("image3", None)
         tmp_png = str(Path(out_path).with_suffix(".tmp.png"))
         try:
             comfy.comfy_generate(pod, wf, inputs, QWEN_EDIT_MAPPING,
@@ -427,4 +440,102 @@ def derive_variants(portrait: str, name: str,
                         f"variant {i + 1}/{len(scenes)}: {chosen[i]}")
         out.append(derive_keyframe(
             scene, str(KEYFRAMES_DIR / f"{name}-{tag}.png"), character_image=portrait))
+    return out
+
+
+# --- Three-reference action set (ad continuity, 2026-09-25) --------------------
+# A 3-shot cinematic coffee ad rendered the character in a heather-grey crewneck
+# in shots 1 and 3 and a cream cable-knit in shot 2; the mug changed colour and
+# the kitchen changed layout — with the character/setting/look blocks pasted
+# BYTE-IDENTICAL into all three prompts. Each shot is an independent diffusion
+# run, and identical TEXT is not a strong enough constraint. A reference image is.
+#
+# So: one approved hero keyframe, then one still PER BEAT that changes only the
+# action. Those stills seed ltx2_av's first-frame lane (see
+# workflow_mappings.enable_ltx_first_frame), and every shot of the ad then starts
+# from the same person in the same room under the same light.
+#
+# Three references, not two. TextEncodeQwenImageEditPlus accepts image1/image2/
+# image3 (confirmed against the live pod's schema, and proven consumed: the same
+# seed with and without image3 returns different bytes). image1 is the approved
+# keyframe and also sets the output aspect via 93->88->31; image2 re-asserts the
+# face and wardrobe; image3 re-asserts the room. Holding all three at once is
+# what pins the sweater, the mug AND the kitchen.
+_ACTION_SET_TEMPLATE = """\
+Reference image 1: the APPROVED KEYFRAME — this is the master.
+Reference image 2: the PERSON.
+Reference image 3: the ROOM.
+
+Reproduce reference image 1 EXACTLY: same person, same face, same hairstyle, same \
+garments in the same colours and fabrics, same room, same camera position, same \
+lens, same lighting and the same colour grade.
+
+CHANGE ONLY THIS: {action}
+
+STRICT RULES:
+- Do NOT change the wardrobe. Do NOT change the room, its fittings or its props.
+- Do NOT change the time of day, the light direction or the colour grade.
+- Do NOT re-frame: keep the same shot size and camera height as reference image 1.
+- Keep the subject's face fully visible and in frame.
+- Photographic realism, natural skin texture, no text or watermarks anywhere."""
+
+
+def derive_action_set(hero_still: str,
+                      character_image: str,
+                      plate_image: str | None,
+                      actions: list[str],
+                      name: str,
+                      seed: int | None = None,
+                      on_submit=None) -> list[str]:
+    """One still per beat, all locked to the same person / room / grade.
+
+    `hero_still` is the APPROVED master frame every beat is a variation of.
+    `character_image` re-asserts identity; `plate_image` re-asserts the room and
+    may be None (then it degrades to the existing two-reference edit).
+
+    Seeds are DERIVED, not random: beat k always renders at seed+k, so a re-run
+    reproduces the same set and an approved ad stays approved."""
+    if not actions:
+        return []
+    pod = (COMFY_POD_URLS[0] if COMFY_POD_URLS else "").rstrip("/")
+    base = seed if seed is not None else random.randint(1, 2**31 - len(actions) - 1)
+    out: list[str] = []
+    for k, action in enumerate(actions):
+        dest = KEYFRAMES_DIR / f"{name}-beat{k + 1}.png"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not pod:
+            # No pod: fall back to the existing single-reference path rather than
+            # failing the ad outright. Identity will be weaker; that is still far
+            # better than three unconditioned text-to-video rolls.
+            out.append(derive_keyframe(action, str(dest),
+                                       character_image=character_image))
+            continue
+        wf = copy.deepcopy(comfy.load_workflow("qwen_image_edit"))
+        inputs: dict = {
+            "prompt": _ACTION_SET_TEMPLATE.format(action=action.strip()),
+            "negative_prompt": _KEYFRAME_NEGATIVE,
+            "seed": base + k,
+            "image1": comfy.upload_file(
+                pod, hero_still,
+                remote_name=f"as-{uuid.uuid4().hex[:8]}-1{Path(hero_still).suffix}"),
+            "image2": comfy.upload_file(
+                pod, character_image,
+                remote_name=f"as-{uuid.uuid4().hex[:8]}-2{Path(character_image).suffix}"),
+        }
+        if plate_image:
+            inputs["image3"] = comfy.upload_file(
+                pod, plate_image,
+                remote_name=f"as-{uuid.uuid4().hex[:8]}-3{Path(plate_image).suffix}")
+        else:
+            wf.pop("80", None)
+            for enc in ("76", "77"):
+                wf[enc]["inputs"].pop("image3", None)
+        tmp_png = str(dest.with_suffix(".tmp.png"))
+        try:
+            comfy.comfy_generate(pod, wf, inputs, QWEN_EDIT_MAPPING,
+                                 out_path=tmp_png, timeout=600, on_submit=on_submit)
+            Path(tmp_png).replace(dest)
+        finally:
+            Path(tmp_png).unlink(missing_ok=True)
+        out.append(str(dest))
     return out

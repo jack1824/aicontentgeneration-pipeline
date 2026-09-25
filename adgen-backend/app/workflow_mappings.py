@@ -261,5 +261,60 @@ QWEN_EDIT_MAPPING = {
     "cfg": ("31", "cfg"),
     "image1": ("78", "image"),
     "image2": ("79", "image"),
+    # Third reference slot. TextEncodeQwenImageEditPlus takes image1/image2/image3
+    # (verified against the live pod's schema, and proven consumed: the same seed
+    # with and without image3 produces different output). Wiring all three lets one
+    # edit hold the APPROVED KEYFRAME, the PERSON and the ROOM at once — which is
+    # what stops the sweater, the mug and the kitchen drifting between shots.
+    # Like node 79, node 80 is OPTIONAL: keyframes.py strips it and the encoders'
+    # image3 wires when fewer references are supplied.
+    "image3": ("80", "image"),
     "filename_prefix": ("60", "filename_prefix"),
 }
+
+
+def enable_ltx_first_frame(wf: dict, pod_image_name: str,
+                           final_w: int, final_h: int) -> dict:
+    """Turn ltx2_av.json from text-to-video into image-anchored video, in place.
+
+    WHY THIS EXISTS. A 3-shot cinematic ad rendered the character in a heather-grey
+    crewneck in shots 1 and 3 and a cream cable-knit in shot 2; the mug changed
+    colour and the kitchen changed layout. The character/setting/look blocks were
+    pasted BYTE-IDENTICAL into all three prompts and identity still broke, because
+    each shot is an independent diffusion run and identical text is not a strong
+    enough constraint. A reference image is.
+
+    The lane was already in the graph, switched off: nodes 249 and 230
+    (LTXVImgToVideoInplace, the base and refine passes) sit at bypass=true, fed by
+    248 LTXVPreprocess whose image comes from 325 EmptyImage — a 512x512 black
+    stub. That is the flattened remains of the official ComfyUI template
+    video_ltx2_3_t2v.json; our export kept the two i2v nodes and dropped the
+    resize chain between them.
+
+    Note `bypass` here is an INPUT of LTXVImgToVideoInplace, not ComfyUI's
+    node-level mute, so the image branch executes either way and 325 must stay a
+    valid image source for text-only renders. That is why this is a runtime graph
+    edit rather than a change to the JSON: one workflow serves both modes.
+
+    Verified end to end on an A6000 pod before being written: the edited graph ran
+    to success, kept its AAC 48kHz audio track, and frame 0 came back as the
+    conditioning image with frame 20 animating from it.
+    """
+    # 325: the black placeholder becomes the real still.
+    wf["325"] = {"class_type": "LoadImage", "inputs": {"image": pod_image_name}}
+    # 326/327 restore the template's resize chain. ImageScale rather than the
+    # template's ResizeImageMaskNode because that node's COMBO inputs do not
+    # serialise into API-format JSON; ImageScale is core and plain.
+    wf["326"] = {"class_type": "ImageScale",
+                 "inputs": {"image": ["325", 0], "upscale_method": "lanczos",
+                            "width": int(final_w), "height": int(final_h),
+                            "crop": "center"}}
+    wf["327"] = {"class_type": "ResizeImagesByLongerEdge",
+                 "inputs": {"images": ["326", 0], "longer_edge": 1536}}
+    wf["248"]["inputs"]["image"] = ["327", 0]
+    # One image feeds BOTH stages even though 228 is half-res and 253 is full-res;
+    # the upstream template does exactly this and the live run confirmed it, so do
+    # not add a second per-stage scaler.
+    wf["249"]["inputs"]["bypass"] = False
+    wf["230"]["inputs"]["bypass"] = False
+    return wf
