@@ -19,8 +19,10 @@ drift identity, wardrobe or product. Keyframes land in assets/keyframes/ and
 are served via /assets-files for the approval pass.
 """
 import base64
+import os
 import copy
 import random
+import subprocess
 import re
 import time
 import uuid
@@ -100,6 +102,45 @@ def _pod() -> str | None:
     return None
 
 
+# Every still that conditions a video gets sharpened before it is used.
+#
+# The client called finished ads "hazy" through several rounds while every
+# exposure metric said they were fine. The defect was ACUTANCE, and it originates
+# here: a Qwen-Image-Edit still measures 13.5% fine detail (share of spectral
+# energy above half-Nyquist) against 20.5% on a clip the client approved. LTX
+# image-conditioning inherits that softness into all 121 frames, so no grade,
+# unsharp or upscale downstream can put back what the reference never had.
+#
+# Measured on a real keyframe: 13.5% -> 18.4% at unsharp 0.8, 22.5% at 1.5,
+# 26.4% at 2.5. 1.5 lands just past the approved target without the crunchy edge
+# halos that 2.5 starts to show, so it is the default.
+KEYFRAME_SHARPEN = os.getenv("KEYFRAME_SHARPEN", "1.5")
+
+
+def _sharpen_still(path: str) -> str:
+    """Sharpen a conditioning still in place. Best-effort: a failure here must
+    never lose an expensive keyframe, so the unsharpened file survives."""
+    amt = KEYFRAME_SHARPEN
+    try:
+        if float(amt) <= 0:
+            return path
+    except (TypeError, ValueError):
+        return path
+    tmp = str(Path(path).with_suffix(".sharp.png"))
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", path,
+             "-vf", f"unsharp=5:5:{amt}:5:5:0.0", tmp],
+            capture_output=True, timeout=120)
+        if r.returncode == 0 and Path(tmp).exists():
+            Path(tmp).replace(path)
+    except Exception:
+        pass
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    return path
+
+
 def _derive_keyframe_pod(pod: str, scene: str, out_path: str,
                          character_image: str | None,
                          product_image: str | None,
@@ -152,6 +193,7 @@ def _derive_keyframe_pod(pod: str, scene: str, out_path: str,
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         Path(tmp_png).replace(out)
+        _sharpen_still(str(out))
     finally:
         Path(tmp_png).unlink(missing_ok=True)
     return str(out_path)
@@ -535,6 +577,7 @@ def derive_action_set(hero_still: str,
             comfy.comfy_generate(pod, wf, inputs, QWEN_EDIT_MAPPING,
                                  out_path=tmp_png, timeout=600, on_submit=on_submit)
             Path(tmp_png).replace(dest)
+            _sharpen_still(str(dest))
         finally:
             Path(tmp_png).unlink(missing_ok=True)
         out.append(str(dest))

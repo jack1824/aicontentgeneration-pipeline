@@ -185,7 +185,22 @@ def blur_mean(path: str) -> float | None:
 # a blown-out window or doorway behind the subject, washing the picture. Set from
 # measurement: a clean lamp-lit take reads 0.1%, an approved reference 0.4%, while
 # the shots a client twice called "very hazy" read 14-19%.
-BLOWN_FAIL_PCT = 8.0
+# RETIRED AS A GATE. blown_pct is still measured and reported because a genuinely
+# blown frame is worth seeing, but it must NOT reject takes: checked against the
+# client's own verdicts it is ANTI-CORRELATED. Clips he approved measure 7.2%,
+# 9.3% and 0.0%; clips he called hazy measure 5.3%, 7.4% and 4.2%. An 8% gate
+# would have thrown away a6000-coffee-v2 (approved) and passed every amlaroot
+# clip (rejected). "Hazy" never meant blown out.
+BLOWN_REPORT_PCT = 8.0
+
+# What "hazy" actually meant: SOFT. Fine detail, as the share of spectral energy
+# above half-Nyquist, separates the client's verdicts cleanly where exposure
+# metrics did not —
+#     approved: 16.35, 20.50, 21.84      rejected: 13.96, 14.73, 15.33, 16.07
+# so the boundary sits between them. The deficit originates in the CONDITIONING
+# STILL (an amla keyframe measures 13.5%), and image-anchored video inherits it,
+# which is why no grade or unsharp pass could ever fix it.
+DETAIL_FAIL_PCT = 16.2
 
 # The opposite failure, and one we shipped repeatedly while fixing the first.
 # Chasing blown highlights produced lamp-lit sets on dark wood that measured YAVG
@@ -193,6 +208,40 @@ BLOWN_FAIL_PCT = 8.0
 # video so dark". A gate on only one end of the exposure range just moves the
 # defect, so both ends are checked.
 DARK_FAIL_YAVG = 60.0
+
+
+def detail_pct(path: str, samples: int = 3) -> float | None:
+    """Fine detail: % of spectral energy above half-Nyquist, averaged over frames.
+
+    Measures ACUTANCE, not contrast. A soft render and a sharp one can share a
+    luma histogram; they cannot share a spectrum. Calibrated against the client's
+    accept/reject calls, which no exposure metric predicted."""
+    try:
+        import numpy as np
+        from PIL import Image
+    except ImportError:
+        return None  # optional dep: degrade to the other checks rather than fail
+    dur = _duration(path)
+    if dur <= 0:
+        return None
+    vals: list[float] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for frac in [(i + 0.5) / samples for i in range(samples)]:
+            f = Path(tmp) / f"{frac}.png"
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-ss", f"{dur * frac:.2f}",
+                 "-i", path, "-frames:v", "1", str(f)], capture_output=True)
+            if r.returncode != 0 or not f.exists():
+                continue
+            im = np.array(Image.open(f).convert("L"), dtype=float)
+            F = np.fft.fftshift(np.abs(np.fft.fft2(im)))
+            h, w = F.shape
+            Y, X = np.ogrid[:h, :w]
+            rad = np.sqrt(((Y - h // 2) / (h // 2)) ** 2 + ((X - w // 2) / (w // 2)) ** 2)
+            tot = F.sum()
+            if tot > 0:
+                vals.append(F[rad > 0.5].sum() / tot * 100)
+    return sum(vals) / len(vals) if vals else None
 
 
 def mean_luma(path: str) -> float | None:
@@ -560,7 +609,7 @@ def review_clip(path: str, context: str = "") -> dict:
     passes but scores lower, so a re-rolled sharper take still wins best-of-N."""
     rec: dict = {"clip": Path(path).name, "blur": blur_mean(path),
                  "frozen_s": freeze_scan(path), "blown_pct": blown_pct(path),
-                 "mean_luma": mean_luma(path),
+                 "mean_luma": mean_luma(path), "detail_pct": detail_pct(path),
                  "vision": None,
                  "issues": [], "ok": True, "score": 0.0,
                  "vision_failures": []}
@@ -570,10 +619,10 @@ def review_clip(path: str, context: str = "") -> dict:
     # because it is exactly measurable and the vision rungs are the first thing to
     # go dark under quota. Shots a client twice called "very hazy" measured 14-19%
     # of frame clipped to white and passed every gate we had.
-    if rec["blown_pct"] is not None and rec["blown_pct"] > BLOWN_FAIL_PCT:
+    if rec["detail_pct"] is not None and rec["detail_pct"] < DETAIL_FAIL_PCT:
         rec["issues"].append(
-            f"hazy: {rec['blown_pct']:.0f}% of frame blown to white "
-            f"(a window or doorway behind the subject)")
+            f"soft: fine detail {rec['detail_pct']:.1f}% against {DETAIL_FAIL_PCT}% on "
+            f"takes the client accepted — this is what reads as 'hazy'")
     if rec["mean_luma"] is not None and rec["mean_luma"] < DARK_FAIL_YAVG:
         rec["issues"].append(
             f"too dark: average brightness {rec['mean_luma']:.0f} against ~106 on a "
