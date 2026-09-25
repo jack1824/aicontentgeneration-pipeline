@@ -540,6 +540,34 @@ def _luma_range(path: str, sample_fps: float = 2.0) -> float | None:
         return None
 
 
+def _sat_avg(path: str, sample_fps: float = 2.0) -> float | None:
+    """Mean SATAVG over sparsely sampled frames, or None if unmeasurable."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-f", "lavfi",
+             f"movie={path},fps={sample_fps:g},signalstats",
+             "-show_entries", "frame_tags=lavfi.signalstats.SATAVG",
+             "-of", "csv=p=0"],
+            capture_output=True, text=True, timeout=120)
+        vals = []
+        for line in r.stdout.splitlines():
+            try:
+                vals.append(float(line.split(",")[0]))
+            except (ValueError, IndexError):
+                pass
+        return sum(vals) / len(vals) if vals else None
+    except Exception:
+        return None
+
+
+# Above this measured saturation a clip already has plenty of colour and the grade
+# must not add more. Set from the reference render the client approved (SATAVG
+# 10.0): a warm tungsten-lit set comes off the model around 13-15 and a blanket
+# 1.17x boost pushed a finished ad to 20.6, twice the approved look, which reads
+# as an amber cast rather than rich colour.
+_SAT_CEILING = 12.0
+
+
 def _needs_grade(clips: list[str]) -> bool:
     """True when the source clips are flat enough to benefit from the curve."""
     measured = [m for m in (_luma_range(c) for c in clips) if m is not None]
@@ -598,7 +626,16 @@ def _grade_for(clip: str) -> str:
     # lamp-lit bedroom went orange. Saturation multiplies what is already there,
     # so a warm scene needs far less help than a grey one; the ceiling here is
     # 1.18 rather than 1.40.
-    satur = 1.06 + 0.12 * k
+    # Saturation is applied only to clips that are actually short of colour.
+    # A tungsten-lit set is already warm; boosting it compounds into amber. The
+    # luma curve above raises apparent saturation on its own, so on a clip at or
+    # over the ceiling we add none at all.
+    have_sat = _sat_avg(clip)
+    if have_sat is None or have_sat >= _SAT_CEILING:
+        satur = 1.0
+    else:
+        short = (_SAT_CEILING - have_sat) / _SAT_CEILING
+        satur = 1.0 + 0.18 * short
     # The honest limit: even at full strength this tops out near range ~104 from a
     # 68.6 source — a deliberately stronger curve only reached 104.1 — so a
     # genuinely hazy GENERATION cannot be rescued here. That has to be fixed in
