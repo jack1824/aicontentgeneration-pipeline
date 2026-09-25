@@ -500,6 +500,52 @@ def cut_audio(src: str, start_s: float, dur_s: float, out: str) -> str:
     return out
 
 
+# Monotonic S-curve ending at 1/1 (nothing clips) plus a light unsharp. Tuned
+# against a well-exposed LTX reference; see the note at the call site for measured
+# before/after numbers.
+_GRADE = ("curves=all='0/0 0.06/0.045 0.3/0.42 0.6/0.76 0.85/0.95 1/1',"
+          "unsharp=5:5:0.8:5:5:0.0")
+
+# Above this measured luma range a clip is already well exposed and the curve
+# would push highlights to 255 on its brightest frames. Applied to the good
+# reference it did exactly that, so the grade is GATED rather than unconditional.
+_GRADE_RANGE_CEILING = 150.0
+
+
+def _luma_range(path: str, sample_fps: float = 2.0) -> float | None:
+    """Mean (YHIGH - YLOW) over sparsely sampled frames, or None if unmeasurable.
+
+    Sampled at 2fps rather than every frame: this runs on every assembly and the
+    decision only needs a ballpark. Returns None on any failure so the caller can
+    fail OPEN (grade applied) rather than silently skipping the finishing pass."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-f", "lavfi",
+             f"movie={path},fps={sample_fps:g},signalstats",
+             "-show_entries", "frame_tags=lavfi.signalstats.YLOW,lavfi.signalstats.YHIGH",
+             "-of", "csv=p=0"],
+            capture_output=True, text=True, timeout=120)
+        vals = []
+        for line in r.stdout.splitlines():
+            bits = line.split(",")
+            if len(bits) >= 2:
+                try:
+                    vals.append(float(bits[1]) - float(bits[0]))
+                except ValueError:
+                    pass
+        return sum(vals) / len(vals) if vals else None
+    except Exception:
+        return None
+
+
+def _needs_grade(clips: list[str]) -> bool:
+    """True when the source clips are flat enough to benefit from the curve."""
+    measured = [m for m in (_luma_range(c) for c in clips) if m is not None]
+    if not measured:
+        return True  # unmeasurable: a flat render is the common case, so grade it
+    return (sum(measured) / len(measured)) < _GRADE_RANGE_CEILING
+
+
 def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
     """Concat clips from MIXED workflows (sequence mode: t2v + i2v + S2V + LTX segments).
 
@@ -575,8 +621,26 @@ def concat_reencode(clips: list[str], out: str = "sequence.mp4") -> str:
         lanes += [f"[v{i}]", f"[a{i}]"]
     fc = ";".join(parts) + f";{''.join(lanes)}concat=n={len(clips)}:v=1:a=1[v][a]"
 
-    cmd += ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+    # FINISHING GRADE. Measured, not guessed: quality is lost in GENERATION, not
+    # here — this re-encode costs 1.4-4.7% of laplacian sharpness and ~0% of luma
+    # range. But it is the ONE re-encode on the narration path, so it is the only
+    # free place to put a finishing pass, and flat LTX output needs one. On
+    # coffee-ad-15s-final the curve below moved luma range 120.6 -> 155.8 and
+    # laplacian 1.669 -> 2.875 against a well-exposed reference of 180.2 / 2.913,
+    # for 3.5s of wall clock on a 14s film.
+    #
+    # `curves`, NOT `eq=contrast`. eq=contrast=1.25 reports a wider range purely by
+    # crushing blacks — YLOW collapsed 19.2 -> 0.2 and YMIN to 0.0, destroying
+    # shadow detail. This curve is monotonic and ends at 1/1, so YLOW moves only
+    # 19.2 -> 17.6 and nothing clips.
+    if _needs_grade(clips):
+        fc += f";[v]{_GRADE}[vg]"
+        vmap = "[vg]"
+    else:
+        vmap = "[v]"
+
+    cmd += ["-filter_complex", fc, "-map", vmap, "-map", "[a]",
+            "-c:v", "libx264", "-crf", "16", "-preset", "medium",
             "-pix_fmt", "yuv420p", "-c:a", "aac", out]
     _run(cmd)
     return out

@@ -96,7 +96,13 @@ Rules:
   16:9 -> wider establishing shots.
 - Shot prompts read like a film director's notes, not a copywriter's. 45-90 words,
   present tense, in EXACTLY this order:
-  STYLE -> SUBJECT -> ACTION -> SCENE -> CAMERA -> LIGHT/COLOR -> AUDIO.
+  STYLE -> ACTION -> SUBJECT -> SCENE -> CAMERA -> LIGHT/COLOR -> AUDIO.
+  ACTION COMES SECOND, immediately after the opener — before the character block,
+  not after it. Lightricks' own adherence guidance for this model family is "main
+  action first, character and environment third". We had it third, which put the
+  first real verb ~40 words in behind a 25-word wardrobe description, and the
+  measured result was ads where every object landed and the action never happened
+  ("man does not switch off alarm clock" — every prop correct, hands in his lap).
   * STYLE: every prompt opens verbatim "Realistic documentary footage:" (or
     "Realistic documentary close-up:" for insert shots).
   * SUBJECT: THREE FROZEN BLOCKS, defined once per ad and pasted BYTE-IDENTICAL into
@@ -115,6 +121,24 @@ Rules:
     an empty line in the appointment diary", "her thumb taps the phone three
     deliberate times" — never a summary like "he looks worried". Motion is
     mandatory: a motionless prompt produces a boring frozen shot.
+    FOUR HARD RULES, each one bought with a failed render:
+    (a) ONE PHYSICAL PROCESS PER SHOT. Never join two different mechanical
+        processes with "while" or "as". "presses the plunger down through the
+        grounds WHILE coffee streams into the cup" is a plunge AND a pour: they
+        cannot both be true at that instant, and the model resolved the
+        contradiction by rendering a pour-over carafe instead — twice, across two
+        seeds. If a beat genuinely needs both, it is two shots.
+    (b) MECHANICS, NOT THE LABEL. Name the body part, the direction, and the
+        observable consequence. Write "his palm comes down flat on the alarm clock
+        and the ringing stops", not "switches off the alarm clock". A label names
+        an outcome; the model can only render movement.
+    (c) THE COMMON NOUN. Use the everyday caption word every prop is described
+        with online: "a French press", not "a glass coffee press"; "an alarm
+        clock", not "a black alarm clock" on first mention. Rare phrasings have
+        weak visual priors and the model substitutes whatever it does know.
+    (d) NO STATIVE LEADING VERB. The first finite verb in the prompt must be the
+        action itself. "stands", "sits", "holds", "is seen", "is positioned" as
+        the leading verb tell the model to render a person existing, and it will.
     MICRO-ACTION LAW (2026-07-12 panel review — the single biggest premium gap):
     every CHARACTER shot must contain one hand-scale verb of ENGAGEMENT with the
     world — picks up the thread, pushes the curtain aside, lifts the cup, traces
@@ -142,11 +166,15 @@ Rules:
     "holding", "settling"). A clip is only ~4.8s and QC FAILS any take with 0.8s
     of near-identical frames, so a parked camera over a subject who has stopped
     moving reads as buffering and burns every re-roll. Whenever you pick a preset
-    containing "static", "holding" or "settling", the ACTION sentence must give
-    that shot a continuous physical motion that runs the WHOLE beat — steam
-    curling, fingers still working, fabric shifting, liquid still pouring — not a
-    gesture that completes early and leaves the frame dead. If the beat has no
-    sustained motion in it, pick a moving preset instead.
+    containing "static", "holding" or "settling", the shot needs motion that runs
+    the WHOLE beat.
+    That motion MUST BE THE ACTION'S OWN MECHANICS CONTINUING — the plunger still
+    descending, the thread still being pulled, the hand still turning the jar —
+    and NEVER a second independent process bolted on. An earlier version of this
+    rule asked for "steam curling, liquid still pouring" alongside the action, and
+    that is exactly what produced a prompt containing both a plunge and a pour,
+    which the model resolved by rendering neither correctly. One process, sustained.
+    If the beat has no sustained motion in it, pick a moving preset instead.
   * LIGHT/COLOR carries the EMOTION — never name a feeling, grade it: sadness =
     "desaturated cold blue-grey tones, heavy silence"; dread = "lit from below, cold
     shadows"; hope = "sudden warm golden light floods the room"; success = "warm

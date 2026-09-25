@@ -179,6 +179,34 @@ _FILLER = frozenset({
     "shot", "video", "footage", "scene", "clip", "ad", "advertisement",
 })
 
+# Two ACTION failure modes, each measured on a real render. These only WARN —
+# they lower the score but do not by themselves block — because both are
+# judgement calls and a false block costs more than a soft take.
+#
+# (1) Two mechanical processes joined by while/as. "presses the plunger down
+#     through the grounds WHILE coffee streams into the cup" is a plunge and a
+#     pour at the same instant; the model rendered a pour-over carafe instead,
+#     twice, across two seeds.
+#     Both sides must be a MANIPULATION verb — a hand acting on an object. An
+#     earlier version matched any inflected word either side of while/as, which
+#     flagged "takes a slow sip, then sets it down AS his shoulders drop": that is
+#     one action plus a bodily consequence, and it rendered correctly. Only
+#     independent mechanical processes are the failure.
+_PROCESS_VERB = (r"press(?:es|ing)?|pour(?:s|ing)?|stream(?:s|ing)?|plunge[sd]?|plunging|"
+                 r"brew(?:s|ing)?|stir(?:s|ring)?|shak(?:es|ing)|twist(?:s|ing)?|"
+                 r"grind(?:s|ing)?|flow(?:s|ing)?|fill(?:s|ing)?|drip(?:s|ping)?|"
+                 r"chop(?:s|ping)?|slic(?:es|ing)|whisk(?:s|ing)?|knead(?:s|ing)?")
+_TWO_PROCESS = re.compile(
+    rf"\b(?:{_PROCESS_VERB})\b[^.]{{0,90}}\b(?:while|as)\b[^.]{{0,90}}\b(?:{_PROCESS_VERB})\b",
+    re.I)
+
+# (2) A stative leading verb. If the first finite verb is "stands"/"sits"/"holds",
+#     the model is being told to render a person existing, and it does — every
+#     prop correct, hands in lap, action never performed.
+_STATIVE_LEAD = re.compile(
+    r"^[^.]*?\b(stands?|sits?|sat|holds?|is\s+(?:seen|positioned|standing|sitting)|"
+    r"leans?|rests?)\b", re.I)
+
 
 def assess(prompt: str) -> dict:
     """Score how renderable a prompt is. Returns {score, ok, reasons}.
@@ -204,11 +232,26 @@ def assess(prompt: str) -> dict:
     if n and len(meaningful) / n < 0.6:
         reasons.append("mostly vibe words (cinematic/beautiful/epic) — these direct nothing")
 
+    # Strip the style opener before the stative test: "Realistic documentary
+    # footage:" is not the sentence's verb, and the check is about what the
+    # SUBJECT is first said to do.
+    body = re.sub(r"^\s*realistic documentary [a-z-]+:\s*", "", text, flags=re.I)
+    two_process = bool(_TWO_PROCESS.search(body))
+    stative = bool(_STATIVE_LEAD.search(body))
+    if two_process:
+        reasons.append("two processes joined by 'while'/'as' — the model renders "
+                       "neither cleanly; split this into two shots")
+    if stative:
+        reasons.append("leading verb is stative (stands/sits/holds) — lead with the "
+                       "action itself or the subject will just exist on camera")
+
     score = 100
     score -= 34 * (n < 12)
     score -= 26 * (nouns < 3)
     score -= 20 * (not _ACTION_VERB.search(text))
     score -= 20 * bool(n and len(meaningful) / n < 0.6)
+    score -= 15 * two_process
+    score -= 10 * stative
     score = max(0, score)
     return {"score": score, "ok": score >= MIN_RENDERABLE_SCORE, "reasons": reasons}
 
