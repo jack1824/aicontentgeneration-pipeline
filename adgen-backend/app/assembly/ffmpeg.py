@@ -914,6 +914,64 @@ def cover_frame(video: str, out: str, at_s: float = 0.0, hook: str | None = None
         Path(tf.name).unlink(missing_ok=True)
 
 
+
+def _card_png(path: str, w: int, h: int, rows: list[tuple],
+              product_image: str | None = None) -> str:
+    """Render the end card as a PNG with Pillow instead of ffmpeg's drawtext.
+
+    drawtext needs an ffmpeg built with libfreetype, and the Homebrew bottle on
+    at least one dev machine has neither freetype nor harfbuzz — so a finished
+    30s branded ad died at 97% with TextBurnUnavailable. The brand lock-up is the
+    one place an ad is allowed to show text (shot prompts are banned from it,
+    because video models garble lettering), so losing it is not cosmetic.
+
+    Pillow is a pure-Python dependency we control, which also buys two things
+    drawtext cannot do: real word WRAPPING, and measured centring via the font
+    metrics rather than drawtext's x=(w-text_w)/2 guesswork.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    def _hexcolor(c: str) -> str:
+        return "#" + c[2:] if c.startswith("0x") else c
+
+    img = Image.new("RGB", (w, h), _hexcolor(END_CARD_BG))
+    d = ImageDraw.Draw(img)
+    if product_image and Path(product_image).exists():
+        try:
+            pi = Image.open(product_image).convert("RGB")
+            tw = int(w * 0.55)
+            pi = pi.resize((tw, max(1, int(pi.height * tw / pi.width))))
+            img.paste(pi, ((w - tw) // 2, int(h * 0.10)))
+        except Exception:
+            pass  # a bad pack shot must not cost us the whole card
+    for text, size, color, yfrac in rows:
+        font = None
+        for cand in _FONT_CANDIDATES:
+            try:
+                font = ImageFont.truetype(cand, int(size)); break
+            except Exception:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+        # Wrap to 90% of the frame. drawtext silently overflows instead.
+        words, lines, cur = text.split(), [], ""
+        for word in words:
+            trial = f"{cur} {word}".strip()
+            if d.textlength(trial, font=font) <= w * 0.90 or not cur:
+                cur = trial
+            else:
+                lines.append(cur); cur = word
+        if cur:
+            lines.append(cur)
+        y = yfrac * h
+        for line in lines:
+            tw = d.textlength(line, font=font)
+            d.text(((w - tw) / 2, y), line, font=font, fill=_hexcolor(color))
+            y += size * 1.25
+    img.save(path)
+    return path
+
+
 def end_card(
     video: str,
     brand: str,
@@ -934,7 +992,13 @@ def end_card(
     info = probe(video)
     w, h = info["width"] or 720, info["height"] or 1280
     fps = info["fps"] or 16.0
-    font = _font()
+    # Pillow path when this host's ffmpeg has no drawtext. _font() RAISES in that
+    # case, and it used to take a finished 30s branded ad down with it at 97%.
+    # The brand lock-up is the only place an ad may legally show text, so we
+    # render the card ourselves rather than lose it.
+    cap = text_support()
+    use_pillow = not cap["drawtext"]
+    font = cap["font"] if use_pillow else _font()
 
     # Text must FIT the frame: drawtext neither wraps nor shrinks, so cap each
     # row's fontsize by the line length (~0.55 x fontsize per char heuristic).
@@ -957,6 +1021,31 @@ def end_card(
             rows.append((tagline.strip(), _fit(h // 24, tagline), "0xb9b9c0", 0.56))
         if offer and offer.strip():
             rows.append((offer.strip(), _fit(h // 18, offer), END_CARD_ACCENT, 0.68))
+
+    if use_pillow:
+        card = _stitched_path(out).replace(".stitched.", ".card.")
+        png = _card_png(card.replace(".mp4", ".png"), w, h, rows, product_image)
+        try:
+            # A still PNG becomes a card-length silent clip; the fade matches the
+            # drawtext path so both routes land identically on the cut.
+            _run(["ffmpeg", "-y", "-loop", "1", "-i", png, "-t", f"{seconds:.2f}",
+                  "-vf", f"fps={fps:.3f},fade=t=in:st=0:d=0.35,format=yuv420p",
+                  "-c:v", "libx264", card])
+            joined = _stitched_path(out).replace(".stitched.", ".joined-card.")
+            try:
+                concat_reencode([video, card], out=joined)
+                audio_end = detect_audio_end(video) if info["has_audio"] else 0.0
+                fade_d = 0.35
+                fade_st = max(0.0, audio_end - fade_d)
+                _run(["ffmpeg", "-y", "-i", joined,
+                      "-af", f"afade=t=out:st={fade_st:.3f}:d={fade_d:.2f}",
+                      "-c:v", "copy", "-c:a", "aac", out])
+                return out
+            finally:
+                Path(joined).unlink(missing_ok=True)
+        finally:
+            Path(png).unlink(missing_ok=True)
+            Path(card).unlink(missing_ok=True)
 
     tmp_files: list[str] = []
     draws: list[str] = []

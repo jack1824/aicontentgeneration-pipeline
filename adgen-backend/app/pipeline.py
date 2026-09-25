@@ -1304,6 +1304,33 @@ def _generate_cinematic(req: dict, name: str, report, on_submit=None) -> str:
         # Stream-copy concat KEEPS each clip's native audio — nothing else needed.
         final = ffmpeg.stitch(clips, out=final)
 
+    # BRANDED END CARD. Sequence mode has always appended one; cinematic never
+    # did, which is a structural reason a cinematic ad reads as a nice film
+    # rather than as an ad — it simply had no brand lock-up to end on. Shot
+    # prompts are forbidden from carrying brand text (video models garble it), so
+    # the card is the ONLY place the brand name, tagline and offer can appear.
+    ec = req.get("end_card")
+    if ec and ec.get("brand"):
+        report("assembling", 97, "branded end card")
+        # Like the post chain, the card is an ADDITION to a film that is already
+        # finished and on disk, so it must never be able to destroy it. It can
+        # fail for a reason that has nothing to do with the render: an ffmpeg
+        # built without libfreetype has no drawtext filter, and that raised
+        # TextBurnUnavailable at 97% — throwing away a complete, correct 3-shot ad
+        # that was sitting right there.
+        try:
+            carded = ffmpeg.end_card(
+                final, brand=ec["brand"], tagline=ec.get("tagline"), offer=ec.get("offer"),
+                product_image=ec.get("image"),
+                out=str(LTX_VIDEO_DIR / f"{name}-carded.mp4"))
+            # The carded cut BECOMES the final: the Library keys "final" off the
+            # stem, so a -carded name reads as a clip and hides the deliverable.
+            Path(carded).replace(final)
+        except Exception as e:
+            report("assembling", 97,
+                   f"⚠ end card could not be rendered ({type(e).__name__}) — shipped "
+                   f"the film without it; the brand lock-up is missing")
+
     qc.write_sidecar(final, qc_records)
     report("assembling", 99, "export ready")  # API layer owns the terminal 'done'
     return final
