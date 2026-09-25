@@ -154,24 +154,44 @@ _HAS_LIGHT = re.compile(
 )
 # Deliberately names CONTRAST, not just a mood. "soft diffused morning light" is
 # what produces the flat grey frame; a stated black point is what prevents it.
-# Measured cause of the worst haze we ship: a bright window BEHIND the subject.
-# The model exposes for the room, the window blows to pure white, and the bloom
-# washes the frame — luma range 68.6 against 180 on a clean render. Post cannot
-# recover it: a tone curve tops out near 104 from that source, and a deliberately
-# stronger one reached only 104.1.
+# Two failure modes, opposite directions, both measured on real renders.
 #
-# But the cure is easy to overdose. A version of this clause that stacked "lit
-# from the side", "background stays darker than the subject", "deep true blacks"
-# and "no bloom, no fog" traded haze for murk: same seed, saturation collapsed
-# 4.3 -> 1.3 (essentially monochrome) and luma range fell 194.7 -> 144.5. Washed
-# out became lightless, which is not an improvement.
+# BLOWN OUT. The worst haze we ship comes from a bright window BEHIND the subject:
+# the model exposes for the room, the window goes pure white, and the bloom washes
+# the frame. Post cannot recover it — a tone curve tops out near luma range 104
+# from such a source. Measured: 14-19% of frame clipped to white on shots a client
+# twice called "very hazy", against 0.1% on a clean one.
 #
-# So this stays close to the clause that measurably worked (that one produced
-# range 171 with the watermark and letterbox gone) and adds exactly ONE targeted
-# phrase for the actual failure — the window — rather than re-describing the
-# whole lighting setup.
-CONTRAST_CLAUSE = ("Crisp directional light with deep true blacks and clean bright "
-                   "highlights, strong tonal contrast, no haze, no blown-out windows")
+# TOO DARK. The obvious cure — a lamp-lit set with "deep shadows" and dark wood —
+# overshoots just as badly. A 30s ad built that way came back at YAVG 47 against
+# 106 on the reference the client approved: less than half as bright, and the
+# complaint became "why is every video so dark".
+#
+# What separates them is NOT the lighting language. Holding the lamp and the
+# shadow wording constant and changing only the BACKGROUND TONE — dark walnut
+# panelling to pale cream plaster — moved the same shot from YAVG 47 to 91 with
+# blowout unchanged at 0.1%. The wall sets the exposure; the lamp sets the mood.
+#
+# And adding daylight to brighten things puts the blowout straight back: "bright
+# even daylight from a wide opening off frame" measured YAVG 160 at 34.8% blown,
+# far worse than the window we were fleeing.
+#
+# So: a LIGHT-TONED wall, a practical lamp, and no window in frame. Target is
+# YAVG ~100 with under 8% blown, both from the approved reference.
+CONTRAST_CLAUSE = ("Lit by a warm practical lamp in the room, with a pale plaster wall "
+                   "behind the subject that keeps the frame bright and open, crisp "
+                   "tonal contrast, true blacks, natural colour, nothing in frame "
+                   "pure white, no haze, no blown-out windows")
+
+# Handed to the planner so the SET is designed to expose correctly in the first
+# place. Prompt-level framing beats any amount of grading.
+BACKGROUND_RULE = (
+    "Put a LIGHT-TONED solid surface behind the subject — pale plaster, cream "
+    "paint, whitewashed brick — and light the scene with a practical lamp inside "
+    "the room. Never frame a window, glass door or bright opening behind the "
+    "subject: the model exposes for the room and blows it to pure white, which is "
+    "the single biggest source of hazy footage. Do not compensate by going dark "
+    "either; a dark-wood set reads at half the brightness of a good reference.")
 
 # --- vagueness gate ---------------------------------------------------------
 # A prompt too thin to render reliably costs THREE generations, not one: QC fails

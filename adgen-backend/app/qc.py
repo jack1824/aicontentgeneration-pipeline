@@ -187,6 +187,21 @@ def blur_mean(path: str) -> float | None:
 # the shots a client twice called "very hazy" read 14-19%.
 BLOWN_FAIL_PCT = 8.0
 
+# The opposite failure, and one we shipped repeatedly while fixing the first.
+# Chasing blown highlights produced lamp-lit sets on dark wood that measured YAVG
+# 47 against 106 on the approved reference — the client's words were "why is every
+# video so dark". A gate on only one end of the exposure range just moves the
+# defect, so both ends are checked.
+DARK_FAIL_YAVG = 60.0
+
+
+def mean_luma(path: str) -> float | None:
+    """Average frame brightness, 0-255. The approved reference sits at ~106."""
+    err = _ffmpeg_stderr(["-i", path, "-an", "-vf",
+                          "signalstats,metadata=print:key=lavfi.signalstats.YAVG"])
+    vals = [float(v) for v in re.findall(r"YAVG=([0-9.]+)", err)]
+    return sum(vals) / len(vals) if vals else None
+
 
 def blown_pct(path: str, samples: int = 5) -> float | None:
     """Percent of frame area clipped to near-white, averaged over the take.
@@ -545,6 +560,7 @@ def review_clip(path: str, context: str = "") -> dict:
     passes but scores lower, so a re-rolled sharper take still wins best-of-N."""
     rec: dict = {"clip": Path(path).name, "blur": blur_mean(path),
                  "frozen_s": freeze_scan(path), "blown_pct": blown_pct(path),
+                 "mean_luma": mean_luma(path),
                  "vision": None,
                  "issues": [], "ok": True, "score": 0.0,
                  "vision_failures": []}
@@ -558,6 +574,10 @@ def review_clip(path: str, context: str = "") -> dict:
         rec["issues"].append(
             f"hazy: {rec['blown_pct']:.0f}% of frame blown to white "
             f"(a window or doorway behind the subject)")
+    if rec["mean_luma"] is not None and rec["mean_luma"] < DARK_FAIL_YAVG:
+        rec["issues"].append(
+            f"too dark: average brightness {rec['mean_luma']:.0f} against ~106 on a "
+            f"good reference (use a pale wall behind the subject, not dark wood)")
     v = vision_review(path, context, rec["vision_failures"])
     if v is not None:
         rec["vision"] = v
