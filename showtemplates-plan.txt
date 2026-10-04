@@ -1,0 +1,439 @@
+====================================================================
+BUILT 2026-07-20 (pod-free parts — NOT yet pushed to git)
+--------------------------------------------------------------------
+BACKEND (all live-tested on localhost:8000):
+  app/environments.py   rooms table + CRUD (plate_wide/reverse/detail)
+  app/shows.py          templates table: draft->validated->locked,
+                        versioning (fork_version), JSON look/grammar
+  app/episodes.py       episodes table: script/beats/seeds/outputs/adherence
+  app/providers/llm.py  plan_episode() + EPISODE_PROMPT + verbatim
+                        enforcement (_enforce_episode_verbatim) + clamp
+  app/main.py           16 REST routes (/environments /shows /episodes
+                        + /validate /lock /fork + /plan /render) and the
+                        _compile_episode_segments() beat->sequence compiler
+  --- AUTOMATION (brain feeds the template; fewer clicks) ---
+  app/providers/llm.py  draft_show() + DRAFT_SHOW_PROMPT: one-line brief ->
+                        full template (cast anchors + room anchors + look +
+                        episode ideas). Structures the USER's idea, invents
+                        no ad scripts. LIVE-TESTED (Chai-stall brief -> named
+                        show + 2 anchored characters + room + Hindi ideas).
+  app/starters.py       5 generic archetype scaffolds (education/retail/
+                        clinic/founder/family) — editable head starts.
+  app/main.py (+4)      POST /shows/draft (async brain), GET /show-starters,
+                        POST /shows/instantiate (create cast+rooms+show in ONE
+                        call from an approved draft), POST /shows/{id}/
+                        generate-assets (batch all missing faces+plates, pod).
+  VERIFIED: full CRUD lifecycle (create/validate/lock/409-on-locked/fork),
+  beat planner against Gemini (verbatim preserved, cast+room tagged by
+  name), compile path (beat -> valid cinematic segment with anchor
+  injected). Existing endpoints untouched (health/plan/generate/characters).
+
+FRONTEND (tsc clean, /episodes serves 200):
+  src/lib/api.ts               types + client for environments/shows/episodes
+                               + draftShow/showStarters/instantiateShow/
+                               generateShowAssets
+  src/app/(studio)/episodes/   the 3-pane board (Shows | Beat table | Assets)
+    page.tsx                   + DESCRIBE-FIRST show wizard (Draft-with-AI |
+                               starter scaffold | scratch -> editable cards ->
+                               one Create click) + editable beat table +
+                               Start-episode render + "Generate all assets"
+                               batch + lifecycle actions
+  src/components/Sidebar.tsx   Episodes nav entry (Create group)
+
+NOT DONE (needs the pod / deferred, TOMORROW):
+  * ltx2_i2v.json workflow (the identity keystone: Qwen-Edit keyframe ->
+    LTX i2v). Today's compile uses lipsync (face+voice) + cinematic
+    brand-lock (room plate) — the mechanisms already live.
+  * The Qwen-Edit keyframe COMPOSITE pass (cast into room per beat).
+  * Seed persistence into recipe.json — DEFERRED: touches the render hot
+    path and can't be verified without a real render. Do it on pod day.
+  * Adherence scoring (reference-conditioned QC judges + SSIM) — P3.
+  * A real end-to-end episode render (pod). generate-plate/face need pod.
+  * git push (awaiting user's word — rules: no md/env/media, user-only author).
+====================================================================
+RENDER-PATH SPEC (pod-day) — CORRECTED per senior review 2026-07-20
+(verified against current reality; see research.md streams)
+--------------------------------------------------------------------
+The senior architect's critique was right in DIRECTION and lands on our
+CURRENT CODE. Corrected, verified render rules for the episode compiler:
+
+1. NEVER flip a recurring hero between engine families. Today the hero
+   flips Wan-S2V(speaking) <-> LTX(everything else), held by anchor TEXT
+   ONLY on LTX beats, with ZERO keyframe carry-over. Fix — keep the hero
+   in the Wan 2.2 family:
+     speaking hero beat  -> Wan S2V (reference face image + ElevenLabs audio)
+     SILENT hero beat    -> Wan i2v from the locked keyframe  (NOT S2V —
+                            S2V is hard audio-driven, cannot do silent shots;
+                            NOT LTX-text-only)
+     b-roll / environment -> LTX (native audio); the room plate locks the room
+   Reason it matters: cross-engine = a render/color/texture SEAM between
+   decoders (not a "latent identity reset"); identity is anchored by the
+   REFERENCE, not the engine.
+
+2. Feed a reference IMAGE into LTX hero beats too (IC-LoRA Ingredients),
+   not anchor text alone — today LTX hero identity is text-only.
+
+3. Add a Wan-2.2 identity adapter on hero beats — promote from "eval spike"
+   to MVP. CORRECT tools for Wan VIDEO (NOT PuLID/IP-Adapter/InstantID —
+   those are SDXL/Flux IMAGE-only, a dead end on Wan):
+     Stand-In  (official Wan 2.2 weights now, single frontal face, ~1% params)
+     Lynx      (ByteDance, Apache-2.0, single-image, benchmark-leading ~0.78)
+     Phantom   (up to 4 refs, multi-subject/product)
+   Per-character Wan LoRA stays the strongest DURABLE tier for cross-episode
+   (bakes identity into weights); adapters are the no-train fallback and
+   COMPOSE on top.
+
+4. Keyframe composite (Qwen-Edit: face + room plate -> per-beat first frame)
+   + FLF2V are INTRA-SHOT seam tools only. Do NOT architect episode
+   consistency around latent/frame "carry-over" — it does not exist across
+   episodes (ephemeral per-run tensors, new pod = zero shared state). Anchor
+   cross-episode identity on the STORED ASSET PACK re-injected every run:
+   hero portrait + IC-LoRA reference sheet + character LoRA + Qwen keyframes.
+
+5. KEEP the measurement layer (P3) — the senior's note has no way to VERIFY
+   identity held. Standard + commercially-licensable: AuraFace FaceSim (faces)
+   + DINOv2/CLIP VBench-style (rooms/look), reported together (each metric
+   has a documented bias). This is a genuine addition, not invented.
+
+CFG=1 distilled LTX note: real cost is fine DETAIL + negatives inert + can't
+raise CFG — NOT temporal instability (low CFG is actually more stable).
+Identity at CFG=1 rides on IC-LoRA strength (~1.4) + Qwen keyframes + NAG.
+
+4 pods / serverless = THROUGHPUT, not consistency (each shot still independent).
+Our template IS the "shared identity context across pods" the senior wants —
+as long as every worker gets the stored ASSET PACK, not just prompts+seeds.
+====================================================================
+BUILT 2026-07-20 (session 2) — voices everywhere (pod-free)
+--------------------------------------------------------------------
+Paid ElevenLabs key live -> /voices returns 23 real voices (incl. 2 Hindi:
+Anika, Rian) instead of the degraded 1.
+  VoicePicker.tsx  now shows ALL voices (premade + professional/library);
+                   added a LANGUAGE filter (हिन्दी/English) defaulting to the
+                   surface's language; dropped the premade-only gate that was
+                   HIDING the Hindi voices. Fix lifts ALL 6 existing pickers
+                   (create/dialogue/sequence/avatars/library/remix) at once.
+  episodes/page.tsx  per-character VoicePicker (with ▶ preview) in the cast
+                   panel -> saved to the character -> flows to every one of
+                   their speaking beats (compiler reads speaker.voice_id).
+  VERIFIED: 23 voices load, tsc clean, /episodes 200, 7 surfaces use picker.
+====================================================================
+SHOW TEMPLATES — EPISODIC AD SYSTEM: THE PLAN
+Researched 2026-07-20 (11-agent deep dive: Higgsfield teardown,
+competitor landscape, consistency tech, multi-speaker, 2 codebase
+maps + 4 gap-fills on enforcement/licensing/cost/reproducibility)
+Status: AWAITING APPROVAL — no code until approved.
+====================================================================
+
+THE ONE-LINER
+  A Show Template = cast + rooms + look, locked ONCE and validated.
+  An Episode = template + a new script. Same teacher, same classroom,
+  same student faces — in Ep2, Ep5, or three weeks from now.
+
+--------------------------------------------------------------------
+1. WHAT THE RESEARCH SETTLED
+--------------------------------------------------------------------
+
+HIGGSFIELD (as asked):
+- Presets = a CURATED library (50-70 camera moves, ~50 style recipes).
+  Users CANNOT create their own presets. That is the whitespace we fill.
+- Soul ID = one-time TRAINED identity (20+ photos, 3-5 min, ~$1.25),
+  then referenced by ID in every generation: "change only styling and
+  setting in the prompt; leave the identity to Soul ID."
+- Soul Cast = character sheet (front/side/back) generated BEFORE any
+  scene; then every shot conditions on it. $5 to lock an actor.
+- UGC Factory persists approved KEYFRAMES ("Image Stage") for reuse
+  across sessions — their scale mechanism.
+- NO series/episode object. NO multi-character locked identity. NO
+  user-creatable templates. Their only cross-session continuity is
+  bridge-frame chaining. Our server-side template store beats it.
+- Their honest quality bar (their own blog): "clearly the same person,
+  not pixel-identical"; identity drifts on WIDE shots.
+
+INDUSTRY PATTERNS WE ADOPT:
+- HeyGen: template = locked structure + typed variable slots; a new
+  video = mail-merge (fill only the text slots). Voice is a SEPARATE
+  typed slot from character.
+- Kling Elements / Vidu My References: entities captured as 4-angle
+  reference packs, FROZEN after save (versioned, never edited).
+- LTX Studio Elements (our own model family): typed entities
+  (character/location/prop/style/brand) + @-name mentions in prompts.
+- Industry framing: "session memory" (95-98% consistent within a run,
+  resets after) vs "character lock" (persisted artifacts, survives
+  weeks). Studios on session-memory burn 20-40% of volume on retakes.
+  Templates must store ENFORCED ARTIFACTS, never trust chat memory.
+- NOBODY ships user-generated templates + an episode object. This is
+  a real differentiation window, not a catch-up feature.
+
+CONSISTENCY TECH RANKING (for our exact stack, A40 48GB):
+  1. Qwen-Edit keyframe compositing onto STORED portraits + room
+     plates, then Wan i2v  — zero training, everything already on pod.
+  2. #1 + per-character Wan 2.2 LoRA (12-20 images, rank 16, overnight
+     train via musubi-tuner/ai-toolkit) — strongest known combo;
+     avatar_profiles.lora_path column already reserved for this.
+  3. LTX IC-LoRA Ingredients — template-native (the sheet IS the
+     template) but locked to 768x448 and flaky with 2-3 characters.
+     Validate before trusting.
+  4. Stand-In (face adapter) — best pure face sim, face-only, wrapper-
+     dependent. Evaluation spike.
+  5. Seeds are NOT a consistency mechanism (reproducibility only).
+     Environment LoRAs are NOT needed (Wan generalizes rooms; plates
+     + compositing carry them).
+- Faces hold ~3-6s of moderate motion from a locked keyframe; keep
+  identity beats close/mid; wide shots carried by the ROOM.
+
+DIALOGUE (2-3 characters speaking):
+- Production consensus (incl. Runway's own docs): ONE SPEAKER PER
+  SHOT, assembled as shot/reverse-shot with gaze constraints (180
+  rule). Even Veo 3 falls below 40% success on in-frame multi-speaker.
+- Our per-segment voices already exist (sequence lipsync segments +
+  duo lane). Planner will emit speaker tags + gaze/OTS constraints.
+- True in-frame two-person: our duo (LongCat) lane is WIRED BUT NEVER
+  PRODUCED VIDEO (outputs/duo/video is empty) — one validation test.
+  InfiniteTalk-multi (Kijai wrapper) exists but ~30min/11s at 480p —
+  garnish, never the workhorse.
+
+--------------------------------------------------------------------
+2. WHAT WE ALREADY HAVE (codebase map — build on, don't rebuild)
+--------------------------------------------------------------------
+- characters table (name + verbatim anchor + face + sheet + voice_id)
+  = the embryonic entity store. avatars table = real-face presenters
+  with consent. Both persist server-side in SQLite.
+- inject_cast() = ONE injection seam all pipelines inherit.
+- plan(cast=, script=, verbatim=) + _enforce_verbatim (code-level
+  85%-word-survival repair) + async /plan already exist.
+- PlanApproach JSON = the natural template payload (pipeline, shots,
+  negatives, narration, needs_from_user).
+- sequence mode = mixed-engine timeline with per-segment voice/image
+  — a Template instance can COMPILE DOWN to a sequence request.
+- fireApproach() in the timeline = proven coercion/asset-role wiring
+  for instantiation. Reuse, don't reimplement.
+- Keyframe machinery: generate_face / generate_sheet / derive_keyframe
+  (2 refs: character + product) / derive_variants (4 emotions).
+- Recipe + QC sidecars = audit-trail scaffolding, field-tolerant.
+- wan_flf2v (first+last frame) mapping exists, UNWIRED — future
+  continuity joins.
+
+GAPS THE PLAN CLOSES (found by code recon):
+- No template/environment/episode entity anywhere.
+- Director cannot reference a character by name; frontend auto-injects
+  ALL saved characters on every render; session.cast is a dead field.
+- render_shot passes no character_ids (anchor text only).
+- Create page's plan() doesn't send cast_ids (Director's does).
+- Seeds NEVER persisted (recipe/qc sidecars lack them) — the winning
+  look of a QC re-roll is unrecoverable today.
+- QC vision judges receive TEXT ONLY — no reference image ever
+  attached; adherence is asserted, not proven.
+- characters store voice_id but NOT tts model_id/voice_settings —
+  delivery can drift between episodes on a code-constant change.
+- plan_dialogue verbatim has no code-level enforcement pass.
+- negative_prompt is INERT on distilled LTX lanes — template schema
+  must carry per-lane capability flags.
+
+--------------------------------------------------------------------
+3. THE DATA MODEL (3 layers, all server-side SQLite,
+   characters.py CRUD pattern — third/fourth tables)
+--------------------------------------------------------------------
+
+LAYER 1 — ENTITY LIBRARY (reusable across templates)
+  characters (EXTEND existing):
+    + turnaround sheet formalized as the 4-angle pack (front, 3/4 L,
+      3/4 R, back — the Kling capture recipe)
+    + emotion variant stills (existing derive_variants)
+    + tts_model_id, tts_voice_settings columns (lock the DELIVERY,
+      not just the voice id)
+  environments (NEW table):
+    id, name, verbatim setting-anchor text, 1-3 approved plates
+    (wide / reverse / detail), created from a 1-frame Wan still or
+    an upload, immutable after approval.
+  (brand constants ride the template's look block + existing
+   /endcard + /brand-pass endpoints)
+
+LAYER 2 — templates (NEW table)
+  - cast: 2-3 character_ids, each with locked voice (id + settings)
+  - environments: environment_ids
+  - look: frozen CHARACTER/SETTING/LOOK anchor blocks (verbatim),
+    canonical negative block, grade line
+  - grammar: beat-type -> pipeline lane routing, camera menu subset,
+    knob defaults (quality/aspect/steps), duration target, language
+  - keyframe bank: approved per-shot stills accumulate here across
+    episodes (the Higgsfield Image Stage pattern)
+  - calibration: identity/environment baseline scores measured at
+    lock time (see §6)
+  - per-lane capability flags (negatives inert on distilled LTX etc.)
+  - status: draft -> validated -> LOCKED. Locked = immutable; edits
+    create v2. (The Vidu freeze rule.)
+
+LAYER 3 — episodes (NEW table)
+  template_id + episode number + script (+ optional per-episode
+  product image) + effective seeds + output paths + adherence scores.
+  Ep2 sees Ep1's approved keyframes and continuity notes.
+
+--------------------------------------------------------------------
+4. TEMPLATE CREATION — user-GENERATED, wizard flow
+--------------------------------------------------------------------
+User describes the show once ("young teacher, warm classroom,
+playground outside, 6 students, bright optimistic grade, Hindi").
+The planner proposes; the user approves each piece; nothing enters
+the template unapproved. Steps:
+
+  1. BRIEF -> planner proposes cast descriptions + rooms + look
+     (editable cards, existing editable-plan UX)
+  2. CAST: per character — generate hero portrait (existing
+     generate_face) -> approve -> 4-angle sheet -> 4 emotion variants.
+     Or pick an existing avatar/character. Assign voice per character
+     (locked with settings).
+  3. ROOMS: per environment — generate wide/reverse/detail plates
+     (1-frame stills) -> approve. Or upload real location photos.
+  4. LOOK: frozen anchor blocks + negative block, shown verbatim,
+     editable before lock.
+  5. VALIDATION BATCH (the gate Higgsfield doesn't have numbers for):
+     8-12 test renders varying angle/lighting/beat type. Measured,
+     not eyeballed — see §6. User reviews a grid, approves.
+  6. LOCK. Template becomes immutable + versioned.
+
+One-time cost per template: ~2.5-3.5 hr wall-clock incl. validation
+on Wan (validation on LTX cuts it ~4x, ~35-50 min). Images are cheap
+(~1-1.5 min/still); validation renders dominate.
+
+--------------------------------------------------------------------
+5. EPISODE RENDERING — the compiler
+--------------------------------------------------------------------
+Input: template_id + script. Everything else comes from the template.
+
+  1. Script -> plan(verbatim=True, cast=template cast, constants=
+     template look) -> beats with speaker tags. _enforce_verbatim
+     repairs in code; NEW: same code-level pass added to the dialogue
+     path (currently unguarded).
+  2. KEYFRAME PASS: for each beat, Qwen-Edit composites the locked
+     character portrait(s) + the locked environment plate into the
+     shot keyframe. Identity + room locked at frame 1. Approved
+     keyframes join the template's bank for reuse in later episodes.
+  3. RENDER PASS, engine-batched (all Wan beats, then all LTX beats —
+     measured model-swap penalty ~200s+ per Wan->LTX boundary, saves
+     15-20 min/episode):
+       - action/identity beats: Wan i2v from keyframe (3-6s, face
+         large per planner rule)
+       - speaking beats: per-speaker s2v/lipsync from that character's
+         locked portrait + locked voice; shot/reverse-shot with gaze
+         constraints; reaction-shot cutaways cover seams
+       - wide establishing: carried by the room plate, faces small
+       - b-roll/native-audio beats: LTX
+  4. Dead-air guards + strict audio fit ride along as today.
+  5. Seeds: effective per-shot seed (incl. QC take bump) + keyframe
+     seeds PERSISTED into recipe.json. "The look that won" becomes
+     reproducible for the first time.
+  6. Brand pass: end card / captions via existing pod-free endpoints.
+
+Per-episode cost (MEASURED, A40, QUALITY, QC on):
+  - Wan beat: ~775s/take x 1.56 retry  (~20 min effective)
+  - LTX beat: ~105s/take x 1.86        (~3.3 min effective)
+  - CLIENT EPISODE LENGTH IS 1-2 MIN (~15-24 beats), so:
+      all-Wan          = 4-6+ hr  -> NOT viable per episode
+      smart mix (4 Wan hero beats + s2v speech + LTX rest)
+                       = ~2.5-3 hr, ~$1.50-3 GPU
+      LTX-heavy (Wan only 1-2 hero closeups)
+                       = ~1-1.5 hr, ~$0.75-1.50
+  - => 1-3 episodes/day on one A40. Beat routing is the biggest
+    cost lever (6-8x spread). QUALITY s2v (>30min/take, never
+    completed a measured run) is OFF the dialogue menu until
+    benchmarked — use s2v FAST or LTX in-shot speech.
+  - Volume beyond ~2 eps/day needs hardware (L40S ~1.5-2x, or a
+    second pod fan-out), not software.
+  - Promise SAME-DAY turnaround, not same-hour.
+  - NOTE: Wan at 1280x704 has NEVER been rendered (all Wan history is
+    640x640/432x768; every 1280x704 file is LTX) — benchmark on pod
+    return before promising farmer-look at that res on Wan.
+
+--------------------------------------------------------------------
+6. STRICTNESS — "strictly follow" made PROVABLE
+--------------------------------------------------------------------
+Today adherence is asserted (text-only VLM judges). We make it
+measured, in three increments riding the existing QC seam
+(_render_takes -> review_clip -> sidecar):
+
+  A. SHIP FIRST (zero new dependencies):
+     - Attach reference images to the vision judges: character
+       portrait + environment plate alongside the 3 sampled frames
+       ("same person as reference? same room? 0-100"). Payload-only
+       change; the judge ladder already accepts multi-image.
+     - ffmpeg SSIM of sampled frames vs the environment plate
+       (matches qc.py's existing subprocess style).
+     - Raise/restructure the 600-char context cap so anchors don't
+       evict the shot brief.
+     - Script verbatim check at generate time vs the template's
+       canonical script (exact match at the TTS boundary).
+     - All scores recorded per take in the qc sidecar = the audit
+       trail we can show the client.
+  B. LOCK-TIME CALIBRATION (what nobody in the market publishes):
+     validation batch measures per-template baselines; episode gates
+     are RELATIVE to baseline (robust to stylization), with take
+     promotion preferring higher identity/env scores automatically
+     (existing (ok, score) tuple).
+  C. TIER-2 UPGRADE (when we want a number in the pitch deck):
+     AuraFace-v1 embeddings — Apache 2.0, the ONLY clean commercial
+     chain (insightface lib is MIT but buffalo_l/antelopev2 weights
+     are NON-COMMERCIAL; AdaFace/facenet weights are dataset-tainted).
+     CPU-only, ~100-200ms/frame, no GPU contention. Bands grounded in
+     published FaceSim-Arc: pass >=0.5, warn 0.4-0.5, fail <0.4;
+     DINOv2 cosine for rooms (~0.6-0.75 expected, cut set by
+     calibration). Lets us say "identity verified via the standard
+     FaceSim-Arc protocol" — a claim nobody else backs with numbers.
+
+  Honest asymmetry, stated up front: voice lanes (lipsync/longcat/
+  duo/redub) are QC-exempt by design (fixed-length, expensive takes)
+  — there the gate VERIFIES AND WARNS, it does not re-roll.
+
+--------------------------------------------------------------------
+7. CAST EVERYWHERE (the "avatars in every section" ask)
+--------------------------------------------------------------------
+- Unify presentation: one Cast surface (real-face avatars + synthetic
+  characters), pickable from Director, Create, Sequence, Dialogue,
+  Timeline.
+- Director gets ops: use_template(name), cast(names->ids),
+  render_episode(script). @-mention resolution against the entity
+  library (LTX Studio pattern). Session memory carries the ACTIVE
+  TEMPLATE id — chat stays convenient, artifacts stay authoritative.
+- Fix the all-or-nothing bug: stop auto-injecting ALL saved characters
+  on every Director render; per-template/per-request cast selection.
+- Create page plan() starts sending cast_ids (parity with Director).
+- render_shot carries cast (today: anchor text only).
+- session.cast dead field -> repurposed as the project's active cast.
+
+--------------------------------------------------------------------
+8. BUILD ORDER (each phase demo-able, approval before push as always)
+--------------------------------------------------------------------
+  P1  ENTITIES + TEMPLATE STORE (backend tables/CRUD + wizard UI,
+      lock flow, environment plates)                       ~2-3 days
+  P2  EPISODE COMPILER (template+script -> keyframes -> batched
+      sequence; seed persistence; dialogue speaker tags + gaze
+      constants; verbatim pass on dialogue path)           ~3-4 days
+  P3  STRICTNESS GATE (reference-conditioned judges + SSIM +
+      validation batch + calibration + sidecar audit)      ~2 days
+  P4  CAST EVERYWHERE (Director ops, unified cast picker,
+      cast_ids parity, render_shot cast)                   ~2 days
+  P5  HARDENING (opt): render-environment manifest (sha256-pinned
+      weights, node commits, vendored pod scripts — the "pod rebuilt
+      and the faces changed" insurance); AuraFace numeric gate;
+      duo/LongCat + InfiniteTalk validation; per-character LoRA
+      trainer (off-pod)                                    ongoing
+
+  P1+P2 deliver the client demo (Ep1 -> Ep2, same teacher, same
+  classroom). P3 makes it provable. P4 makes it ubiquitous. P5 makes
+  it survive pod loss and adds the pitch-deck number.
+
+--------------------------------------------------------------------
+9. HONEST LIMITS (say them to the client before they find them)
+--------------------------------------------------------------------
+- "Same person" means unmistakably the same person, not pixel-
+  identical — the whole industry's bar, including Higgsfield.
+- Wide shots: the room carries the shot; faces soften. Identity
+  beats stay close/mid by planner rule.
+- Simultaneous in-frame two-person SPEECH is not in v1. Dialogue is
+  cuts-based (shot/reverse-shot) — which is how real ads and TV cut
+  dialogue anyway. The duo lane gets one validation test.
+- A template guarantees its OWN look. A pod rebuild without P5's
+  manifest can silently shift generation behavior (weights re-
+  resolve from HF branch-latest today).
+- Hindi/English word-rate sizing is estimated, not TTS-measured
+  (existing disclosed deviation; assembly-time fit corrects).
+====================================================================

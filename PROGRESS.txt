@@ -1,0 +1,164 @@
+================================================================================
+ SOCIALADZGEN STUDIO — PROGRESS REPORT (as of 2026-07-04)
+ Problems -> solutions -> measured timings, per pipeline. Local file, not pushed.
+================================================================================
+
+LIVE TEST DEPLOYMENT
+  https://aicontentgeneration-pipeline-86j8.vercel.app
+  / = landing page (front door)  ·  /dashboard = studio home
+  /landing still works (redirects to /)
+  Chain: tester browser -> Vercel -> /api/backend rewrite -> Cloudflare tunnel
+         -> FastAPI on your Mac -> ComfyUI pod (RunPod) / ElevenLabs / Gemini
+  Your Mac must keep backend + cloudflared running (pod too, for renders).
+  Tunnel restart = new URL -> update TUNNEL_BACKEND in adgen-frontend/next.config.ts -> push.
+
+================================================================================
+ 1 · B-ROLL PIPELINE  (Wan 2.2 t2v · mode "overlay")
+================================================================================
+WHAT IT DOES  Pure text-to-video scenes (~5s per shot), stitched, narration
+              overlaid, optional music bed ducked underneath.
+
+PROBLEM 1: Robotic narration ("audio in broll felt very robotic")
+  CAUSE     ElevenLabs was called with NO voice_settings -> flat monotone read,
+            and Gemini wrote choppy "Fragment. Fragment: list." style copy.
+  FIX       (a) Expressive defaults sent on every TTS call:
+                stability 0.4 · similarity_boost 0.75 · style 0.35 · speaker_boost on
+            (b) Planner rule: scripts must be natural spoken sentences — never
+                colon-fragment constructions. Verified by A/B revoicing the same clip.
+
+PROBLEM 2: Audio/video sync slop (voice ends ~1s before video, or gets cut off)
+  CAUSE     Video length is fixed by shot count; narration length is whatever
+            ElevenLabs produces. Old assembly (apad + -shortest) never fit either
+            side to the other.
+  FIX       Auto-fit at assembly (single FFmpeg pass, all future renders):
+              voice shorter  -> video trimmed to voice-end + 0.45s breathing tail
+              voice longer   -> sped up to at most 1.12x (imperceptible); beyond
+                                that: kept + warning in job detail ("shorten script")
+            PLUS the user-facing "✂ Fix timing" tool in Library for old videos:
+              auto-trim dead tail (silence detection; incl. fix for ffmpeg
+              closing the last silence interval at EOF) · tail choice 0.2/0.45/0.8s
+              · manual "cut at N s". Runs locally in seconds, no pod.
+
+PROBLEM 3: "I don't see b-roll video with audio!"
+  CAUSE     Music/narration lane gains + a stitched intermediate being surfaced.
+  FIX       Gain chain verified (music ducked to 15% under voice; measured
+            -17 dB on the battery-F clip), intermediates deleted after assembly
+            so only the finished final lands in the Library.
+
+PROBLEM 4: Stitching clips of different resolutions hard-failed
+  FIX       Every lane normalized (scale + pad + fps + SAR to the first clip)
+            and silent clips get a generated silent audio lane, so any mix of
+            clips concatenates cleanly (this is also what powers Remix).
+
+TIMINGS (measured on the render battery)
+  Preview, cold pod (models loading)      4 min 45 s   (1 shot + TTS + assembly)
+  Preview, warm pod re-roll               1 min 45 s
+  Moderate (preview + polish chain)       ~5 min render + ~10 min enhance
+                                          -> proof: 864x1536 @ 32fps output
+  TTS                                     a few seconds
+  Assembly / revoice / fix-timing         seconds (local FFmpeg, no pod)
+
+================================================================================
+ 2 · PRODUCT PIPELINE  (Wan 2.2 i2v · mode "product")
+================================================================================
+WHAT IT DOES  Animates YOUR product photo with cinematic camera moves — the
+              photo locks the product's exact look (no AI hallucinated bottle).
+
+PROBLEM 1: Uploads didn't work in the old UI
+  FIX       Dropzone -> backend /assets upload -> pod image upload; the image is
+            uploaded to the pod ONCE and cached even when several segments
+            reuse it (sequence mode).
+
+PROBLEM 2: Enhance ruined product shots
+  CAUSE     The polish chain starts with CodeFormer FACE restoration — products
+            have no faces; it "restored" label text into mush.
+  FIX       CodeFormer is skipped automatically for product renders (both the
+            auto chain and the Library Enhance button).
+
+PROBLEM 3: Same sync/robotic-voice issues as B-roll
+  FIX       Shared: auto-fit + expressive TTS apply to product finals too.
+
+TIMINGS
+  Preview                                 ~2 min per shot (+ seconds TTS/assembly)
+  Moderate                                + ~10 min polish chain
+  Master (20 steps, never run yet)        long render — first run pending
+
+================================================================================
+ 3 · AVATAR PIPELINE  (Wan-S2V lipsync · mode "lipsync")
+================================================================================
+WHAT IT DOES  A spokesperson (from ONE face image) reads your script, lips
+              synced to the ElevenLabs voice. Audio-first: the voice track
+              drives the video, so this pipeline is exempt from auto-fit.
+
+PROBLEM 1: Hindi lipsync ("wav2vec2 speech encoder is English-only")
+  STATUS    Tested Hindi anyway (battery D): 14.9s output — you LIKED it.
+            Queued (your call): compare a multilingual wav2vec2 encoder vs the
+            LongCat-Video-Avatar 1.5 route before investing.
+
+PROBLEM 2: Editing the voice of an avatar video would desync the mouth
+  FIX       Voice-lock system: avatar renders (and any sequence/remix final
+            containing an avatar scene, tracked via sidecar files) are BLOCKED
+            from revoice/re-narration — backend refuses (422) and the UI
+            explains + offers "re-render with a new voice" instead.
+
+PROBLEM 3: Quality preset nuance
+  FIX       Fast Lightning LoRA is used for preview, but QUALITY mode switches
+            s2v to a proper 20-step render with the LoRA off (LoRA hurts s2v
+            at high step counts).
+
+TIMINGS
+  Preview                                 ~6 min for the ~14.4s fixed take
+  Master                                  ~35 min + polish (not yet run)
+  Output length                           ~14.4s per take (model constraint)
+
+================================================================================
+ CROSS-PIPELINE FIXES (apply to all three + sequence/remix)
+================================================================================
+  · Queue visibility: "N renders ahead of yours on the pod" chip + sidebar
+    pod-busy line (built for the multi-pod future).
+  · Renders survive navigation: leaving Create/Sequence no longer loses the
+    job — the page re-attaches to the running job when you come back.
+  · Cancel is safe: cancelling a local job never interrupts the pod; finished
+    jobs can't be flipped back to cancelled.
+  · Pod preflight: backend checks the pod is alive BEFORE spending ElevenLabs
+    credits on TTS.
+  · Sequence mode: mixed-pipeline timeline (avatar hook -> product -> b-roll ->
+    CTA) rendered as ONE job; battery E produced a 10.1s mixed final.
+  · Remix: reorder existing scenes + new narration/mix/music, re-export in
+    seconds with no pod (voice-lock rules enforced).
+  · Vercel 404 fixed (monorepo root vercel.json) + full mobile responsiveness
+    (sidebar -> top bar + drawer on phones) + landing-first routing.
+
+================================================================================
+ WHERE WE ARE vs THE BUILD PLAN (mdfiles/07-build-phases.md)
+================================================================================
+  Phase 0  post-processing chain proven ................. DONE
+  Phase 1  orchestrator backend ......................... DONE except:
+             - LTX cinematic pipeline ................... NOT BUILT
+             - MultiTalk (multi-person) ................. NOT BUILT
+             - parallel fan-out across MULTIPLE pods .... config ready, untested
+  Phase 2  playground UI ................................ DONE (and beyond:
+             sequence, remix, landing, theater, mobile)
+  Phase 3  avatar profile system ........................ NOT STARTED  <- NEXT
+  MVP definition needs: overlay OK + lipsync OK + product OK
+             + cinematic (LTX) MISSING + multitalk MISSING
+
+================================================================================
+ NEXT STEPS (recommended order)
+================================================================================
+  1. TESTER WEEK (now): 1-2 testers on the live URL; collect feedback; keep
+     Mac + tunnel + pod up. Fix what they hit.
+  2. First MASTER-preset render of each pipeline (never run) — know your true
+     top quality + real timings before promising them to anyone.
+  3. Phase 3 — avatar profile system (docs priority #3): DB-backed avatars
+     (face image + voice + defaults), ~5 stock avatars, bring-your-own-face.
+     First real database work (projects/users ride along).
+  4. Hindi lipsync upgrade: multilingual encoder vs LongCat comparison (your
+     explicit "we will invest" item).
+  5. Text-overlay chunk: FFmpeg drawtext end-cards/taglines — big advertiser
+     value, zero pod cost.
+  6. Remaining MVP pipelines: LTX cinematic, then MultiTalk.
+  7. Gemini learns sequence mode (proposes full timelines, not single-mode ads).
+  8. Later: A/B side-by-side player, serverless pods (parked), paid ElevenLabs
+     (restores the Hindi library voice).
+================================================================================

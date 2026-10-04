@@ -1,0 +1,60 @@
+# === Wan2.2 T2V ===
+cd /ComfyUI/models/diffusion_models
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"
+
+cd /ComfyUI/models/loras
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors"
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors"
+
+# === Wan2.2 S2V ===
+cd /ComfyUI/models/audio_encoders
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/audio_encoders/wav2vec2_large_english_fp16.safetensors"
+
+cd /ComfyUI/models/diffusion_models
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_s2v_14B_fp8_scaled.safetensors"
+
+# === Wan2.2 Fun-Inpaint ===
+cd /ComfyUI/models/diffusion_models
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_fun_inpaint_high_noise_14B_fp8_scaled.safetensors"
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_fun_inpaint_low_noise_14B_fp8_scaled.safetensors"
+
+# === Wan2.2 I2V loras ===
+cd /ComfyUI/models/loras
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"
+wget -c "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+
+# === LTX-2.3 ===
+mkdir -p /ComfyUI/models/checkpoints
+cd /ComfyUI/models/checkpoints
+wget -c "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-dev-fp8.safetensors"
+
+mkdir -p /ComfyUI/models/latent_upscale_models
+cd /ComfyUI/models/latent_upscale_models
+wget -c "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+
+mkdir -p /ComfyUI/models/loras
+cd /ComfyUI/models/loras
+wget -c "https://huggingface.co/Comfy-Org/ltx-2.3/resolve/main/split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors"
+
+mkdir -p /ComfyUI/models/text_encoders
+cd /ComfyUI/models/text_encoders
+wget -c "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors"
+
+cd /workspace/ComfyUI/models
+mkdir -p diffusion_models/LongCat
+
+wget -c -P diffusion_models/LongCat/ "https://huggingface.co/Kijai/LongCat-Video_comfy/resolve/main/Avatar/LongCat-Avatar-single_fp8_e4m3fn_scaled_mixed_KJ.safetensors"   # 16.9 GB — the avatar model (fp8)
+
+wget -c -P loras/ "https://huggingface.co/Kijai/LongCat-Video_comfy/resolve/main/LongCat_distill_lora_alpha64_bf16.safetensors"   # 1.3 GB — fast-sampling LoRA
+
+wget -c -P diffusion_models/ "https://huggingface.co/Kijai/MelBandRoFormer_comfy/resolve/main/MelBandRoformer_fp32.safetensors"   # 0.9 GB — vocal separation
+
+wget -c -P vae/ "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Wan2_1_VAE_bf16.safetensors"   # 1.4 GB — Kijai-format VAE
+(The speech encoder auto-downloads on first run — its loader node fetches it itself, nothing for you to do.)
+
+cd /workspace/ComfyUI/models
+mkdir -p diffusion_models/LongCat
+wget -c -P diffusion_models/LongCat/ "https://huggingface.co/Kijai/LongCat-Video_comfy/resolve/main/Avatar/LongCat-Avatar-single_fp8_e4m3fn_scaled_mixed_KJ.safetensors"
+wget -c -P loras/ "https://huggingface.co/Kijai/LongCat-Video_comfy/resolve/main/LongCat_distill_lora_alpha64_bf16.safetensors"
+wget -c -P vae/ "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Wan2_1_VAE_bf16.safetensors"

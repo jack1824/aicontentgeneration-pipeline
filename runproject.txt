@@ -1,0 +1,95 @@
+=====================================================================
+ RUN / RESTART THE PROJECT + VERIFY THE POD  — quick command reference
+ (local dev: FastAPI backend on :8000, Next frontend on :3000, ComfyUI
+  on a RunPod pod reached over its -8188 proxy URL)
+=====================================================================
+
+-------------------------------------------------------------------
+ A) AFTER PASTING A NEW POD URL INTO adgen-backend/.env
+-------------------------------------------------------------------
+The pod's ComfyUI runs on port 8188. The proxy URL MUST end in -8188,
+e.g.  https://XXXXXXXXXX-8188.proxy.runpod.net
+(-8888 is Jupyter and returns 404 — that mistake points the whole
+backend at a dead endpoint and every render silently fails.)
+
+  # set this once, reuse in the checks below
+  POD=https://v6s1o0v0yz802b-8188.proxy.runpod.net   # <-- your current pod
+
+-------------------------------------------------------------------
+ B) CHECK THE MODELS ARE LOADED  (run from your Mac — no SSH needed)
+-------------------------------------------------------------------
+WHY: proves (1) the pod's ComfyUI is actually up, and (2) it can SEE
+every model file the pipeline loads. If a model is missing/mis-placed
+it simply won't appear in these lists — that's your early warning
+before a render dies halfway.
+
+  # 1) Is ComfyUI up?  -> expect: HTTP 200   (404 = wrong port; 000 = pod down)
+  curl -s -o /dev/null -w "ComfyUI: HTTP %{http_code}\n" "$POD/system_stats"
+
+  # 2) Diffusion models ComfyUI can see (wan2.2 t2v/i2v/s2v + qwen keyframe)
+  curl -s "$POD/object_info/UNETLoader" | python3 -c "import sys,json;print('\n'.join(json.load(sys.stdin)['UNETLoader']['input']['required']['unet_name'][0]))"
+
+  # 3) Checkpoints (LTX, if you use cinematic mode)
+  curl -s "$POD/object_info/CheckpointLoaderSimple" | python3 -c "import sys,json;print('\n'.join(json.load(sys.stdin)['CheckpointLoaderSimple']['input']['required']['ckpt_name'][0]))"
+
+  # 4) Is the pod busy right now? (0/0 = idle, safe to restart the backend)
+  curl -s "$POD/queue" | python3 -c "import sys,json;d=json.load(sys.stdin);print('running',len(d.get('queue_running',[])),'pending',len(d.get('queue_pending',[])))"
+
+MUST-SEE in list #2 (core pipeline):
+  wan2.2_t2v_high_noise_14B_fp8_scaled  /  ..._low_noise_...
+  wan2.2_i2v_high_noise_14B_fp8_scaled  /  ..._low_noise_...
+  wan2.2_s2v_14B_fp8_scaled
+  qwen_image_edit_2509_fp8mixed          (the ONLY safe Qwen quant on this A40)
+
+For the deeper on-the-pod file-size check (catches truncated
+downloads), use STEP 8 in redownload.txt (run it in the pod terminal).
+
+-------------------------------------------------------------------
+ C) RESTART THE BACKEND  (do this after editing .env or backend code)
+-------------------------------------------------------------------
+WHY: the backend reads .env and the Python code ONCE at startup — it
+does NOT hot-reload. A changed pod URL or code fix only takes effect
+after a restart. Always confirm the pod queue is 0/0 (check B-4) first
+so you don't kill it mid-render.
+
+  cd /Users/arpitverma/Desktop/ai-contentgen/orchestrator/aicontentgeneration-pipeline/adgen-backend
+
+  pkill -f "uvicorn app.main:app"                 # stop the running server (SIGTERM)
+  #   ^ WHAT: finds the process whose command line contains that string and
+  #     stops it. -f matches the FULL command, not just the program name.
+
+  nohup ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
+  #   ^ WHAT: starts it again in the background.
+  #     nohup + &   = keeps running after you close the terminal
+  #     > backend.log 2>&1 = all output (incl. errors) goes to backend.log
+
+  curl -s http://127.0.0.1:8000/health           # expect {"ok":true}
+
+  # confirm exactly ONE backend is running (two = port fight, kill the extra):
+  ps aux | grep "uvicorn app.main" | grep -v grep
+
+  # see what the running backend will actually hit:
+  ./.venv/bin/python -c "from app.config import COMFY_POD_URLS; print(COMFY_POD_URLS)"
+
+-------------------------------------------------------------------
+ D) FRONTEND  (Next dev server on :3000)
+-------------------------------------------------------------------
+WHY: Next dev HOT-RELOADS .tsx/.ts edits automatically — you do NOT
+need to restart it for frontend changes. Only restart if it crashed
+or you changed next.config / env.
+
+  cd /Users/arpitverma/Desktop/ai-contentgen/orchestrator/aicontentgeneration-pipeline/adgen-frontend
+  # restart only if needed:
+  pkill -f "next dev"          # stops the dev server (and its next-server child)
+  npm run dev                  # starts it again on :3000
+
+  # if you ever see several stale next-server processes, list + clean them:
+  ps aux | grep next-server | grep -v grep | awk '{print $2}'   # PIDs
+  # kill a specific stale one with:  kill <PID>
+
+-------------------------------------------------------------------
+ E) ONE-LINER: is everything healthy right now?
+-------------------------------------------------------------------
+  curl -s http://127.0.0.1:8000/health; echo; \
+  curl -s -o /dev/null -w "pod: HTTP %{http_code}\n" "$POD/system_stats"; \
+  curl -s -o /dev/null -w "frontend: HTTP %{http_code}\n" http://127.0.0.1:3000

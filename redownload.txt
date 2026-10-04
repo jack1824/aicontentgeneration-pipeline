@@ -1,0 +1,236 @@
+=====================================================================
+ SAFETY FILE — full model re-download + verification, ALL COMMANDS
+ Use this if the pod/volume is ever lost and you must rebuild from a
+ FRESH pod. Self-contained: works even if the repo scripts are gone.
+ Source of truth otherwise: adgen-backend/scripts/pod-full-redownload.sh
+                            adgen-backend/scripts/pod-check-models.sh
+=====================================================================
+
+WHEN TO USE THIS
+-----------------
+- "A40 out of capacity" and you had to spin up a brand-new pod
+- Old pod's volume is unreachable / corrupted
+- pod-check-models.sh reports MISSING or TRUNCATED files and a
+  simple -c resume didn't fix it
+
+DO NOT use this if the OLD pod is just stopped/restarted — the volume
+still has everything, nothing to re-download. Only use for a pod that
+starts from a truly empty /workspace/ComfyUI/models.
+
+
+STEP 0 — confirm you actually need this
+-----------------------------------------
+SSH/web-terminal into the pod, then:
+
+  ls /workspace/ComfyUI/models
+
+If this already lists diffusion_models/ text_encoders/ vae/ loras/
+etc. with real file sizes, STOP — run the CHECK section below first
+instead of blindly re-downloading (redownloading is slow, ~205GB).
+
+
+STEP 1 — install aria2c (resumable, faster than wget)
+--------------------------------------------------------
+  which aria2c >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y aria2)
+
+
+STEP 2 — go to the volume-backed models dir
+------------------------------------------------
+  cd /workspace/ComfyUI/models   # <-- CONFIRM this path on the new pod
+  mkdir -p diffusion_models text_encoders vae audio_encoders loras \
+           facerestore_models checkpoints latent_upscale_models \
+           diffusion_models/LongCat
+
+
+STEP 3 — TIER 1: Wan 2.2 core (REQUIRED for any render, ~90 GB)
+--------------------------------------------------------------------
+A="aria2c -x16 -s16 -c"
+WAN=https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files
+
+$A -d diffusion_models -o wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors "$WAN/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"
+$A -d diffusion_models -o wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors  "$WAN/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"
+$A -d diffusion_models -o wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors "$WAN/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors"
+$A -d diffusion_models -o wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors  "$WAN/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"
+$A -d diffusion_models -o wan2.2_s2v_14B_fp8_scaled.safetensors            "$WAN/diffusion_models/wan2.2_s2v_14B_fp8_scaled.safetensors"
+$A -d text_encoders    -o umt5_xxl_fp8_e4m3fn_scaled.safetensors          "$WAN/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+$A -d vae              -o wan_2.1_vae.safetensors                        "$WAN/vae/wan_2.1_vae.safetensors"
+$A -d audio_encoders   -o wav2vec2_large_english_fp16.safetensors        "$WAN/audio_encoders/wav2vec2_large_english_fp16.safetensors"
+$A -d loras -o wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors "$WAN/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors"
+$A -d loras -o wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors  "$WAN/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors"
+$A -d loras -o wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors   "$WAN/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"
+$A -d loras -o wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors    "$WAN/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"
+$A -d facerestore_models -o codeformer.pth \
+  https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth
+
+
+STEP 4 — TIER 2: Qwen-Image-Edit keyframe engine (REQUIRED for
+Director portraits/identity-lock, ~30 GB)
+--------------------------------------------------------------------
+!! e4m3fn = BLACK FRAMES on this Ampere A40 — fp8mixed ONLY, never
+   swap this for a different quant, confirmed root cause !!
+
+$A -d diffusion_models -o qwen_image_edit_2509_fp8mixed.safetensors \
+  https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_2509_fp8mixed.safetensors
+$A -d text_encoders -o qwen_2.5_vl_7b_fp8_scaled.safetensors \
+  https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
+$A -d vae -o qwen_image_vae.safetensors \
+  https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors
+
+^^ TIER 1 + TIER 2 = everything the pipeline needs for a normal day.
+   Stop here unless you specifically need LTX cinematic / Ingredients
+   / LongCat (Tier 3/3b/4 below) — those are optional, larger, and
+   NOT needed for the core Wan2.2 + Director/keyframe workflow.
+
+
+STEP 5 (OPTIONAL) — TIER 3: LTX-2.3 cinematic mode (~32 GB)
+--------------------------------------------------------------------
+$A -d checkpoints -o ltx-2.3-22b-dev-fp8.safetensors \
+  https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-dev-fp8.safetensors
+$A -d text_encoders -o gemma_3_12B_it_fp4_mixed.safetensors \
+  https://huggingface.co/Comfy-Org/Lightricks_LTX_2.3_ComfyUI/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors
+$A -d latent_upscale_models -o ltx-2.3-spatial-upscaler-x2-1.1.safetensors \
+  https://huggingface.co/Lightricks/LTX-2.3-spatial-upscaler/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+$A -d loras -o ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors \
+  https://huggingface.co/Lightricks/LTX-2.3-distilled-lora/resolve/main/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors
+
+
+STEP 6 (OPTIONAL) — TIER 3b: LTX-2.3 Ingredients / brand-lock IC-LoRA
+--------------------------------------------------------------------
+!! GATED MODEL — requires: huggingface-cli login (accept the license
+   on the model page first), then set HF_TOKEN in your shell !!
+
+export HF_TOKEN=your_hf_token_here
+$A -d checkpoints -o ltx-2.3-22b-distilled-fp8.safetensors \
+  https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-distilled-fp8.safetensors
+$A -d loras -o ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors \
+  --header="Authorization: Bearer $HF_TOKEN" \
+  https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Ingredients/resolve/main/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors
+
+
+STEP 7 (OPTIONAL) — TIER 4: LongCat Avatar (single-stream, ~20 GB)
+--------------------------------------------------------------------
+Skip unless actively using LongCat avatar mode.
+
+$A -d diffusion_models/LongCat -o LongCat-Avatar-single_fp8_e4m3fn_scaled_mixed_KJ.safetensors \
+  https://huggingface.co/Kijai/LongCat-Video_comfy/resolve/main/Avatar/LongCat-Avatar-single_fp8_e4m3fn_scaled_mixed_KJ.safetensors
+$A -d loras -o LongCat_distill_lora_alpha64_bf16.safetensors \
+  https://huggingface.co/Kijai/LongCat-Video_comfy/resolve/main/Avatar/LongCat_distill_lora_alpha64_bf16.safetensors
+$A -d vae -o Wan2_1_VAE_bf16.safetensors \
+  https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Wan2_1_VAE_bf16.safetensors
+$A -d text_encoders -o umt5-xxl-enc-fp8_e4m3fn.safetensors \
+  https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/umt5-xxl-enc-fp8_e4m3fn.safetensors
+
+
+=====================================================================
+ STEP 8 — CHECK EVERYTHING LANDED (run this after ANY of the above,
+ and any time you doubt the pod's model state before trusting a
+ render). Paste this whole block into the pod terminal.
+=====================================================================
+
+cd /workspace/ComfyUI/models 2>/dev/null || { echo "wrong dir — cd to the volume-backed models/ first"; exit 1; }
+
+check() {
+  local path="$1" minmb="$2"
+  if [ ! -f "$path" ]; then
+    echo "MISSING  $path"
+    return
+  fi
+  local sz=$(du -m "$path" | cut -f1)
+  if [ "$sz" -lt "$minmb" ]; then
+    echo "TRUNCATED  $path  (${sz}MB, expected >=${minmb}MB — re-download with -c)"
+  else
+    echo "OK  $path  (${sz}MB)"
+  fi
+}
+
+echo "###### TIER 1 — Wan 2.2 core ######"
+check diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors 13000
+check diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors  13000
+check diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors 13000
+check diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors  13000
+check diffusion_models/wan2.2_s2v_14B_fp8_scaled.safetensors            13000
+check text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors              6000
+check vae/wan_2.1_vae.safetensors                                      1300
+check audio_encoders/wav2vec2_large_english_fp16.safetensors           500
+check loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors 500
+check loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors  500
+check loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors   500
+check loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors    500
+check facerestore_models/codeformer.pth                                350
+
+echo ""
+echo "###### TIER 2 — Qwen-Image-Edit keyframe engine ######"
+check diffusion_models/qwen_image_edit_2509_fp8mixed.safetensors 19000
+check text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors         9000
+check vae/qwen_image_vae.safetensors                              200
+
+echo ""
+echo "###### TIER 3 — LTX-2.3 cinematic (only if you ran it) ######"
+check checkpoints/ltx-2.3-22b-dev-fp8.safetensors                          21000
+check text_encoders/gemma_3_12B_it_fp4_mixed.safetensors                   7000
+check latent_upscale_models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors    100
+check loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors 500
+
+echo ""
+echo "###### TIER 3b — Ingredients (brand-lock) ######"
+check checkpoints/ltx-2.3-22b-distilled-fp8.safetensors           21000
+check loras/ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors       1000
+
+echo ""
+echo "###### TIER 4 — LongCat Avatar (only if you ran it) ######"
+check diffusion_models/LongCat/LongCat-Avatar-single_fp8_e4m3fn_scaled_mixed_KJ.safetensors 16000
+check loras/LongCat_distill_lora_alpha64_bf16.safetensors                                   1200
+check vae/Wan2_1_VAE_bf16.safetensors                                                        1300
+check text_encoders/umt5-xxl-enc-fp8_e4m3fn.safetensors                                      6500
+
+echo ""
+echo "###### CUSTOM NODE PACKS (installed via ComfyUI Manager, not files here) ######"
+if [ -d /ComfyUI/custom_nodes ]; then
+  for pack in SeedVR2 facerestore; do
+    ls /ComfyUI/custom_nodes 2>/dev/null | grep -qi "$pack" \
+      && echo "OK  custom_nodes containing '$pack'" \
+      || echo "MISSING  custom_nodes containing '$pack' — install via Manager, see below"
+  done
+else
+  echo "MISSING  /ComfyUI/custom_nodes not found — is ComfyUI running from the right path?"
+fi
+
+echo ""
+echo "== Disk used by models/: =="
+du -sh /workspace/ComfyUI/models 2>/dev/null
+
+echo ""
+echo "Any MISSING/TRUNCATED line above -> re-run the matching aria2c line from"
+echo "STEP 3/4/5/6/7 above with -c (already default) — it resumes, doesn't restart."
+
+
+=====================================================================
+ STEP 9 — AFTER a full re-download: repoint the backend
+=====================================================================
+1. Get the NEW pod's port-8188 proxy URL from the RunPod dashboard
+   (e.g. https://xxxxxxxxxx-8188.proxy.runpod.net)
+2. Edit adgen-backend/.env:
+     COMFY_POD_URLS=<new proxy URL>
+3. Restart the backend:
+     cd adgen-backend
+     ./.venv/bin/uvicorn app.main:app --port 8000
+   (only after /queue shows idle if it was already running)
+4. Do one full pipeline smoke test before telling the client anything
+   is fixed: portrait generate -> approve -> variant -> a short render
+   -> QC gate check -> export.
+
+
+NOTES / GOTCHAS
+-----------------
+- Total size TIER1+TIER2 ≈ 120 GB. Full --all ≈ 205 GB. Check pod
+  disk budget before starting (410GB volume = comfortable headroom).
+- HF signed URLs decay after a while — if a transfer dies partway,
+  just re-run the same aria2c line, -c resumes instead of restarting.
+- Never swap qwen_image_edit_2509_fp8mixed.safetensors for the
+  e4m3fn or plain fp8 variant — confirmed black-frame cause on this
+  A40 (Ampere). fp8mixed is the only proven-safe flavor here.
+- Do NOT use --use-sage-attention in the ComfyUI launch flags on this
+  pod — confirmed kernel bug source in a prior incident.
+- This is a STOPGAP procedure. The durable fix (no re-download ever
+  again) is migrating to a RunPod Network Volume — ask to resume that
+  work if you want it done properly instead of repeating this drill.

@@ -1,0 +1,266 @@
+╔══════════════════════════════════════════════════════════════════╗
+║  RUNPOD SERVERLESS + NETWORK-VOLUME — FULL RUNBOOK                 ║
+║  Authored 2026-07-20 · verified vs runpod-workers/worker-comfyui   ║
+╚══════════════════════════════════════════════════════════════════╝
+
+WHAT WE'RE BUILDING
+-------------------
+Move rendering off a single always-on GPU pod and onto RunPod Serverless,
+with all model weights on a persistent Network Volume.
+
+Two wins at once:
+  1. NETWORK VOLUME — download the ~205 GB of models ONCE. Never redownload
+     per pod again. No more rotating -8188 URL.
+  2. SERVERLESS (2 GPUs) — workers spin up on demand and render different
+     beats AT THE SAME TIME. Pay per-second, so 2 workers for X minutes
+     costs the same as 1 worker for 2X minutes — but finishes in HALF the
+     wall-clock. A ~90s episode (~18 beats): ~85 min → ~40-45 min.
+
+ONE HARD RULE (from the senior review):
+  Parallel rendering improves THROUGHPUT, not consistency. Every worker
+  must receive the stored IDENTITY ASSET PACK (hero portraits + room plates
+  + reference sheet + character LoRA) in its job input — not just the prompt
+  and seed. Otherwise each worker reinvents the face and it drifts. This is
+  wired in Part E.
+
+
+┌──────────────────────────────────────────────────────────────────┐
+│  BEFORE YOU START — checklist                                      │
+└──────────────────────────────────────────────────────────────────┘
+  [ ] RunPod account with billing enabled.
+  [ ] RunPod API key (Console → Settings → API Keys).
+  [ ] RunPod MCP connected (you just ran `npx @runpod/mcp-server@latest add`)
+      — this lets Claude drive the volume/endpoint API calls instead of you
+      clicking the console. Money-spending calls are confirmed with you first.
+  [ ] HuggingFace token (for the gated LTX-2.3 Ingredients LoRA). Accept the
+      license on the model page first.
+  [ ] A container registry you can push to (Docker Hub / GHCR) + logged in.
+  [ ] (Optional) An S3-compatible bucket for returning video files (Part B,
+      step 5, option b — the recommended one).
+  [ ] Decide GPU: A40 (what we use now) or L40S (~1.5-2× faster, same 48 GB).
+
+
+┌──────────────────────────────────────────────────────────────────┐
+│  KEY FACTS — get these wrong and nothing mounts                    │
+└──────────────────────────────────────────────────────────────────┘
+  • A Network Volume is DATACENTER-LOCKED. Whatever DC you create it in,
+    your serverless endpoint's workers must run in that SAME DC. So pick a
+    DC that actually has your GPU available before creating the volume.
+
+  • The SAME volume mounts at a DIFFERENT path depending on the product:
+        on a POD         →  /workspace
+        on SERVERLESS    →  /runpod-volume
+    So you DOWNLOAD via a temporary pod to /workspace/ComfyUI/models, and
+    the serverless WORKER later reads the identical files at
+    /runpod-volume/ComfyUI/models.
+
+  • In the worker's model-path config, paths are RELATIVE to the volume root
+    (e.g. "models/loras"). NEVER prefix "/runpod-volume" inside that config —
+    doing so creates /runpod-volume/runpod-volume/... and models "vanish".
+
+
+╔══════════════════════════════════════════════════════════════════╗
+║  PART A — PUT THE MODELS ON A NETWORK VOLUME   (one-time, ~1-2 hr) ║
+║  Who: YOU (mostly waiting on the download)                         ║
+╚══════════════════════════════════════════════════════════════════╝
+Goal: one 205 GB download that lives forever, reattached to any worker.
+
+  A1. Create the volume.
+      Console → Storage → Network Volume → New.
+        • Size: ~300 GB (205 GB models + headroom + outputs).
+        • Datacenter: one with your GPU in stock.
+      (With the MCP connected, Claude can create this for you on your OK.)
+
+  A2. Launch a TEMPORARY pod in that same DC, volume attached.
+      Any cheap GPU — this pod only downloads files. It mounts the volume
+      at /workspace.
+
+  A3. Get our download scripts onto the pod.
+      They live on your Mac at adgen-backend/scripts/ (and redownload.txt
+      at the repo root has the full URL list). Paste them into the pod's
+      web terminal, or curl them in.
+
+  A4. Download everything (resumable — if a transfer dies, re-run, it
+      continues):
+        cd /workspace/ComfyUI/models
+        export HF_TOKEN=hf_xxxxx          # gated LTX Ingredients LoRA
+        bash pod-full-redownload.sh --all # ~205 GB, aria2c -x16 -c
+        bash pod-check-models.sh          # verify every file + size
+
+      "--all" pulls the FULL set the current pod had: Wan 2.2 core, Qwen
+      keyframe engine, LTX-2.3 (dev + distilled), both LTX IC-LoRAs, LongCat.
+      Tier1+2 alone would skip LTX cinematic — which the farmer ads and our
+      episode b-roll need.
+
+  A5. Trigger the auto-download node weights once (SeedVR2, RIFE) so they
+      also land on the volume, OR pre-place them there.
+
+  A6. TERMINATE the temp pod. The volume PERSISTS with every model.
+      You only ever repeat this to ADD a new model later (e.g. Stand-In /
+      Lynx for the identity work).
+
+  ── Note: the OLD per-pod redownload still works for a plain (non-serverless)
+     pod — identical commands, just targeting that pod's /workspace/ComfyUI/
+     models. Gotchas there: (1) must be the VOLUME path, not container disk;
+     (2) launch flags: NO sage-attention + Qwen fp8mixed, else black frames;
+     (3) /resolve/main/ is unpinned (fine to stand up; not byte-exact).
+
+
+╔══════════════════════════════════════════════════════════════════╗
+║  PART B — BUILD THE WORKER IMAGE   (~half day)                     ║
+║  Who: CLAUDE writes it · YOU build & push (needs your Docker+login)║
+╚══════════════════════════════════════════════════════════════════╝
+The image = ComfyUI + our custom nodes + the RunPod handler. It does NOT
+contain the 205 GB of models (those live on the volume).
+
+  B1. Base it on runpod-workers/worker-comfyui (the maintained ComfyUI
+      serverless worker). Start from its "-base" tag (no baked models).
+
+  B2. Add our custom nodes, each PINNED to a specific commit:
+        • ComfyUI-WanVideoWrapper   (Wan t2v/i2v/s2v, LongCat, MultiTalk)
+        • ComfyUI-LTXVideo          (LTX-2.3 + IC-LoRAs)
+        • SeedVR2, facerestore_cf   (the post/enhance chain)
+      Pinning commits = the worker behaves identically on every rebuild.
+
+  B3. Add extra_model_paths.yaml pointing at the volume:
+        base_path: /runpod-volume/ComfyUI/
+        (with models/diffusion_models, models/loras, models/vae, … beneath)
+
+  B4. Bake in the LAUNCH FLAGS (this is not optional):
+        • sage-attention OFF  → it black-frames Qwen-Image on Ampere/A40
+        • Qwen quant = fp8mixed only → e4m3fn = black frames
+      Match adgen-backend/scripts/pod-morning-drill.sh.
+
+  B5. HANDLE VIDEO OUTPUT — the one real gotcha.
+      worker-comfyui returns IMAGES (base64/S3) by default. Our graphs save
+      an mp4 (VHS_VideoCombine). Pick one:
+        (a) worker writes the mp4 to /runpod-volume/outputs/… and returns the
+            path; the backend reads it off the volume (backend must also see
+            the volume).
+        (b) [RECOMMENDED] extend the handler to upload the mp4 to S3 and
+            return an s3_url; the backend downloads it. Cleanest, no shared
+            mount needed.
+        (c) base64 the mp4 — simplest, fine for small clips, wasteful bigger.
+
+  B6. Build and push:
+        docker build -t <registry>/adgen-worker:v1 .
+        docker push  <registry>/adgen-worker:v1
+
+
+╔══════════════════════════════════════════════════════════════════╗
+║  PART C — CREATE THE SERVERLESS ENDPOINT   (~30 min)               ║
+║  Who: YOU (or CLAUDE via MCP, on your OK) — this bills             ║
+╚══════════════════════════════════════════════════════════════════╝
+  C1. Console → Serverless → New Endpoint (or via MCP).
+  C2. Container image = <registry>/adgen-worker:v1 from Part B.
+  C3. GPU = A40 or L40S (48 GB), in the SAME DC as the volume.
+  C4. Advanced → Select Network Volume → the volume from Part A.
+  C5. Workers:  min = 0,  MAX = 2   ← this is "2 GPUs simultaneously".
+  C6. Enable FlashBoot. Keep 1 ACTIVE/warm worker during a live session so
+      the first beat doesn't eat a cold start; let it drop to 0 when idle.
+  C7. Copy the ENDPOINT ID and keep your API key handy (Part D needs both).
+
+
+╔══════════════════════════════════════════════════════════════════╗
+║  PART D — WIRE IT INTO THE BACKEND   (~half day)                   ║
+║  Who: CLAUDE (code). The ONLY real code change in the whole plan.  ║
+╚══════════════════════════════════════════════════════════════════╝
+Today app/providers/comfy.py POSTs a workflow to a live ComfyUI /prompt and
+polls /history. Serverless is job-based. We add a parallel provider with the
+SAME interface, so pipeline.py and all 14 workflow JSONs stay untouched.
+
+  D1. New module app/providers/comfy_serverless.py, same signature as
+      comfy_generate(pod, workflow, inputs, mapping, out_path, on_submit):
+        • POST https://api.runpod.ai/v2/<ENDPOINT_ID>/run
+            Authorization: Bearer <RUNPOD_API_KEY>
+            body: { "input": {
+                      "workflow": <our injected API-format graph>,
+                      "images":   [ {"name": …, "image": <base64>} ]  # refs
+                  } }
+        • Poll https://api.runpod.ai/v2/<ENDPOINT_ID>/status/<job_id> until
+          COMPLETED, then fetch the mp4 (per Part B5) into out_path.
+      Our workflow JSONs are ALREADY API-format (we POST them today), so they
+      drop straight into input.workflow with the node-id mapping intact.
+
+  D2. Config flag in adgen-backend/.env:
+        COMFY_MODE=serverless
+        RUNPOD_ENDPOINT_ID=…
+        RUNPOD_API_KEY=…
+      comfy.py dispatches to serverless when COMFY_MODE=serverless, else the
+      existing COMFY_POD_URLS pod path. Flip the flag to switch back anytime.
+
+  D3. Reference images we upload to the pod today (avatar face, room plate,
+      keyframe, sheet) go into input.images instead — base64, named as the
+      LoadImage nodes expect.
+
+
+╔══════════════════════════════════════════════════════════════════╗
+║  PART E — RENDER BEATS IN PARALLEL   (~half day)                   ║
+║  Who: CLAUDE (code). This is the actual speed-up.                  ║
+╚══════════════════════════════════════════════════════════════════╝
+  E1. The episode compiler already produces N independent beats. Add an async
+      pool that submits up to MAX_WORKERS (=2) beats at once, polls them all,
+      collects the mp4s, then assembles locally with FFmpeg (assembly is
+      already CPU/local — unchanged).
+
+  E2. ENGINE AFFINITY: route all Wan beats to one worker and all LTX beats to
+      the other, so neither reloads 22 GB of weights between beats.
+
+  E3. SHIP THE IDENTITY ASSET PACK with every beat's job input (portraits +
+      plate + sheet, later the character LoRA). This is the senior's rule —
+      parallel workers must all render the SAME face, which only happens if
+      they all get the same stored references, not just prompts/seeds.
+
+
+╔══════════════════════════════════════════════════════════════════╗
+║  PART F — VALIDATE & CUT OVER   (~half day)                        ║
+║  Who: BOTH                                                         ║
+╚══════════════════════════════════════════════════════════════════╝
+  F1. Smoke test: push ONE beat through /run → confirm an mp4 comes back.
+  F2. Run one FULL episode → measure wall-clock vs the serial pod → confirm
+      2 workers roughly halve it.
+  F3. Measure COLD START (container boot + model load from the volume). Tune
+      the warm-worker / FlashBoot settings.
+  F4. Keep the pod path as a fallback (COMFY_MODE=pod) until serverless is
+      proven on a real episode.
+  F5. Cost check: per-second billing × workers; watch idle warm-worker cost.
+
+
+┌──────────────────────────────────────────────────────────────────┐
+│  GOTCHAS (all confirmed)                                           │
+└──────────────────────────────────────────────────────────────────┘
+  • DC lock — volume + endpoint must share a datacenter; GPU stock in that
+    DC can constrain you.
+  • Video — worker-comfyui returns images by default; WE handle mp4 (Part B5).
+  • Cold start — every cold worker loads models from the volume into VRAM
+    (heavy for video models). FlashBoot + a warm worker during a session.
+  • Launch flags baked into the image: no sage-attention, Qwen fp8mixed.
+  • Custom nodes PINNED in the image; their auto-download weights on the VOLUME.
+  • Reproducibility — pin node commits + model revisions if you want
+    byte-exact renders across rebuilds (the "manifest" idea).
+
+
+┌──────────────────────────────────────────────────────────────────┐
+│  EFFORT & ORDER                                                    │
+└──────────────────────────────────────────────────────────────────┘
+    A  models → volume      ~1-2 hr (mostly wait)     YOU (Claude via MCP for A1)
+    B  worker image         ~half day                 CLAUDE writes · YOU build/push
+    C  serverless endpoint  ~30 min                   YOU / Claude-via-MCP
+    D  backend adapter      ~half day                 CLAUDE
+    E  parallel fan-out     ~half day                 CLAUDE
+    F  validate             ~half day                 BOTH
+    ───────────────────────────────────────────────────────────────
+    ≈ 2 focused days.
+
+  DO THIS AFTER the one-GPU pod-day render path is proven. Parts D/E just
+  parallelize a render — validate the identity path on ONE GPU first, THEN
+  multiply it. Order: pod up → prove Ep1→Ep2 consistency on one GPU → this
+  runbook.
+
+  What Claude can drive with the RunPod MCP: create the volume (A1), create
+  the endpoint + attach volume + set max-workers (C), manage workers, and
+  run test calls (F) — each money-spending call confirmed with you first.
+  What stays YOURS: the DC/GPU choice, the 205 GB in-pod download (web
+  terminal is more robust than an SSH session), docker build/push, and all
+  secrets (API key, HF token, registry + S3 creds).
+════════════════════════════════════════════════════════════════════

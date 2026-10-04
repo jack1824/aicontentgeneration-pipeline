@@ -1,0 +1,430 @@
+<title>SOCIALADZGEN — System Architecture</title>
+<style>
+  /* SOCIALADZGEN studio identity — deliberately single-theme: the dark studio
+     IS the brand (base #0a0a0b, coral #ff4d3d), same tokens as the product. */
+  :root {
+    --base: #0a0a0b;
+    --panel: #141416;
+    --panel-2: #1c1c1f;
+    --line: rgba(255, 255, 255, 0.07);
+    --line-strong: rgba(255, 255, 255, 0.14);
+    --accent: #ff4d3d;
+    --grad-a: #ff6b3d;
+    --grad-b: #ff3d6e;
+    --ink: #f5f5f4;
+    --ink-2: #a1a1a6;
+    --ink-3: #8a8a91;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1000px 480px at 70% -12%, rgba(255, 77, 61, 0.07), transparent 60%),
+      var(--base);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 24px 80px; }
+
+  /* ---- type scale ---- */
+  h1 {
+    font-size: clamp(28px, 4.5vw, 42px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.08;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .grad {
+    background: linear-gradient(120deg, var(--grad-a), var(--grad-b));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  h2 {
+    font-size: 13px;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--accent);
+    margin: 0 0 4px;
+  }
+  .sub { color: var(--ink-2); font-size: 15px; max-width: 62ch; margin: 10px 0 0; }
+  .meta { color: var(--ink-3); font-size: 12px; font-family: var(--mono); }
+
+  /* ---- zones & nodes ---- */
+  .zone {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 22px;
+    margin-top: 14px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0) 46%), var(--panel);
+  }
+  .zone-tag {
+    position: absolute;
+    top: -9px;
+    left: 18px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    background: var(--base);
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    padding: 2px 10px;
+  }
+  .zone-title { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 2px; }
+  .zone-desc { color: var(--ink-2); font-size: 13px; margin: 0 0 14px; max-width: 70ch; }
+
+  .grid { display: grid; gap: 12px; }
+  .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  @media (max-width: 760px) { .cols-2, .cols-3 { grid-template-columns: 1fr; } }
+
+  .node {
+    border: 1px solid var(--line);
+    border-top-color: var(--line-strong);
+    border-radius: 12px;
+    background: var(--panel-2);
+    padding: 14px 16px;
+  }
+  .node h3 { margin: 0 0 2px; font-size: 14px; font-weight: 650; }
+  .node p { margin: 0 0 10px; font-size: 12px; color: var(--ink-2); }
+  .node.hot { border-color: rgba(255, 77, 61, 0.35); box-shadow: 0 0 22px rgba(255, 77, 61, 0.07); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.025);
+    border-radius: 999px;
+    padding: 3px 9px;
+    white-space: nowrap;
+  }
+  .chip.on { color: var(--ink); border-color: rgba(255, 77, 61, 0.45); background: rgba(255, 77, 61, 0.09); }
+  .chip.off { opacity: 0.5; }
+
+  /* ---- connectors: the render's path flows down the page ---- */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 10px 0 2px;
+  }
+  .flow .stem { width: 2px; height: 22px; background: linear-gradient(var(--grad-a), var(--grad-b)); border-radius: 2px; }
+  .flow .head {
+    width: 0; height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid var(--grad-b);
+  }
+  .flow .lbl { font-family: var(--mono); font-size: 11px; color: var(--ink-3); padding-top: 4px; }
+
+  /* ---- model ledger table ---- */
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; min-width: 640px; }
+  th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 600;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line); color: var(--ink-2); vertical-align: top; }
+  td:first-child { color: var(--ink); font-weight: 600; white-space: nowrap; }
+  td code, .mono { font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+
+  /* ---- journey (a real sequence, so numbers carry meaning) ---- */
+  ol.journey { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 0; counter-reset: step; }
+  ol.journey li {
+    counter-increment: step;
+    position: relative;
+    padding: 10px 0 10px 52px;
+    border-left: 1px dashed var(--line-strong);
+    margin-left: 15px;
+    font-size: 13px;
+    color: var(--ink-2);
+  }
+  ol.journey li::before {
+    content: counter(step, decimal-leading-zero);
+    position: absolute;
+    left: -16px;
+    top: 8px;
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink);
+    background: var(--panel-2);
+    border: 1px solid rgba(255, 77, 61, 0.4);
+    border-radius: 999px;
+  }
+  ol.journey li strong { color: var(--ink); font-weight: 650; }
+  ol.journey li:last-child { border-left-color: transparent; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px; font-size: 12px; color: var(--ink-3); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+
+  footer { margin-top: 40px; border-top: 1px solid var(--line); padding-top: 16px; color: var(--ink-3); font-size: 12px; }
+  footer .mono { color: var(--ink-3); }
+  a { color: var(--accent); text-decoration: none; }
+  a:focus-visible, .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h2>System architecture · adsense</h2>
+    <h1>SOCIALADZGEN <span class="grad">STUDIO</span></h1>
+    <p class="sub">
+      One idea in, a finished ad out. A Next.js studio on Vercel talks through a Cloudflare
+      tunnel to a FastAPI orchestrator on the Mac, which conducts three hired specialists —
+      Gemini plans, ElevenLabs speaks, a rented GPU renders — and FFmpeg cuts the final.
+    </p>
+    <div class="legend">
+      <span><span class="dot" style="background:#5b8dbb"></span> rented cloud</span>
+      <span><span class="dot" style="background:#ff4d3d"></span> your Mac (the brain)</span>
+      <span><span class="dot" style="background:#4db07a"></span> rented GPU (RunPod)</span>
+      <span><span class="dot" style="background:#8a8a91"></span> storage</span>
+    </div>
+  </header>
+
+  <!-- ═══════════ LAYER 1 · THE AUDIENCE ═══════════ -->
+  <section class="zone" aria-label="Users">
+    <span class="zone-tag">who arrives</span>
+    <p class="zone-title">Advertisers &amp; visitors</p>
+    <p class="zone-desc">Indian SMB owners on phones and desktops — plus you, running demos.</p>
+    <div class="chips">
+      <span class="chip">browser / phone</span>
+      <span class="chip">EN + हिन्दी</span>
+      <span class="chip">testers via live Vercel URL</span>
+    </div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><div class="stem"></div><div class="head"></div><span class="lbl">https</span></div>
+
+  <!-- ═══════════ LAYER 2 · FRONTEND ═══════════ -->
+  <section class="zone" style="border-color:rgba(91,141,187,.3)" aria-label="Frontend">
+    <span class="zone-tag" style="color:#7fa8cc">vercel · cloud</span>
+    <p class="zone-title">Next.js 16 frontend <span class="mono">adgen-frontend/</span></p>
+    <p class="zone-desc">
+      Landing page is the manual (playbook + prompt book); the studio is the OpenArt-style hub.
+      All API calls proxy through <code>/api/backend/*</code> — no keys ever reach the browser.
+    </p>
+    <div class="grid cols-3">
+      <div class="node">
+        <h3>Marketing “/”</h3>
+        <p>Hero with the glass IdeaPill, template carousel, playbook, prompt book, proof wall.</p>
+        <div class="chips"><span class="chip">#playbook</span><span class="chip">#prompts</span><span class="chip">GSAP</span></div>
+      </div>
+      <div class="node hot">
+        <h3>Studio hub “/dashboard”</h3>
+        <p>“What would you like to create today?” — typewriter pill, mode pills, engines, live previews.</p>
+        <div class="chips"><span class="chip">IdeaPill</span><span class="chip">3D tilt</span><span class="chip">glass strips</span></div>
+      </div>
+      <div class="node">
+        <h3>Work pages</h3>
+        <p>Create · Sequence · Dialogue · Remix · Library (re-dub, enhance, fix-timing) · Avatars.</p>
+        <div class="chips"><span class="chip">sessionStorage persistence</span><span class="chip">job re-attach</span></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><div class="stem"></div><div class="head"></div><span class="lbl">cloudflared quick tunnel — rotating URL in next.config.ts</span></div>
+
+  <!-- ═══════════ LAYER 3 · ORCHESTRATOR ═══════════ -->
+  <section class="zone" style="border-color:rgba(255,77,61,.3)" aria-label="Orchestrator">
+    <span class="zone-tag" style="color:#ff8a7a">your mac · the brain</span>
+    <p class="zone-title">FastAPI orchestrator <span class="mono">adgen-backend/ · :8000</span></p>
+    <p class="zone-desc">
+      Every render is a job: plan it, voice it, send it to the GPU, pull it back, cut it.
+      Secrets live in <code>.env</code> only. The queue is checked before any restart.
+    </p>
+    <div class="grid cols-2">
+      <div class="node hot">
+        <h3>API surface <span class="mono">app/main.py</span></h3>
+        <div class="chips">
+          <span class="chip on">/plan</span><span class="chip on">/plan-dialogue</span>
+          <span class="chip on">/generate</span><span class="chip">/jobs/{id}</span>
+          <span class="chip">/queue</span><span class="chip">/outputs</span>
+          <span class="chip">/assets</span><span class="chip">/voices</span>
+          <span class="chip on">/postprocess</span><span class="chip on">/endcard</span>
+          <span class="chip">/avatars</span><span class="chip">/sheets</span><span class="chip">/stills</span>
+        </div>
+      </div>
+      <div class="node">
+        <h3>Pipeline conductor <span class="mono">app/pipeline.py</span></h3>
+        <p>Mode switch, per-shot seeds, pod preflight before spending TTS credits, VO-overrun
+        guard (raises with the shot count you actually need), voice-lock sidecars.</p>
+      </div>
+      <div class="node">
+        <h3>Assembly <span class="mono">app/assembly/ffmpeg.py</span></h3>
+        <p>Stitch → narration overlay (<code>adelay → atempo</code>, the order that cost us a day) →
+        music ducked under voice (<code>amix normalize=0</code>) → fit within 1.12× tempo.</p>
+        <div class="chips"><span class="chip">end cards (drawtext)</span><span class="chip">re-dub audio swap</span><span class="chip">✂ fix-timing</span></div>
+      </div>
+      <div class="node">
+        <h3>Post chain <span class="mono">app/postprocess.py</span></h3>
+        <p>Optional forever. Videos &gt;15s enhance in 10s chunks; resolution hard-capped at
+        1088 so verticals can’t OOM the pod. Product clips skip face restore.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ LAYER 4 · PROVIDERS ═══════════ -->
+  <div class="flow" aria-hidden="true"><div class="stem"></div><div class="head"></div><span class="lbl">the three specialists</span></div>
+
+  <div class="grid cols-3">
+    <section class="zone" style="margin-top:0" aria-label="Gemini">
+      <span class="zone-tag">google · planning</span>
+      <p class="zone-title">Gemini 2.5 Flash</p>
+      <p class="zone-desc">The creative director.</p>
+      <div class="node">
+        <h3>Director-style prompts</h3>
+        <p>STYLE → SUBJECT → ACTION → SCENE → CAMERA → LIGHT/COLOR → AUDIO. Verbatim anchors,
+        emotion graded as light, color arc turns at the pattern break, “The audio is…” closer.</p>
+        <div class="chips"><span class="chip">3 approaches per idea</span><span class="chip">dialogue writer</span><span class="chip">429 → flash-lite</span></div>
+      </div>
+    </section>
+
+    <section class="zone" style="margin-top:0" aria-label="ElevenLabs">
+      <span class="zone-tag">elevenlabs · voice</span>
+      <p class="zone-title">TTS</p>
+      <p class="zone-desc">The voice artist.</p>
+      <div class="node">
+        <h3>eleven_multilingual_v2</h3>
+        <p>Hindi + English, expressive settings (stability 0.4, style 0.35). ~1.5 Hindi
+        words/sec is the script-length law every ad is budgeted against.</p>
+        <div class="chips"><span class="chip">voice picker + previews</span><span class="chip">voice-lock on avatars</span></div>
+      </div>
+    </section>
+
+    <section class="zone" style="margin-top:0; border-color:rgba(77,176,122,.3)" aria-label="RunPod">
+      <span class="zone-tag" style="color:#6fc394">runpod · muscle</span>
+      <p class="zone-title">ComfyUI on A40 48GB</p>
+      <p class="zone-desc">The render farm, via proxy :8188.</p>
+      <div class="node">
+        <h3>/workspace volume · 250 GB</h3>
+        <p>Models survive stops; the container doesn’t. <code>restore_after_reset.sh</code>
+        rebuilds the container side in minutes. Ledger: <code>MODELS.txt</code>.</p>
+        <div class="chips"><span class="chip off">pod-pinned → migrations</span><span class="chip on">fix: Network Volume</span></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ═══════════ MODEL LEDGER ═══════════ -->
+  <section class="zone" aria-label="Models">
+    <span class="zone-tag" style="color:#6fc394">on the gpu</span>
+    <p class="zone-title">Model roster — who renders what</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Family</th><th>Graphs</th><th>Feeds these ad modes</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Wan 2.2 14B</td>
+            <td><code>t2v · i2v · s2v</code></td>
+            <td>B-roll, Product (photo→motion), Avatar lipsync, faces/sheets/stills as 1-frame photos</td>
+            <td>FAST 4-step LoRA for previews; 20-step QUALITY for every final</td>
+          </tr>
+          <tr>
+            <td>LTX-2.3 22B</td>
+            <td><code>t2v+audio · ingredients · lipdub</code></td>
+            <td>Cinematic (native sound + speaking characters), Brand Lock, Re-dub</td>
+            <td>~2 min/shot with its own soundtrack; IC-LoRA sheet locks brand identity</td>
+          </tr>
+          <tr>
+            <td>LongCat-Avatar 1.5</td>
+            <td><code>single · 2-window</code></td>
+            <td>Long Avatar — rock-steady spokesperson takes beyond the 14.4s wall</td>
+            <td>~30 min/take; duo (two speakers) parked on a wrapper update</td>
+          </tr>
+          <tr>
+            <td>Post chain</td>
+            <td><code>codeformer → seedvr2 → rife</code></td>
+            <td>Optional Enhance/Master polish on any Library video</td>
+            <td>Chunked &gt;15s, capped 1088px — polish can no longer crash the pod</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="flow" aria-hidden="true"><div class="stem"></div><div class="head"></div><span class="lbl">mp4 comes home</span></div>
+
+  <!-- ═══════════ LAYER 5 · STORAGE ═══════════ -->
+  <section class="zone" aria-label="Storage">
+    <span class="zone-tag">mac disk · storage</span>
+    <p class="zone-title">Outputs &amp; assets</p>
+    <div class="grid cols-3">
+      <div class="node">
+        <h3>outputs/&lt;pipeline&gt;/</h3>
+        <p><code>video/ + audio/</code> name-prefixed pairs — the Library reads straight from here.</p>
+      </div>
+      <div class="node">
+        <h3>assets/</h3>
+        <p>Avatar faces, brand sheets, product photos — uploaded once, reused across ads.</p>
+      </div>
+      <div class="node">
+        <h3>Job registry</h3>
+        <p>In-memory jobs with progress stages; pages re-attach after navigation. DB is Phase-next.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ MODES ═══════════ -->
+  <section class="zone" aria-label="Modes">
+    <span class="zone-tag">the menu</span>
+    <p class="zone-title">Eleven ways to make an ad</p>
+    <div class="chips" style="margin-top:6px">
+      <span class="chip on">🎬 overlay (b-roll + VO)</span>
+      <span class="chip on">📦 product (i2v)</span>
+      <span class="chip on">🗣 lipsync avatar</span>
+      <span class="chip on">🎥 cinematic (native audio)</span>
+      <span class="chip on">🧑‍🎤 longcat long-take</span>
+      <span class="chip on">🧩 brand lock</span>
+      <span class="chip on">🎤 re-dub</span>
+      <span class="chip on">💬 dialogue (shot/reverse-shot)</span>
+      <span class="chip on">🎞 sequence (mixed timeline)</span>
+      <span class="chip on">♻️ remix (no pod)</span>
+      <span class="chip off">👥 duo — parked</span>
+    </div>
+  </section>
+
+  <!-- ═══════════ A RENDER'S JOURNEY ═══════════ -->
+  <section class="zone" aria-label="Journey">
+    <span class="zone-tag">one ad, end to end</span>
+    <p class="zone-title">A render’s journey</p>
+    <ol class="journey">
+      <li><strong>Idea</strong> lands in the pill — “story ad for my dental clinic…” — and rides to <code>/plan</code>.</li>
+      <li><strong>Gemini</strong> returns 3 directions: pipeline, director-style shots, narration script. You pick and edit.</li>
+      <li><strong>Preflight</strong>: pod alive? models present? Only then are ElevenLabs credits spent on the <strong>voice</strong>.</li>
+      <li><strong>GPU renders</strong> each shot (queue position shown live); clips download home as they finish.</li>
+      <li><strong>FFmpeg assembles</strong>: stitch → narration timed over the cut → music ducked beneath the voice.</li>
+      <li><strong>End card</strong> stamps brand · tagline · offer — the only place text is ever typed, never generated.</li>
+      <li>Optional <strong>polish</strong> (chunked enhance) — and the final lands in the <strong>Library</strong>, ready to post.</li>
+    </ol>
+  </section>
+
+  <footer>
+    <span class="mono">drawn 2026-07-07 · ledgers: adgen-backend/MODELS.txt · /workspace/restore_after_reset.sh · workflows/*.json</span><br>
+    SOCIALADZGEN STUDIO — created by ARPIT
+  </footer>
+</div>
