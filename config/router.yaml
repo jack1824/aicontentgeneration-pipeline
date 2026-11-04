@@ -1,0 +1,47 @@
+# Model routing per job and quality preset. Slugs verified 2 Nov 2026 — re-verify with scripts/model_canary.py.
+# Simple mode uses preset "standard" and never shows these names.
+presets:
+  draft:
+    stills:       { slug: higgsfield-ai/soul/v2/standard, resolution: 720p, batch_size: 4 }
+    product:      { slug: marketing-studio/image, resolution: 1k }
+    video:        { slug: alibaba/wan-3.0/image-to-video, resolution: 480p, generate_audio: false }
+    multi_ref:    { slug: alibaba/wan-3.0/reference-to-video, resolution: 480p }
+    first_last:   { slug: kling-video/o3/first-last-frame, mode: std }
+    reshoot:      { slug: higgsfield/genjutsu-light/motion-transfer/v1.0, resolution: 480p }
+    rerolls: 1
+    approve_stills: auto
+  standard:
+    stills:       { slug: higgsfield-ai/soul/v2/standard, resolution: 1080p, batch_size: 4 }
+    product:      { slug: marketing-studio/image, resolution: 2k, quality: high }
+    video:        { slug: kling-video/v3.0/pro/image-to-video, resolution: 1080p, sound: "off" }
+    multi_ref:    { slug: kling-video/o3/image-reference, mode: pro, sound: "off" }
+    first_last:   { slug: kling-video/o3/first-last-frame, mode: pro }
+    reshoot:      { slug: higgsfield/genjutsu/motion-transfer/v1.0, resolution: 720p }
+    rerolls: 1
+    approve_stills: auto
+  master:
+    stills:       { slug: higgsfield-ai/soul/v2/standard, resolution: 1080p, batch_size: 4 }
+    hero_still:   { slug: higgsfield-ai/soul/v2/standard, resolution: 1080p, batch_size: 4 }   # same Soul ID v2; Soul Cinema (needs a cinema-version Soul ID) is an optional upgrade, see 01-model-catalog
+    product:      { slug: marketing-studio/image/flare, resolution: 4k, quality: max }
+    video:        { slug: kling-video/v4.0/reference-to-video, resolution: 1080p }   # schema partly unpublished: verify in Phase 0
+    multi_ref:    { slug: bytedance/seedance-2.5/reference-to-video, resolution: 720p }
+    first_last:   { slug: kling-video/o3/first-last-frame, mode: pro }
+    reshoot:      { slug: higgsfield/genjutsu/motion-transfer/v1.0, resolution: 1080p }
+    film:         { slug: higgsfield/cinema-studio/4.0, resolution: 720p, generate_audio: false }
+    extend:       { slug: bytedance/seedance-2.5/video-extend }
+    rerolls: 2
+    approve_stills: human
+shared:
+  brand_face_training: { endpoint: /v1/custom-references, model_version: v2 }
+  bg_removal:          { slug: alibaba/qwen-image-3/edit }
+  static_creatives:    { slug: higgsfield/ads-studio/v1.0 }
+  fallback_order:      [standard, draft]      # step one tier down after two failures or a 423/503
+  concurrency:         account_tier_minus_2
+voice:
+  final:   eleven_v4
+  preview: eleven_v4_turbo
+  numbers: eleven_multilingual_v2
+  align:   forced-alignment
+  music:   music_v2_5
+  sfx:     eleven_text_to_sound_v3
+not_on_api: [veo, sora, nano-banana, gpt-image, flux, seedream, popcorn, upscale, lipsync]

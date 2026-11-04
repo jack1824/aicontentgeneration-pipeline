@@ -1,0 +1,28 @@
+.env
+.env.*
+!.env.example
+.DS_Store
+node_modules/
+.next/
+dist/
+build/
+__pycache__/
+.venv/
+*.pyc
+proofs/out/
+SUMMARIES/shots/*.png
+# Phase 0 plain-file stores, anchored to the repo root (an unanchored "assets/" also hid skill and mockup assets)
+/assets/
+/.cache/
+*.mp4
+*.mp3
+*.wav
+!content/samples/**
+!workers/tests/fixtures/**
+!mockup/studio-ui/src/assets/**
+
+# taste-skill inspector output and Playwright artefacts
+.taste-skill/
+test-results/
+playwright-report/
+mockup/studio-ui/dist/

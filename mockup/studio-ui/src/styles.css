@@ -1,0 +1,237 @@
+@import 'tailwindcss';
+
+/* Fonts are bundled into the page (fontsource) so they always load: Schibsted Grotesk for Latin, Mukta for Devanagari. */
+@import '@fontsource/schibsted-grotesk/latin-400.css';
+@import '@fontsource/schibsted-grotesk/latin-600.css';
+@import '@fontsource/schibsted-grotesk/latin-800.css';
+@import '@fontsource/mukta/devanagari-400.css';
+@import '@fontsource/mukta/devanagari-600.css';
+@import '@fontsource/mukta/devanagari-800.css';
+@import '@fontsource-variable/bodoni-moda/opsz.css';
+@import '@fontsource-variable/bodoni-moda/opsz-italic.css';
+@import '@fontsource/tiro-devanagari-hindi/devanagari-400.css';
+@import '@fontsource/tiro-devanagari-hindi/devanagari-400-italic.css';
+
+/* Taste-skill direction "The well-kept board" (dense-tiles), palette "Cool grey, cobalt", type "Schibsted Grotesk".
+   App screens: style "framed-sheet" with the page's palette and type kept. */
+:root {
+  /* page */
+  --bg: #eef0f3;
+  --surface: #e2e5ea;
+  --surface-2: #d3d8e0;
+  --ink: #0b0c0e;
+  --muted: #5d6470;
+  --accent: #8f3047;
+  --accent-strong: #74263a;
+  --accent-ink: #ffffff;
+
+  /* app (framed-sheet) */
+  --frame: #eef0f3;
+  --sheet: #ffffff;
+  --well: #f4f6f8;
+  --border: #e3e6eb;
+  --rule: #eef0f3;
+  --control: #cfd4dc;
+  --text: #0b0c0e;
+  --text-2: #5d6470;
+  --primary: #0b0c0e;
+  --positive: #247b50;
+  --pill-positive-bg: #dcfae5;
+  --pill-positive-ink: #04250e;
+  --negative: #c4242a;
+  --pill-negative-bg: #ffedea;
+  --pill-negative-ink: #831c1e;
+  --pill-warning-bg: #fffbeb;
+  --pill-warning-ink: #92400e;
+
+  /* type steps (page) */
+  --step-small: clamp(0.8125rem, 0.79rem + 0.1vw, 0.875rem);
+  --step-body: clamp(1.0625rem, 1rem + 0.25vw, 1.1875rem);
+  --step-lead: clamp(1.25rem, 1.1rem + 0.7vw, 1.625rem);
+  --step-head: clamp(2rem, 1.3rem + 3.2vw, 4rem);
+
+  /* motion tokens (taste-skill references/motion.md §4) */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.76, 0, 0.24, 1);
+  --ease-soft: cubic-bezier(0.33, 1, 0.68, 1);
+  --t-press: 140ms;
+  --t-hover: 180ms;
+  --t-ui: 240ms;
+
+  --radius: 8px;
+  --margin: 8px;
+}
+
+@theme inline {
+  --font-sans: 'Schibsted Grotesk', 'Mukta', system-ui, sans-serif;
+  --font-hi: 'Mukta', 'Schibsted Grotesk', sans-serif;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-frame: var(--frame);
+  --color-sheet: var(--sheet);
+  --color-well: var(--well);
+  --color-line: var(--border);
+  --color-control: var(--control);
+  --color-text-2: var(--text-2);
+  --color-positive: var(--positive);
+  --radius-tile: var(--radius);
+}
+
+html { -webkit-text-size-adjust: 100%; color-scheme: light; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+@media (pointer: fine) { html { overscroll-behavior: none; } }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-sans); font-size: var(--step-body); line-height: 1.4; letter-spacing: -0.01em; -webkit-font-smoothing: antialiased; }
+@layer base {
+  h1, h2, h3, h4 { text-wrap: balance; }
+  p { text-wrap: pretty; }
+}
+.hi { font-family: var(--font-hi); letter-spacing: 0; }
+.num { font-variant-numeric: tabular-nums; }
+.display { font-weight: 800; letter-spacing: -0.05em; line-height: 0.88; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+::selection { background: var(--accent); color: var(--accent-ink); }
+[id] { scroll-margin-top: 80px; }
+
+/* ---------- controls ---------- */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; min-height: 44px; padding: 0 1.1rem; border-radius: var(--radius);
+  font-weight: 600; font-size: 0.95rem; white-space: nowrap;
+  transition: transform var(--t-press) var(--ease-out), background-color var(--t-hover) ease, color var(--t-hover) ease, border-color var(--t-hover) ease; }
+.btn:active { transform: scale(0.97); }
+.btn-accent { background: var(--accent); color: var(--accent-ink); }
+.btn-ink { background: var(--primary); color: #fff; }
+.btn-line { background: var(--sheet); color: var(--text); border: 1px solid var(--control); }
+.btn-quiet { color: var(--text-2); min-height: 36px; padding: 0 0.6rem; }
+.btn-on-ink { background: #fff; color: var(--ink); }
+.btn:disabled { background: var(--surface); color: var(--muted); border-color: transparent; cursor: not-allowed; }
+.btn-sm { min-height: 36px; font-size: 0.875rem; padding: 0 0.85rem; }
+@media (hover: hover) and (pointer: fine) {
+  .btn-accent:hover { background: var(--accent-strong); }
+  .btn-ink:hover { background: #2a2d33; }
+  .btn-line:hover { border-color: var(--muted); }
+  .btn-quiet:hover { color: var(--text); background: var(--well); }
+  .btn-on-ink:hover { background: var(--surface); }
+  .link:hover { text-decoration-color: currentColor; }
+}
+.link { text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 0.2em; text-decoration-thickness: 0.07em; transition: text-decoration-color var(--t-hover) ease; }
+
+.field { width: 100%; min-height: 40px; background: var(--sheet); border-radius: 10px; border: 1px solid var(--border); padding: 0.55rem 0.8rem; font-size: 0.95rem; color: var(--text);
+  transition: border-color var(--t-hover) ease, outline-color var(--t-hover) ease; outline: 2px solid transparent; outline-offset: -1px; }
+.field::placeholder { color: #6b6b6b; }
+.field:focus { outline-color: var(--accent); border-color: var(--accent); }
+.flabel { display: block; font-size: 0.875rem; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.fhint { font-size: 0.8125rem; color: var(--text-2); }
+
+.pill { display: inline-flex; align-items: center; gap: 0.3rem; height: 22px; padding: 0 0.5rem; border-radius: 6px; font-size: 0.75rem; font-weight: 600; background: var(--well); color: var(--text-2); white-space: nowrap; }
+.pill-pos { background: var(--pill-positive-bg); color: var(--pill-positive-ink); }
+.pill-neg { background: var(--pill-negative-bg); color: var(--pill-negative-ink); }
+.pill-warn { background: var(--pill-warning-bg); color: var(--pill-warning-ink); }
+.pill-acc { background: #f6e6ea; color: var(--accent-strong); }
+
+/* a selectable row/card: a 2px accent edge on the one selected state */
+.pick { border-radius: 12px; border: 1px solid var(--border); outline: 2px solid transparent; outline-offset: -1px; background: var(--sheet); text-align: left; transition: border-color var(--t-hover) ease, outline-color var(--t-hover) ease; }
+.pick[aria-checked='true'], .pick[aria-pressed='true'] { border-color: var(--accent); outline-color: var(--accent); }
+@media (hover: hover) and (pointer: fine) { .pick:hover { border-color: var(--muted); } .pick[aria-checked='true']:hover { border-color: var(--accent); } }
+
+/* segmented control */
+.seg { position: relative; display: inline-flex; padding: 3px; border-radius: 10px; background: var(--surface); }
+.seg > button { position: relative; z-index: 1; min-height: 30px; padding: 0 0.8rem; border-radius: 7px; font-size: 0.875rem; font-weight: 600; color: var(--text-2); transition: color var(--t-hover) ease; }
+.seg > button[aria-pressed='true'] { color: var(--text); }
+.seg .thumb { position: absolute; z-index: 0; top: 3px; bottom: 3px; left: 0; border-radius: 7px; background: var(--sheet); }
+
+/* the 9:16 preview: the product's own player, not a device */
+.reel { position: relative; aspect-ratio: 9 / 16; overflow: hidden; border-radius: 14px; background: var(--ink); color: #fff; container-type: inline-size; isolation: isolate; }
+.reel-cap { display: inline; padding: 0.06em 0.28em; border-radius: 0.2em; background: rgba(11, 12, 14, 0.74); font-weight: 800; letter-spacing: -0.02em; line-height: 1.22;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.reel-cap .w { opacity: 0.55; }
+.reel-hook { background: #fff; color: var(--ink); font-weight: 800; letter-spacing: -0.04em; line-height: 0.98; border-radius: 6px; padding: 0.3em 0.45em; }
+
+/* timeline lanes */
+.lane { position: relative; height: 32px; border-radius: 6px; background: var(--well); }
+.blk { position: absolute; top: 3px; bottom: 3px; display: flex; align-items: center; padding: 0 0.5rem; overflow: hidden; border-radius: 4px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* skip link */
+.skip { position: absolute; left: 8px; top: -60px; z-index: 100; }
+.skip:focus { top: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+
+/* side sheet (floats, so it may cast a shadow) */
+.sheet-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(11, 12, 14, 0.38); }
+.sheet-panel { position: fixed; z-index: 61; top: 0; right: 0; bottom: 0; width: min(100vw, 520px); background: var(--sheet); box-shadow: -24px 0 48px rgba(11, 12, 14, 0.14);
+  display: flex; flex-direction: column; overscroll-behavior: contain; }
+@media (prefers-reduced-motion: no-preference) {
+  .sheet-overlay[data-state='open'] { animation: fade-in 200ms var(--ease-out); }
+  .sheet-overlay[data-state='closed'] { animation: fade-out 160ms ease-in; }
+  .sheet-panel[data-state='open'] { animation: slide-in 320ms var(--ease-out); }
+  .sheet-panel[data-state='closed'] { animation: slide-out 200ms ease-in; }
+}
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes slide-in { from { transform: translateX(100%); } }
+@keyframes slide-out { to { transform: translateX(100%); } }
+
+/* ================= landing: editorial direction =================
+   Deep plum and charcoal hold the page; bone and warm off-white carry type; orange is for what you can press;
+   wine is selective emphasis; champagne is for small details. Hard cuts between grounds, no gradients, no glow. */
+.lp {
+  --plum: #18121c; --char: #151113; --s-plum: #241b29; --s-char: #241a1e;
+  --bone: #f1ede4; --off: #f3ede5; --orange: #ff5a36; --orange-deep: #e8461f; --wine: #8f3047; --champ: #c6a87d; --mplum: #8b7b94; --mplum-2: #a495ad;
+  --reel-1: #241b29; --reel-2: #3a1d28; --reel-3: #2e2433; --reel-4: #8f3047;
+  --reel-end: #ff5a36; --reel-end-ink: #18121c; --reel-card: #c6a87d; --reel-card-ink: #151113;
+  --accent: var(--orange); --meter-on: var(--bone); --meter-off: #3b3040;
+  background: var(--plum); color: var(--bone);
+}
+.lp ::selection { background: var(--orange); color: var(--plum); }
+.lp :focus-visible { outline: 2px solid var(--orange); outline-offset: 3px; }
+.serif { font-family: 'Bodoni Moda Variable', 'Tiro Devanagari Hindi', Georgia, serif; font-optical-sizing: auto; letter-spacing: -0.02em; font-weight: 500; }
+.serif-i { font-family: 'Bodoni Moda Variable', 'Tiro Devanagari Hindi', Georgia, serif; font-style: italic; font-optical-sizing: auto; letter-spacing: -0.01em; }
+.deva { font-family: 'Tiro Devanagari Hindi', 'Mukta', serif; letter-spacing: 0; }
+.lp-btn { display: inline-flex; align-items: center; gap: 0.6rem; min-height: 52px; padding: 0 1.5rem; border-radius: 2px; font-weight: 600; font-size: 1rem;
+  transition: transform var(--t-press) var(--ease-out), background-color var(--t-hover) ease, color var(--t-hover) ease, border-color var(--t-hover) ease; }
+.lp-btn:active { transform: scale(0.97); }
+.lp-btn-orange { background: var(--orange); color: var(--plum); }
+.lp-btn-line { border: 1px solid var(--orange); color: var(--bone); min-height: 44px; padding: 0 1.1rem; }
+.lp-btn-bone { background: var(--bone); color: var(--plum); }
+.lp-nav { color: color-mix(in srgb, var(--off) 82%, transparent); transition: color var(--t-hover) ease; }
+.lp-link { color: var(--bone); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--champ) 60%, transparent); text-underline-offset: 0.28em; text-decoration-thickness: 1px; transition: text-decoration-color var(--t-hover) ease, color var(--t-hover) ease; }
+@media (hover: hover) and (pointer: fine) {
+  .lp-btn-orange:hover { background: var(--bone); }
+  .lp-btn-line:hover { background: var(--orange); color: var(--plum); }
+  .lp-btn-bone:hover { background: var(--orange); }
+  .lp-link:hover { text-decoration-color: var(--orange); color: var(--off); }
+  .lp-nav:hover { color: var(--orange); }
+}
+/* the arrow travels on hover: a small answer under the hand */
+.lp-btn .arr { transition: transform var(--t-ui) var(--ease-out); }
+@media (hover: hover) { .lp-btn:hover .arr { transform: translateX(4px); } }
+
+/* underline field: the hero's one live control */
+.lp-field { width: 100%; background: transparent; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--champ) 55%, transparent); color: var(--off); padding: 0.4rem 0 0.5rem;
+  transition: border-color var(--t-hover) ease; border-radius: 0; }
+.lp-field::placeholder { color: var(--mplum); }
+.lp-field:focus { outline: none; border-bottom-color: var(--orange); }
+.lp-select { appearance: none; background: transparent; color: var(--off); border: 0; border-bottom: 1px solid color-mix(in srgb, var(--champ) 40%, transparent); padding: 0.45rem 1.6rem 0.45rem 0; width: 100%;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23c6a87d' stroke-width='1.5'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 4px center; }
+.lp-select:focus { outline: none; border-bottom-color: var(--orange); }
+.lp-select option { background: var(--plum); color: var(--off); }
+.lp .seg { background: var(--s-plum); }
+.lp .seg > button { color: var(--mplum-2); }
+.lp .seg > button { transition: color var(--t-hover) ease, background-color var(--t-ui) var(--ease-out); }
+.lp .seg > button[aria-pressed='true'] { color: var(--plum); background: var(--bone); }
+.lp .seg .thumb { display: none; }
+
+/* paper grain: a still texture, printed once, never animated */
+.grain { position: relative; isolation: isolate; }
+.grain::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; opacity: 0.07; mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+.rule-champ { border-color: color-mix(in srgb, var(--champ) 28%, transparent); }

@@ -1,0 +1,55 @@
+{
+  "brand": "Sharma Sweets",
+  "city": "Jaipur",
+  "duration_s": 15,
+  "lang": "hinglish",
+  "register": "aap",
+  "beats": [
+    {
+      "n": 1,
+      "type": "hook",
+      "budget_s": 2.5,
+      "vo_dev": "[excited] दिवाली गिफ्ट अभी तक decide नहीं हुआ?",
+      "display": "Diwali gift abhi tak decide nahi hua?",
+      "on_screen": "Diwali gift?",
+      "energy": "punchy"
+    },
+    {
+      "n": 2,
+      "type": "setup",
+      "budget_s": 3.5,
+      "vo_dev": "[warm] Sharma Sweets का काजू कतली gift box, हर सुबह ताज़ा बनता है।",
+      "display": "Sharma Sweets ka kaju katli gift box, har subah taaza banta hai.",
+      "on_screen": "Fresh every morning",
+      "energy": "warm"
+    },
+    {
+      "n": 3,
+      "type": "proof",
+      "budget_s": 5,
+      "vo_dev": "[calm] घर जैसा स्वाद, [short pause] gift के लिए तैयार box।",
+      "display": "Ghar jaisa swaad, gift ke liye taiyaar box.",
+      "on_screen": "Ghar jaisa swaad",
+      "energy": "steady"
+    },
+    {
+      "n": 4,
+      "type": "offer",
+      "budget_s": 2,
+      "vo_dev": "[excited] पाँच सौ ग्राम का box, [short pause] दिवाली से पहले delivery।",
+      "display": "500 g ka box, Diwali se pehle delivery.",
+      "on_screen": "500 g · Delivery before Diwali",
+      "energy": "punchy"
+    },
+    {
+      "n": 5,
+      "type": "cta",
+      "budget_s": 2,
+      "vo_dev": "[warm] WhatsApp पे 'Hi' भेजिए, [short pause] आज ही।",
+      "display": "WhatsApp pe 'Hi' bhejiye, aaj hi.",
+      "on_screen": "WhatsApp → 'Hi'",
+      "energy": "warm"
+    }
+  ],
+  "notes": "Numbers are spelled out in Devanagari for the voice and shown as digits on screen. Used by proofs/c_voice.py and e_assemble.py."
+}

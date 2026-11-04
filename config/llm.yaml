@@ -1,0 +1,61 @@
+# Free-tier LLM chain. Order = priority. Edit ids HERE, never in code.
+# Re-verify ids with scripts/llm_canary.py; a dead id is skipped automatically.
+# Fill the model ids from each provider's current free-tier list on day 1 of Phase 0 (they change).
+providers:
+  - name: gemini
+    kind: google-genai
+    key_env: GEMINI_API_KEY
+    judge_key_env: GEMINI_API_KEY_JUDGE   # falls back to key_env if empty
+    models:
+      text: ""        # e.g. the current free Flash model id
+      vision: ""      # vision-capable Flash model id (QC judge, compiler reads refs)
+    rate_limit: { rpm: 10, rpd: 250 }     # set from the provider's published free limits
+  - name: groq
+    kind: openai-compatible
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+    models:
+      text: ""
+      vision: ""
+    rate_limit: { rpm: 30, rpd: 1000 }
+  - name: nvidia
+    kind: openai-compatible
+    base_url: https://integrate.api.nvidia.com/v1
+    key_env: NVIDIA_API_KEY
+    models:
+      text: ""
+      vision: ""
+    rate_limit: { rpm: 20, rpd: 1000 }
+  - name: openrouter
+    kind: openai-compatible
+    base_url: https://openrouter.ai/api/v1
+    key_env: OPENROUTER_API_KEY
+    models:
+      text: ""        # must end in ":free"
+      vision: ""      # must end in ":free"
+    rate_limit: { rpm: 20, rpd: 200 }
+
+roles:
+  intake:     { needs: vision, temperature: 0.2, prompt: "01-planner",  quota: planner }
+  hooks:      { needs: text,   temperature: 0.8, prompt: "01-planner",  quota: planner, stream: true }
+  hook_score: { needs: text,   temperature: 0.1, prompt: "01-planner",  quota: planner }
+  beats:      { needs: text,   temperature: 0.3, prompt: "01-planner",  quota: planner }
+  shots:      { needs: text,   temperature: 0.3, prompt: "01-planner",  quota: planner }
+  script_fit: { needs: text,   temperature: 0.2, prompt: "02-script",   quota: planner }
+  compiler:   { needs: vision, temperature: 0.1, prompt: "03-compiler", quota: planner }
+  localizer:  { needs: text,   temperature: 0.1, prompt: "04-localizer",quota: planner }
+  judge:      { needs: vision, temperature: 0.1, prompt: "05-judge",    quota: judge }
+  compliance: { needs: text,   temperature: 0.1, prompt: "06-assistant",quota: planner }
+  assistant:  { needs: text,   temperature: 0.3, prompt: "06-assistant",quota: planner }
+
+retry:
+  on_429: honour_retry_after_then_backoff   # 1, 2, 4, 8 s with jitter, then next provider
+  on_5xx: next_provider
+  on_malformed_json: one_retry_then_next_provider
+cache:
+  key: sha256(role, prompt_version, inputs)
+  ttl_hours: 24
+canary:
+  schedule: daily
+  script: scripts/llm_canary.py
+paid_providers_allowed: false   # locked 3 Nov 2026

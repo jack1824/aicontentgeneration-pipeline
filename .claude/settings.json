@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd *)",
+      "Bash(pnpm *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(uv *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pytest *)",
+      "Bash(ffmpeg *)",
+      "Bash(ffprobe *)",
+      "Bash(git *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(mkdir *)",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(vercel *)",
+      "Bash(fly *)",
+      "Bash(flyctl *)",
+      "Bash(railway *)",
+      "Bash(wrangler *)",
+      "Bash(terraform *)",
+      "Bash(aws *)",
+      "Bash(gcloud *)",
+      "Read(.env)",
+      "Read(.env.local)",
+      "Read(**/.env)",
+      "Bash(cat .env*)",
+      "Bash(cat */.env*)",
+      "Bash(head .env*)",
+      "Bash(tail .env*)",
+      "Bash(less .env*)",
+      "Bash(more .env*)",
+      "Bash(grep * .env*)",
+      "Bash(sed * .env*)",
+      "Bash(awk * .env*)",
+      "Bash(printenv*)",
+      "Bash(env)",
+      "Read(.env.production)",
+      "Read(.env.development)"
+    ]
+  }
+}
