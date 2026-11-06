@@ -32,9 +32,18 @@ Phase 0 runs on plain files only, all gitignored:
 - No `docker-compose.yml` yet (it arrives in 1.1). Instead: the plain-file layout above (`assets/`, `.cache/`,
   `proofs/out/`), created on first use, all three gitignored (`/assets/` and `/.cache/` are anchored to the repo root
   so other folders named `assets` stay tracked).
-- `.env.example` keeps its existing keys (`HIGGSFIELD_KEY_ID`, `HIGGSFIELD_KEY_SECRET`, `HIGGSFIELD_WEBHOOK_SECRET`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID_DEFAULT`, `GEMINI_API_KEY`, `GEMINI_API_KEY_JUDGE`, `GROQ_API_KEY`, `NVIDIA_API_KEY`, `OPENROUTER_API_KEY`, `NEXT_PUBLIC_API_URL`, `HOSTING_PHASE_UNLOCKED`) and adds the Phase 0 paths `ASSETS_DIR=./assets`, `STEP_CACHE_PATH=./.cache/steps.sqlite3`, `PROOFS_OUT_DIR=./proofs/out`, plus `FFMPEG_BIN=/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg` (owner decision 4 Nov 2026: Homebrew's default ffmpeg has no libass, freetype or harfbuzz, so it cannot burn Devanagari captions; the engine config reads `FFMPEG_BIN` and takes ffprobe from the same folder, never whatever `ffmpeg` is first on PATH). `DATABASE_URL`, `REDIS_URL` and `S3_*` move to a commented-out "Phase 1.1" block.
+- `.env.example` keeps its existing keys (`HIGGSFIELD_KEY_ID`, `HIGGSFIELD_KEY_SECRET`, `HIGGSFIELD_WEBHOOK_SECRET`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID_DEFAULT`, `GEMINI_API_KEY`, `GEMINI_API_KEY_JUDGE`, `GROQ_API_KEY`, `NVIDIA_API_KEY`, `OPENROUTER_API_KEY`, `NEXT_PUBLIC_API_URL`, `HOSTING_PHASE_UNLOCKED`) and adds the Phase 0 paths `ASSETS_DIR=./assets`, `STEP_CACHE_PATH=./.cache/steps.sqlite3`, `PROOFS_OUT_DIR=./proofs/out`, plus `FFMPEG_BIN=~/tools/ffmpeg/ffmpeg` (owner decisions 4 and 6 Nov 2026: Homebrew's default ffmpeg has no libass, freetype or harfbuzz, so it cannot burn Devanagari captions, and Homebrew has no ffmpeg-full build for macOS 14; so `FFMPEG_BIN` points at the signed martin-riedl.de 9.0.2 macOS arm64 release, SHA256- and codesign-verified, kept in `~/tools/ffmpeg/` outside the repo. The engine config reads `FFMPEG_BIN` and takes ffprobe from the same folder, never whatever `ffmpeg` is first on PATH). `DATABASE_URL`, `REDIS_URL` and `S3_*` move to a commented-out "Phase 1.1" block.
 - `config/llm.yaml`: ordered chain with model ids, per-role temperature, per-provider rate limits. `config/router.yaml`: model routing per shot type and preset (from `docs/plan/00-plan.md` → Model routing).
 - Acceptance: `uv run python -c "import engine"` works; `pnpm -r build` works; `uv run pytest` passes a smoke test that writes and reads back one asset and one step-cache entry in a temp folder; a check confirms `$FFMPEG_BIN` has the `subtitles`, `ass`, `drawtext`, `loudnorm` and `sidechaincompress` filters; nothing needs or starts a container.
+- **Split and deferrals (owner OK, 6 Nov 2026).** 0.1 runs as two packages with their own review and summary:
+  **0.1a** Python engine (uv workspace, config with `FFMPEG_BIN`, the fail-closed ffmpeg check
+  `uv run python -m engine.ffmpeg`, the local asset store, the SQLite step cache) and **0.1b** pnpm workspace
+  (`pnpm -r build`). Moved out of 0.1: `config/llm.yaml` model ids → 0.4 (keys are empty; each id is confirmed by a
+  free call); the request-log writer → 0.2; the `llm_cache` table → 0.4; the proof manifest writer → 0.5; Next.js →
+  1.7; the API framework (Fastify or Hono) → 1.6; real JSON schemas → 0.4 and 1.1. The step-key formula and the
+  `steps` columns are permanent from 0.1a, because 1.1 imports them; only the Python engine computes step keys (the
+  API sends inputs, never a hash). Tasks 0.3 and 0.9 start only when
+  `uv run python -m engine.ffmpeg` exits 0.
 
 ## 0.2 Higgsfield adapter (`workers/adapters/higgsfield.py`)
 - `estimate(slug, payload)`, `submit(slug, payload, idempotency_key, webhook_url=None)`, `status(request_id)`, `result(request_id)`, `upload(path)`, `cancel`, `delete`.

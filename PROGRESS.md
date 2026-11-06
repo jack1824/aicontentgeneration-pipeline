@@ -22,11 +22,12 @@ Phase 0 runs on plain files (assets folder, SQLite step cache, `proofs/out/<date
 
 | # | Task | Status | Summary file |
 | --- | --- | --- | --- |
-| 0.1 | Repo skeleton (pnpm + uv workspaces), `.env.example`, config/llm.yaml; plain files only: `assets/`, SQLite step cache, `proofs/out/<date>/` (no containers, owner decision 4 Nov 2026) | todo | |
-| 0.2 | Higgsfield adapter (auth, submit, status, estimate, upload, webhook verify) + canary | todo | |
+| 0.1a | Python engine: uv workspace, config with `FFMPEG_BIN`, fail-closed ffmpeg check, local asset store, SQLite step cache, redaction; `.env.example` Phase 0 block (plain files only, no containers) | done (6 Nov 2026) | [phase-0-0.1a-python-engine.md](SUMMARIES/phase-0-0.1a-python-engine.md) |
+| 0.1b | pnpm workspace: root package (pnpm 10), `packages/contracts` and `apps/api` that build, `apps/web` placeholder; `pnpm -r build` | todo | |
+| 0.2 | Higgsfield adapter (auth, submit, status, estimate, upload, webhook verify) + canary (estimates for every slug, renders for Soul 2 and Wan 3.0 only); request log (moved from 0.1) | todo | |
 | 0.3 | ElevenLabs adapter (TTS v4, forced alignment, SFX, music) + Hindi localizer | todo | |
-| 0.4 | Free-LLM chain (Gemini → Groq → NVIDIA → OpenRouter) with retry, cache, canary | todo | |
-| 0.5 | Proof A: Soul ID face holds across 10 Soul 2 stills | todo | |
+| 0.4 | Free-LLM chain (Gemini → Groq → NVIDIA → OpenRouter) with retry, cache, canary; `llm.yaml` model ids and the `llm_cache` table (moved from 0.1) | todo | |
+| 0.5 | Proof A: Soul ID face holds across 10 Soul 2 stills; proof manifest writer (moved from 0.1) | todo | |
 | 0.6 | Proof B: Kling 3.0 Pro I2V from approved stills, 6 shots, face + product hold | todo | |
 | 0.7 | Proof C: Eleven v4 Devanagari ad script with numbers; forced alignment word times usable | todo | |
 | 0.8 | Proof D: Genjutsu re-shoot of a 15 s clip keeps cuts; product and face swapped | todo | |

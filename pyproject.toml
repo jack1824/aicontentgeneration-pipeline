@@ -1,0 +1,26 @@
+# uv workspace root for SOCIALADZGEN STUDIO v2. Not a package itself: the Python code lives in workers/.
+# Every `uv run ...` works from the repo root. Python is pinned to 3.12 (the managed interpreter), never the
+# system 3.14.
+[project]
+name = "socialadzgen-v2"
+version = "0.0.0"
+description = "SOCIALADZGEN STUDIO v2: uv workspace root (Python workers live in workers/)."
+requires-python = ">=3.12,<3.13"
+dependencies = ["socialadz-workers"]
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["workers"]
+
+[tool.uv.sources]
+socialadz-workers = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["workers/tests"]
+addopts = ["--import-mode=importlib", "-ra"]
+cache_dir = ".cache/pytest"
