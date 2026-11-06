@@ -1,0 +1,14 @@
+{
+  "name": "socialadzgen-v2",
+  "private": true,
+  "description": "SOCIALADZGEN STUDIO v2: pnpm workspace root (apps/*, packages/*). The mockup in mockup/studio-ui is not a member.",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r --if-present test"
+  }
+}

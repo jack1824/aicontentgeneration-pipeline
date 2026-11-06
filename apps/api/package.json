@@ -1,0 +1,18 @@
+{
+  "name": "@socialadz/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SOCIALADZGEN STUDIO v2 API. Phase 0.1b skeleton: it compiles against @socialadz/contracts; the framework (Fastify or Hono) is chosen in 1.6.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@socialadz/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

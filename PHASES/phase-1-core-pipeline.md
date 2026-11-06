@@ -22,8 +22,16 @@ entries are imported; `uv run pytest` passes on the new stores.
 ## 1.2 Job graph (`workers/engine/graph.py`)
 Steps: `voice` → `stills` (parallel) → `approve` (auto in Simple/Draft/Standard; human in Master) → `video`
 (parallel) → `qc` (per take) → `assemble` → `reframe` → `export`. Each step idempotent by `sha256(step, inputs)`;
-one automatic retry on provider error, one re-roll on QC fail/unknown, then "needs attention" and the ad still
-assembles with the best take. Concurrency = account tier − 2. Webhook receiver on the API (local URL; ngrok/quick
+one re-roll on QC fail/unknown, then "needs attention" and the ad still assembles with the best take.
+Generation retries (owner answers, 6 Nov 2026; these supersede the blanket "one automatic retry on a provider error"
+in `docs/plan/03-contracts.md` and `docs/plan/00-plan.md`):
+- Higgsfield: no automatic retry of a generation. A terminal `failed` or `nsfw` stops and asks the owner (a later
+  retry uses a new key, step key + attempts). An ambiguous submit (timeout or 5xx, no request id recorded) is resent
+  only with the SAME key and body, and only once 0.2b has proven the live idempotency replay. A 429 queue-full
+  (nothing created, nothing charged) waits for Retry-After and resends with the same key.
+- ElevenLabs (voice, SFX, music): never resent automatically after an ambiguous outcome. It goes through the 0.3
+  history match, otherwise the step needs attention, and only `--allow-repay` resends. A clear, uncharged rejection
+  (a 429 concurrency limit) backs off and resends. Concurrency = account tier − 2. Webhook receiver on the API (local URL; ngrok/quick
 tunnel only when testing webhooks); polling fallback every 10 s.
 
 ## 1.3 Script Brain (`workers/brain/`)
@@ -35,6 +43,10 @@ Hooks stream first. Changing a hook re-runs beats → shots → compile only.
 Router from `config/router.yaml` (Draft: Wan 3.0; Standard: Kling 3.0 Pro; Master: Kling 4.0; multi-ref: Kling O3 /
 Seedance 2.5; first-last: Kling O3). Ordered references: face, product, room. Approved still is the first frame.
 QC judge (prompt 5) on 8 frames + references; tri-state; provenance stored.
+Model readiness (owner rule, 6 Nov 2026): a model is ready only when it has a payload builder, a unit test for that builder, and one passing real render recorded in `proofs/out/`. The
+router routes only to slugs with `status: ready` in `config/router.yaml`; an `unproven` slug is never chosen, by a
+preset or by Auto. Kling O3, Kling 4.0, Seedance 2.5 and Cinema Studio 4.0 get their first real renders in 1.8,
+before the eval ads.
 
 ## 1.5 Compositor v1 (`workers/compositor/`)
 Cut each shot to its beat words + 0.3 s tail; captions from alignment (2–4 words per card, Devanagari or Latin,
@@ -52,10 +64,16 @@ Library, video-model picker fed by `config/router.yaml`, chips, live reel), Open
 Making (frame strip fed by SSE), Your ad (player, four quick actions, send to WhatsApp, save all sizes). Advanced
 switch reveals: quality preset, the Production table (step, model, time), beat editor, storyboard approval, Director's Cut (Phase 2),
 scorecard, per-model resolution, shot length and time per shot in the model picker. No money anywhere, in either mode. A model chosen for the whole ad overrides the preset's video
-slug; a per-shot override (Director's Cut) wins over both. Keep the design tokens and GSAP moments from the mockup
+slug; a per-shot override (Director's Cut) wins over both. The picker lists only `ready` models; an `unproven` one
+stays hidden until it has a payload builder, a unit test for that builder, and one passing real render recorded in `proofs/out/` (model readiness rule, CLAUDE.md); all seven picker
+models stay in the product. Keep the design tokens and GSAP moments from the mockup
 (skill `ui-system`). Done = the DESIGN_SYSTEM.md checklist, including the no-money DOM search in Playwright.
 
 ## 1.8 Eval set → G1
+First, model readiness for the four models the router cannot reach yet (Kling O3, Kling 4.0, Seedance 2.5, Cinema
+Studio 4.0): for each, a payload builder with a unit test and one passing direct adapter test render, under a PAID CALLS line
+in a plan the owner has said go to, recorded in `proofs/out/`. Only then does `config/router.yaml` mark it ready, and
+only then do the eval ads run.
 Ten ads: sweets, kirana, salon, fashion, electronics (two each: one 15 s, one 30 s). Blind rating form (7 items
 from the checklist). Record costs from the ledger into the G1 summary (an owner report, never the website). Write the G1 summary.
 

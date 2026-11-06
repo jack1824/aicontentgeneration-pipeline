@@ -44,6 +44,8 @@ one primary button each.
   record your own), **video model picker** (Auto default; Wan 3.0, Kling 3.0 Pro, Kling O3, Kling 4.0, Seedance
   2.5, Cinema Studio 4.0 with maker, good-for line, speed and detail meters), length, language, captions, CTA,
   festival, one coarse time line.
+  Model readiness (owner rule, 6 Nov 2026, CLAUDE.md): the picker lists only models with `status: ready` in
+  `config/router.yaml`; an unproven model stays hidden and Auto never routes to it. All seven stay in the product.
 - **Advanced adds (time and model detail only):** quality preset, presenter, Production table (step, model,
   time), per-model resolution / shot length / per-shot time / slug, voice settings, hook scores, per-shot QC,
   Director's Cut (playhead synced to the reel, model override per shot, takes, re-shoot with a note, voice by beat)
@@ -69,4 +71,5 @@ Errors say what happened and what to do next. Every label has a Hindi string.
 4. `web-design-guidelines` review; fix focus, labels, touch targets, reduced motion.
 5. No-money DOM search green on every route and both modes.
 6. No horizontal scroll at 390px. Orange is the brightest thing on each screen.
-7. Rebuild the mockup bundle with `mockup/studio-ui/build.sh` when the mockup changes.
+7. Rebuild the mockup bundle with `mockup/studio-ui/build.sh` when the mockup changes (the mockup is its own pnpm
+   project through `mockup/studio-ui/pnpm-workspace.yaml`; see CLAUDE.md, Commands).

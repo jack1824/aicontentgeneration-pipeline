@@ -1,10 +1,15 @@
 # packages/contracts
 
-JSON Schemas shared by the TypeScript app/API and the Python workers. Phase 0 (0.1) and Phase 1 (1.1) create:
+The shared surface between the TypeScript app/API and the Python workers (`docs/plan/03-contracts.md`).
 
-- `brief.schema.json`, `hook.schema.json`, `beat.schema.json`, `shot.schema.json`, `take.schema.json`,
-  `qc_verdict.schema.json`, `job.schema.json`, `render.schema.json`
-- `brain/` — the output schemas for prompts 1–6 (validate every LLM response)
-- `content/` — schemas for the content JSON
+Today (0.1b) it is a TypeScript skeleton: `src/index.ts` builds to `dist/` (`pnpm --filter contracts build`; the
+`prepare` script builds it on `pnpm install`) and proves the workspace link and build order. `test/typecheck.test.mjs`
+guards the strict TypeScript settings for the whole workspace (`pnpm test`).
 
-Pydantic models are generated into `workers/contracts/` (`pnpm --filter contracts gen`). Never hand-edit the generated side.
+The JSON Schemas arrive later, per the 0.1 split (PHASES/phase-0, task 0.1):
+- 0.4: `brain/`, the output schemas for prompts 1–6 (every LLM response is validated against them)
+- 1.1: `brief`, `hook`, `beat`, `shot`, `take`, `qc_verdict`, `job` and `render` schemas, plus `content/` for the
+  content JSON. The Pydantic models for the workers are generated from them into `workers/contracts/` (a `gen`
+  script arrives with them). Never hand-edit the generated side.
+
+Step keys are computed only by the Python engine; the API sends inputs, never a hash.

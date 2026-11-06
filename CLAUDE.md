@@ -67,8 +67,18 @@ The plan is locked (3 Nov 2026). Read `docs/plan/00-plan.md` once at the start o
   `PAID CALLS: none` or `PAID CALLS: <provider> <model> × <count>, est. <amount>`. Never send a generation request to
   Higgsfield or ElevenLabs unless that line covers it in a plan the owner has said go to. (Owner-facing only; amounts
   never reach the website.)
-- **Git.** `main` holds approved work. Every work package gets its own branch off `main`
-  (`wp/<task>-<slug>`, e.g. `wp/0.1-repo-skeleton`).
+- **Model readiness (owner rule, 6 Nov 2026).** A model is shown to users only after it has a payload builder, a
+  unit test for that builder, and one passing real render recorded in `proofs/out/`. Until then it stays in
+  `config/router.yaml` with status `unproven`, is hidden from the picker, and Auto never routes to it. First real
+  renders: 0.2 Soul 2 and Wan 3.0; 0.5–0.6 Soul ID, Marketing Studio Image and Kling 3.0 Pro; 0.8 Genjutsu; the
+  Phase 1 eval Kling O3, Kling 4.0, Seedance 2.5 and Cinema Studio 4.0. All seven picker models stay in the product;
+  only their status changes.
+- **Git and GitHub (owner rules).** Remote `origin` = github.com/jack1824/aicontentgeneration-pipeline. Never push to,
+  merge into or touch the remote `main`; never force-push; never delete a remote branch. `v2-rebuild` is the
+  integration branch. Every work package gets its own branch from `v2-rebuild` (`wp/<task>-<slug>`, e.g.
+  `wp/0.1b-pnpm-workspace`) and is pushed only after qc-reviewer and the summary; merging into `v2-rebuild` is the
+  owner's call (fast-forward only). Before every push: `git status`, a secret scan of the diff, and confirm `.env`
+  and `~/tools` are not tracked.
 - **Secrets** live in `.env` (gitignored). Never print keys. Higgsfield training opt-out must be ON in the console.
 - **Run everything locally**: see skill `local-testing` for the commands.
 - Use the sub-agents: `planner-architect` to plan a package, `app-dev` / `shot-engine-dev` to build,
@@ -108,8 +118,11 @@ At the end of each phase also write `SUMMARIES/<phase>-PHASE-SUMMARY.md` restati
 - Workers (from 1.2): `uv run celery -A engine worker -l info` (or `arq engine.WorkerSettings`)
 - DB (from 1.1): `docker compose up -d postgres redis minio` · migrations: `pnpm --filter api db:migrate`
 - Proofs: `uv run python proofs/<name>.py` (Phase 0) · canaries: `uv run python scripts/model_canary.py`, `uv run python scripts/llm_canary.py`
+- TS workspace (0.1b; pnpm 10, `apps/*` and `packages/*`): `pnpm install` · `pnpm -r build` · `pnpm -r typecheck`
 - Tests: `pnpm test` · `uv run pytest`
-- Mockup: `cd mockup/studio-ui && pnpm i && pnpm dev` (preview) · `./build.sh` (typecheck, lint, build, bundle)
+- Mockup (its own pnpm project: `mockup/studio-ui/pnpm-workspace.yaml` with `packages: []` keeps it out of the root
+  workspace, with its own lockfile): `cd mockup/studio-ui && pnpm i && pnpm dev` (preview) · `./build.sh` (typecheck,
+  lint, build, bundle). Do not delete that file: without it, `pnpm install` there climbs to the repo root.
 
 ## Never
 

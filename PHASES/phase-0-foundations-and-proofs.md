@@ -49,6 +49,15 @@ Phase 0 runs on plain files only, all gitignored:
 - `estimate(slug, payload)`, `submit(slug, payload, idempotency_key, webhook_url=None)`, `status(request_id)`, `result(request_id)`, `upload(path)`, `cancel`, `delete`.
 - Handles `queued → in_progress → completed | failed | nsfw | canceled`; `nsfw` is terminal and refunded; 429 `account_queue_full` honours `Retry-After`; downloads outputs to the local `assets/` folder before returning and logs each call to `proofs/out/<date>/requests.jsonl`. Phase 0 polls (`webhook_url` stays `None`).
 - Canary: `scripts/model_canary.py` calls `POST /estimate/<slug>` (free) for every slug in `config/router.yaml` and makes real renders only for Soul 2 (one image) and Wan 3.0 (one 3 s clip), then reports which slugs are alive (owner decision 4 Nov 2026).
+- Model readiness (owner rule, 6 Nov 2026): a model is ready only when it has a payload builder, a unit test for that builder, and one passing real render recorded in `proofs/out/`.
+  0.2 builds full payload builders, each with a unit test, for Soul 2 and Wan 3.0; every other slug in
+  `config/router.yaml` gets `status: unproven` (hidden from the picker, never routed to by Auto). The canary sends
+  those slugs only a minimal body to `/estimate` (free), which checks that the slug exists and does not make it
+  ready. First real renders: 0.2 Soul 2 and Wan 3.0; 0.5–0.6 Soul ID, Marketing Studio Image and Kling 3.0 Pro;
+  0.8 Genjutsu; Phase 1 (1.8) Kling O3, Kling 4.0, Seedance 2.5 and Cinema Studio 4.0. All seven picker models stay in
+  the product; only their status changes. The proof that first renders a model (0.5, 0.6, 0.8) also adds that model's
+  payload builder with a unit test, and `config/router.yaml` marks it ready only after its passing render is recorded
+  in `proofs/out/`. See CLAUDE.md.
 - Acceptance: a real Soul 2 image lands in `assets/` and its request id is in the request log; `estimate` returns a USD figure for Kling 3.0 Pro (logged for the owner, never shown on the website).
 
 ## 0.3 ElevenLabs adapter (`workers/adapters/elevenlabs.py`) + localizer
@@ -57,6 +66,30 @@ Phase 0 runs on plain files only, all gitignored:
 - `sfx(prompt, seconds)`, `music(prompt, ms, instrumental=True)`.
 - Localizer, rule-based part only (owner decision 4 Nov 2026): the deterministic rules of prompt 4 in `docs/plan/04-system-instructions.md`, unit-tested: numbers, ₹, %, dates and phone numbers → Devanagari words (phone digit by digit, `[short pause]` every 5 digits); energy → one audio tag from the fixed map; pause tags; emojis, hashtags and markdown stripped; brand names Latin or the glossary respelling. The LLM part of prompt 4 (pacing rewrites, register forms, pronunciation overrides for names not in the glossary) is wired on the free chain after 0.4.
 - Acceptance: the sample Diwali script (5 beats) is voiced, measured, and aligned; a JSON of word times is written.
+- Acceptance, no silent re-pay (owner decision 6 Nov 2026). This supersedes the "accepted risk" in the 0.1a summary
+  and the step-cache docstring (the docstring is updated in 0.3). ElevenLabs has no idempotency key and TTS answers
+  synchronously, so the voice row is written *before* the request is sent: status "submitted" with a client-side id,
+  the sha256 of the exact text, the voice id, the model id and the send time. A crash during the call therefore always
+  leaves an in-flight row. On resume, that row is first matched against the ElevenLabs history: `GET /v1/history` filtered by `voice_id`,
+  `model_id`, `source=TTS` and `date_after_unix` (shortly before the row was submitted), matching the sha256 of the
+  exact text sent against each item's `text`. A match is confirmed only when exactly one history item fits: the same
+  text hash, voice id and model id, the same voice settings (stability, similarity, style, and the seed when one was
+  sent), inside the time window, and a `history_item_id` / `request_id` not already recorded on another row. (Proof C
+  voices the same text with three settings, and a repeated line can appear in two beats, so text alone is not
+  enough.) Zero or several candidates mean "needs attention". A confirmed match is downloaded with
+  `GET /v1/history/{history_item_id}/audio` (no new charge) and the step completes. With no confirmed match the line
+  is marked "needs attention" and is resent only with an explicit `--allow-repay` flag; nothing re-pays silently.
+  "Needs attention" is never stored as `failed` (the step cache treats `failed` as retryable): the row stays
+  in flight and only `--allow-repay` releases it. The same applies within a run: any ambiguous outcome after the
+  request went out (a timeout, a dropped connection, a 5xx) goes through the same history match, else "needs
+  attention", and is never retried automatically. (Unlike the general rule above, which writes a row once submit()
+  returns, ElevenLabs voice rows are written before the request.)
+  Checked in the ElevenLabs docs on 6 Nov 2026 (https://elevenlabs.io/docs/api-reference/history/list,
+  https://elevenlabs.io/docs/api-reference/history/get-audio, `enable_logging` in
+  https://elevenlabs.io/docs/api-reference/text-to-speech/convert): the history list exists with those filters, and its items carry
+  `history_item_id`, `request_id`, `voice_id`, `model_id`, `text` and `date_unix`. It covers TTS only: music and
+  SFX are not in history, so those have no match path and always come back as "needs attention". TTS calls must
+  keep `enable_logging` on (the default), or history is unavailable. Re-check the docs before building on it.
 
 ## 0.4 Free LLM chain (`workers/llm/chain.py`)
 - Providers in order from `config/llm.yaml`; each call: JSON-schema validation, one retry on malformed output, `Retry-After` + jittered backoff on 429, fall to the next provider on 429/5xx/timeout.

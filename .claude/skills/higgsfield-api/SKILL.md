@@ -45,5 +45,9 @@ Veo 3.x, Sora 2, Nano Banana, GPT Image, FLUX, Seedream, Popcorn, Upscale, **eve
 ## Prompt rules for pixel calls
 No text, logo, price or caption in any prompt. One person per shot. Ordered references: face (1), product (2), room (3). "Exactly as in image 2, label unchanged" whenever the product is visible. Native audio off. Negatives: text, watermark, logo, subtitles, extra fingers, duplicate person, warped product, flicker.
 
+## Model readiness (owner rule, 6 Nov 2026)
+A model is shown to users only after it has a payload builder, a unit test for that builder, and one passing real render recorded in `proofs/out/`. Until then it stays in `config/router.yaml` with status `unproven`, is hidden from the picker, and Auto never routes to it. First real renders: 0.2 Soul 2 and Wan 3.0; 0.5–0.6 Soul ID, Marketing Studio Image and Kling 3.0 Pro; 0.8 Genjutsu; the Phase 1 eval Kling O3, Kling 4.0, Seedance 2.5 and Cinema Studio 4.0. All seven picker models stay in the product; only their status changes.
+In `config/router.yaml` every slug carries `status: ready | unproven`; only `ready` slugs may be routed to or listed.
+
 ## Checklist before relying on a slug
 1. `GET https://docs.higgsfield.ai/docs/models/<family>.md` still lists it. 2. `POST /estimate/<slug>` returns a price. 3. It rendered for real in the last 7 days: the canary renders only Soul 2 and Wan 3.0 (owner decision 4 Nov 2026), so other slugs need a proof render or a test render in a plan the owner has said go to.

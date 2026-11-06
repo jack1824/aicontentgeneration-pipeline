@@ -23,9 +23,9 @@ Phase 0 runs on plain files (assets folder, SQLite step cache, `proofs/out/<date
 | # | Task | Status | Summary file |
 | --- | --- | --- | --- |
 | 0.1a | Python engine: uv workspace, config with `FFMPEG_BIN`, fail-closed ffmpeg check, local asset store, SQLite step cache, redaction; `.env.example` Phase 0 block (plain files only, no containers) | done (6 Nov 2026) | [phase-0-0.1a-python-engine.md](SUMMARIES/phase-0-0.1a-python-engine.md) |
-| 0.1b | pnpm workspace: root package (pnpm 10), `packages/contracts` and `apps/api` that build, `apps/web` placeholder; `pnpm -r build` | todo | |
+| 0.1b | pnpm workspace: root package (pnpm 10.34.9), strict tsconfig, `packages/contracts` and `apps/api` that build, `apps/web` placeholder; mockup kept as its own pnpm project | done (6 Nov 2026) | [phase-0-0.1b-pnpm-workspace.md](SUMMARIES/phase-0-0.1b-pnpm-workspace.md) |
 | 0.2 | Higgsfield adapter (auth, submit, status, estimate, upload, webhook verify) + canary (estimates for every slug, renders for Soul 2 and Wan 3.0 only); request log (moved from 0.1) | todo | |
-| 0.3 | ElevenLabs adapter (TTS v4, forced alignment, SFX, music) + Hindi localizer | todo | |
+| 0.3 | ElevenLabs adapter (TTS v4, forced alignment, SFX, music) + Hindi localizer; no silent re-pay: the voice row is written before the request; on resume it is matched against the ElevenLabs history (a unique match on text hash, voice id, model, settings and recent time; lookup verified in the docs first), else "needs attention", resent only with `--allow-repay`; nothing re-pays silently | todo | |
 | 0.4 | Free-LLM chain (Gemini → Groq → NVIDIA → OpenRouter) with retry, cache, canary; `llm.yaml` model ids and the `llm_cache` table (moved from 0.1) | todo | |
 | 0.5 | Proof A: Soul ID face holds across 10 Soul 2 stills; proof manifest writer (moved from 0.1) | todo | |
 | 0.6 | Proof B: Kling 3.0 Pro I2V from approved stills, 6 shots, face + product hold | todo | |

@@ -1,0 +1,9 @@
+# Workspace members. mockup/studio-ui is deliberately NOT a member: it has its own pnpm-workspace.yaml
+# (packages: []) and its own pnpm-lock.yaml, so pnpm treats it as a separate project.
+packages:
+  - apps/*
+  - packages/*
+
+# One TypeScript version for the workspace, the same as the mockup's, until 1.7 ports the mockup into apps/web.
+catalog:
+  typescript: 5.8.3
